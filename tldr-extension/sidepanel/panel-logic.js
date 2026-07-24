@@ -131,6 +131,62 @@ const TldrPanelLogic = (() => {
     return map[index];
   }
 
+  function escapeHtmlText(text) {
+    return String(text || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  function escapeReservedAttributionTags(text) {
+    return String(text || "").replace(
+      /<(\/?)tldr-attribution\b/gi,
+      "&lt;$1tldr-attribution"
+    );
+  }
+
+  // Streamdown parses Markdown before it renders the answer. Inject a
+  // sanitizer-whitelisted custom element around each server-provided answer
+  // span so Markdown can be rendered without losing TokenPath's original
+  // source bounds. Attributed content is escaped and rendered literally; this
+  // prevents answer text from breaking out of the custom element.
+  function annotateMarkdownAttributions(answer, attributions) {
+    const text = String(answer || "");
+    const sorted = [...(Array.isArray(attributions) ? attributions : [])]
+      .filter(
+        (item) =>
+          Number.isInteger(item.answerStart) &&
+          Number.isInteger(item.answerEnd) &&
+          item.answerStart >= 0 &&
+          item.answerEnd > item.answerStart &&
+          item.answerStart < text.length &&
+          Number.isFinite(item.sourceStart) &&
+          Number.isFinite(item.sourceEnd) &&
+          item.sourceEnd > item.sourceStart
+      )
+      .sort((a, b) => a.answerStart - b.answerStart);
+
+    let cursor = 0;
+    let markdown = "";
+    for (const item of sorted) {
+      if (item.answerStart < cursor) continue;
+      const answerEnd = Math.min(item.answerEnd, text.length);
+      markdown += escapeReservedAttributionTags(
+        text.slice(cursor, item.answerStart)
+      );
+      const confidence = Number.isFinite(item.confidence)
+        ? ` confidence="${Number(item.confidence)}"`
+        : "";
+      markdown +=
+        `<tldr-attribution source_start="${Number(item.sourceStart)}"` +
+        ` source_end="${Number(item.sourceEnd)}"${confidence}>` +
+        escapeHtmlText(text.slice(item.answerStart, answerEnd)) +
+        "</tldr-attribution>";
+      cursor = answerEnd;
+    }
+    return markdown + escapeReservedAttributionTags(text.slice(cursor));
+  }
+
   return {
     SHORT_SELECTION_WORDS,
     buildSummaryRequest,
@@ -138,6 +194,7 @@ const TldrPanelLogic = (() => {
     truncateCodePoints,
     codePointToUtf16Map,
     codePointOffsetToUtf16,
+    annotateMarkdownAttributions,
   };
 })();
 

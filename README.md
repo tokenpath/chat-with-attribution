@@ -7,10 +7,18 @@ one highlights and scrolls to its exact source text in the page.
 
 ## Load it unpacked
 
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Choose **Load unpacked** and select `tldr-extension/`.
-4. Select text on a normal web page, right-click, and choose **TLDR**.
+1. Build the side panel once:
+
+   ```sh
+   cd tldr-extension
+   npm install
+   npm run build
+   ```
+
+2. Open `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Choose **Load unpacked** and select `tldr-extension/`.
+5. Select text on a normal web page, right-click, and choose **TLDR**.
 
 On first use, paste a TokenPath API key from
 [platform.tokenpath.ai](https://platform.tokenpath.ai). No separate LLM key is
@@ -38,8 +46,15 @@ a one-word selection.
    bounds in both the answer and the selected source document. TokenPath's
    Unicode code-point bounds are converted once to JavaScript UTF-16 offsets,
    including across emoji and other astral-plane characters.
-4. The panel renders those answer spans as clickable claims. Clicking one sends
-   its converted source bounds to the originating tab and frame.
+4. The panel uses Vercel
+   [AI Elements](https://elements.ai-sdk.dev/) conversation, message, and
+   prompt-input primitives. Assistant answers render as safe Markdown through
+   Streamdown. When every attributed range maps cleanly to an ordinary Markdown
+   text node, sanitizer-whitelisted attribution elements carry the original
+   source bounds through parsing. If a range touches code, a link, an escaped
+   entity, or crosses Markdown structure, the answer automatically uses an
+   exact plain-text span renderer instead. Clickable claims therefore keep
+   their server-provided offsets without corrupting or navigating the answer.
 5. The content script maps those document offsets back to live DOM `Range`s,
    highlights the source with the CSS Custom Highlight API, and scrolls it into
    view, including through nested panes such as Gmail's message view.
@@ -65,6 +80,10 @@ WhatsApp message text re-enabled beneath its non-selectable app shell.
 Only the extracted selection, questions, and bounded conversation context are
 sent to TokenPath. The DOM node map remains inside the source frame.
 
+The panel follows the operating-system theme by default. Its header control can
+switch among system, light, and dark modes; the preference stays local to the
+extension.
+
 ## API and local development
 
 The side panel calls TokenPath directly using the key stored in
@@ -78,6 +97,17 @@ chrome.storage.local.set({ tokenpathBaseUrl: "http://localhost:8000" })
 See [`tokenpath-integration.md`](./tokenpath-integration.md) for request shapes
 and [`spec.md`](./spec.md) for the extension architecture.
 
+The page-capture scripts remain build-free. The side panel is a React 19,
+TypeScript, Tailwind CSS 4, and Vite bundle. AI Elements components are copied
+into the repository as editable source, matching the library's shadcn-style
+distribution model. Run the complete validation from `tldr-extension/`:
+
+```sh
+npm install
+npm run setup:test # first run on a machine
+npm test
+```
+
 ## Layout
 
 ```text
@@ -86,9 +116,19 @@ tldr-extension/
 ├── background.js              # nonblocking, frame-aware capture
 ├── content.js                 # extraction, node map, remap, highlight
 ├── content.css                # source attribution highlight
+├── package.json               # side-panel build and complete validation
+├── vite.config.ts             # local MV3-compatible JS/CSS bundle
+├── src/sidepanel/
+│   ├── app.tsx                # React chat, auth, source context, themes
+│   ├── controller.ts          # capture/auth/chat/highlight state machine
+│   ├── markdown-attribution.ts # offset-safe Markdown/fallback decision
+│   └── components/
+│       ├── ai-elements/       # adapted Vercel AI Elements source
+│       └── ui/                # local shadcn-style primitives
 └── sidepanel/
     ├── panel.html
-    ├── panel.js               # chat and clickable attributed spans
+    ├── panel.js               # generated React/AI Elements bundle
+    ├── panel.css              # generated Tailwind/theme bundle
     ├── panel-logic.js         # summary and Unicode-safe helpers
     └── tokenpath.js           # authenticated `/v1/answer` client
 ```

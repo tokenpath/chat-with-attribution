@@ -30,8 +30,17 @@ page.
 - **`content.js`** snapshots selections, creates the canonical text-to-DOM map,
   resolves document offsets, repairs mappings after supported DOM rerenders,
   renders the source highlight, and scrolls nested panes.
-- **`sidepanel/panel.js`** manages auth, chat history, summary policy, fixed
-  attribution-span rendering, and frame-targeted highlight messages.
+- **`src/sidepanel/controller.ts`** manages auth, chat history, summary policy,
+  capture/version epochs, and frame-targeted highlight messages.
+- **`src/sidepanel/app.tsx`** renders the React panel with source-owned Vercel
+  AI Elements conversation, message, and prompt-input primitives.
+- **`src/sidepanel/markdown-attribution.ts`** verifies that answer offsets are
+  safe to carry through Markdown parsing and selects the exact fallback when
+  they are not.
+- **`src/sidepanel/components/ai-elements/`** contains the trimmed, editable AI
+  Elements source used by the Chrome side panel.
+- **`sidepanel/panel.js`** and **`sidepanel/panel.css`** are generated,
+  self-contained Vite assets loaded by the MV3 extension page.
 - **`sidepanel/panel-logic.js`** contains pure summary and Unicode-safe
   truncation helpers.
 - **`sidepanel/tokenpath.js`** calls TokenPath directly with the API key in
@@ -123,9 +132,26 @@ The response contains the answer plus server-selected spans:
 
 The API client adapts each attributed source to
 `{answerStart, answerEnd, sourceStart, sourceEnd, confidence}`. Entries with a
-null source are not clickable. The panel renders nonoverlapping answer ranges as
-`.attrib` spans; clicking one sends its source bounds to the frame from which
-that answer's selection was captured.
+null source are not clickable. The panel first parses the answer into a
+positioned GFM syntax tree. Markdown rendering is used only when every
+nonoverlapping attribution lies wholly inside one ordinary text leaf, that
+leaf's raw source equals its rendered value, and it is outside links, code,
+HTML, footnotes, or other offset-changing constructs. `panel-logic.js` then
+wraps each verified range in an escaped, sanitizer-whitelisted
+`tldr-attribution` element.
+
+If any range crosses Markdown leaves or blocks, occurs inside code or a link,
+or relies on escaped/entity text, the whole answer uses a whitespace-preserving
+plain renderer that slices the original string at the exact server offsets.
+React maps either path to keyboard-accessible `.attrib` spans; clicking one
+sends its source bounds to the frame from which that answer's selection was
+captured. This fallback avoids literal wrapper tags, partial clickable ranges,
+and attribution clicks that also activate a model-generated link.
+
+Raw HTML cannot forge an attribution: pre-existing `tldr-attribution` tags in a
+model answer are escaped before trusted wrappers are inserted. Streamdown's
+sanitizer and external-link confirmation remain active, remote images are
+suppressed, and rendered links are limited to HTTP(S) and mail links.
 
 Character bounds, rather than a text search, identify the intended occurrence
 when a phrase such as `Fable 5` appears more than once in the captured document.

@@ -82,4 +82,89 @@ assert.ok(Number.isNaN(Logic.codePointOffsetToUtf16(multiEmojiMap, 5)));
 assert.ok(Number.isNaN(Logic.codePointOffsetToUtf16(multiEmojiMap, 1.5)));
 console.log("PASS: TokenPath code-point offsets convert to exact browser UTF-16 bounds");
 
+const markdownAnswer =
+  "## Result\n\nThe **Fable 5** launch uses `five` teams & partners.";
+const fableStart = markdownAnswer.indexOf("Fable 5");
+const partnersStart = markdownAnswer.indexOf("partners");
+const attributedMarkdown = Logic.annotateMarkdownAttributions(markdownAnswer, [
+  {
+    answerStart: fableStart,
+    answerEnd: fableStart + "Fable 5".length,
+    sourceStart: 17,
+    sourceEnd: 24,
+    confidence: 0.91,
+  },
+  {
+    answerStart: partnersStart,
+    answerEnd: partnersStart + "partners".length,
+    sourceStart: 70,
+    sourceEnd: 78,
+  },
+]);
+assert.ok(attributedMarkdown.startsWith("## Result\n\nThe **"));
+assert.ok(
+  attributedMarkdown.includes(
+    '<tldr-attribution source_start="17" source_end="24" confidence="0.91">Fable 5</tldr-attribution>'
+  )
+);
+assert.ok(
+  attributedMarkdown.includes(
+    '<tldr-attribution source_start="70" source_end="78">partners</tldr-attribution>'
+  )
+);
+assert.ok(attributedMarkdown.endsWith("</tldr-attribution>."));
+
+const htmlLikeAnswer = "Use <tag> and <tldr-attribution source_start=\"0\">";
+const tagStart = htmlLikeAnswer.indexOf("<tag>");
+const safeAttributedMarkdown = Logic.annotateMarkdownAttributions(
+  htmlLikeAnswer,
+  [
+    {
+      answerStart: tagStart,
+      answerEnd: tagStart + "<tag>".length,
+      sourceStart: 3,
+      sourceEnd: 8,
+    },
+  ]
+);
+assert.ok(safeAttributedMarkdown.includes("&lt;tag&gt;"));
+assert.ok(
+  safeAttributedMarkdown.includes(
+    '&lt;tldr-attribution source_start="0">'
+  )
+);
+
+const emojiAnswer = "A 🎓 launch";
+const emojiStart = emojiAnswer.indexOf("🎓");
+const emojiMarkdown = Logic.annotateMarkdownAttributions(emojiAnswer, [
+  {
+    answerStart: emojiStart,
+    answerEnd: emojiStart + "🎓".length,
+    sourceStart: 11,
+    sourceEnd: 13,
+  },
+]);
+assert.ok(emojiMarkdown.includes(">🎓</tldr-attribution>"));
+
+const overlapAnswer = "alpha beta gamma";
+const overlapMarkdown = Logic.annotateMarkdownAttributions(overlapAnswer, [
+  {
+    answerStart: 0,
+    answerEnd: 10,
+    sourceStart: 0,
+    sourceEnd: 10,
+  },
+  {
+    answerStart: 6,
+    answerEnd: 10,
+    sourceStart: 20,
+    sourceEnd: 24,
+  },
+]);
+assert.strictEqual(
+  (overlapMarkdown.match(/<tldr-attribution/g) || []).length,
+  1
+);
+console.log("PASS: attributed Markdown preserves raw bounds and escapes custom tags");
+
 console.log("\nAll panel-logic assertions passed.");

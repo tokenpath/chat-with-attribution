@@ -1,88 +1,17 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="script-src 'self'; object-src 'self'"
+    />
     <title>TLDR</title>
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
-    <header class="header">
-      <span class="logo">TLDR</span>
-      <div class="header-right">
-        <span
-          id="credits"
-          class="credits"
-          title="TokenPath tokens remaining"
-          hidden
-        ></span>
-        <button id="clear-hl" class="ghost-btn" title="Clear page highlight">
-          Clear highlight
-        </button>
-      </div>
-    </header>
-
-    <section id="auth" class="auth" hidden>
-      <div class="auth-title">Sign in with TokenPath</div>
-      <p class="auth-note">
-        Answers are generated and attributed by
-        <a href="https://tokenpath.ai" target="_blank" rel="noreferrer">TokenPath</a>.
-        Paste an API key to connect — new accounts get 10M free tokens.
-      </p>
-      <form id="auth-form" class="auth-form">
-        <input
-          id="auth-key"
-          class="auth-input"
-          type="password"
-          placeholder="tpk_live_…"
-          autocomplete="off"
-          spellcheck="false"
-        />
-        <button id="auth-connect" type="submit" class="send-btn">Connect</button>
-      </form>
-      <div id="auth-error" class="auth-error" hidden></div>
-      <p class="auth-privacy">
-        Text you select and your questions are sent to TokenPath to generate
-        and attribute answers. The page itself is never uploaded.
-      </p>
-      <a
-        class="auth-link"
-        href="https://platform.tokenpath.ai"
-        target="_blank"
-        rel="noreferrer"
-        >Get an API key at platform.tokenpath.ai →</a
-      >
-    </section>
-
-    <section id="context" class="context">
-      <div class="context-label">Selected from page</div>
-      <div id="context-text" class="context-text">Waiting for a selection…</div>
-    </section>
-
-    <div id="notice" class="notice" hidden></div>
-
-    <main id="messages" class="messages" aria-live="polite"></main>
-
-    <form id="composer" class="composer">
-      <textarea
-        id="input"
-        class="input"
-        rows="1"
-        placeholder="Ask about the selection…"
-        autocomplete="off"
-      ></textarea>
-      <button id="send" type="submit" class="send-btn">Send</button>
-    </form>
-
-    <footer class="powered">
-      Powered by
-      <a href="https://tokenpath.ai" target="_blank" rel="noreferrer">TokenPath</a>
-      — token-level attribution
-      <a id="disconnect" class="powered-action" href="#" hidden>Disconnect</a>
-    </footer>
-
-    <div id="toast" class="toast" hidden></div>
-
+    <div id="root"></div>
     <script src="panel-logic.js"></script>
     <script src="tokenpath.js"></script>
     <script src="panel.js"></script>

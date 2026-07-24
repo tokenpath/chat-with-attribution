@@ -144,6 +144,7 @@ function recordDeterministic(good) {
 {
   const page = await browser.newPage();
   try {
+    await page.setViewportSize({ width: 360, height: 720 });
     await page.addInitScript(() => {
       const source =
         "Fable 5 appeared during the first preview with early concept art and an initial cast reveal 🎓. " +
@@ -207,31 +208,94 @@ function recordDeterministic(good) {
         const request = options.body ? JSON.parse(options.body) : null;
         window.__panelRequests.push({ path, request });
         if (path.endsWith("/v1/answer")) {
-          const answer = "After the launch 🎓, Fable 5 shipped worldwide.";
-          const answerUtf16Start = answer.indexOf("Fable 5");
+          const cases = {
+            "inline code case": {
+              answer: "Inline: use `Fable 5` now.",
+              start: "Fable 5",
+              end: "Fable 5",
+            },
+            "fenced code case": {
+              answer: "```txt\nFable 5\n```",
+              start: "Fable 5",
+              end: "Fable 5",
+            },
+            "link label case": {
+              answer: "[Fable 5](https://example.com)",
+              start: "Fable 5",
+              end: "Fable 5",
+            },
+            "delimiter crossing case": {
+              answer: "**Fable 5** launch complete",
+              start: "Fable 5",
+              end: "launch",
+            },
+            "block crossing case": {
+              answer: "Fable 5\n\n- launch complete",
+              start: "Fable 5",
+              end: "launch",
+            },
+            "entity case": {
+              answer: "Fable 5 &amp; launch",
+              start: "Fable 5",
+              end: "Fable 5",
+            },
+            "unicode markdown case": {
+              answer: "Result: **🎓漢字** shipped.",
+              start: "🎓漢字",
+              end: "🎓漢字",
+            },
+            "unattributed code case": {
+              answer: "```js\nconst ready = true;\n```",
+              attributed: false,
+            },
+          };
+          const fallback = {
+            answer:
+              "## Launch\n\nAfter 🎓, **Fable 5** shipped " +
+              "[worldwide](https://example.com).\n\n" +
+              "![tracking](https://tracker.invalid/pixel.png)",
+            start: "Fable 5",
+            end: "Fable 5",
+          };
+          const selected = cases[request.question] || fallback;
+          const answer = selected.answer;
+          const answerUtf16Start =
+            selected.attributed === false ? 0 : answer.indexOf(selected.start);
+          const answerUtf16End =
+            selected.attributed === false
+              ? 0
+              : answer.indexOf(selected.end, answerUtf16Start) +
+                selected.end.length;
           const sourceUtf16Start = request.document.lastIndexOf("Fable 5");
           const codePointOffset = (text, utf16Offset) =>
             Array.from(text.slice(0, utf16Offset)).length;
           const answerStart = codePointOffset(answer, answerUtf16Start);
+          const answerEnd = codePointOffset(answer, answerUtf16End);
           const sourceStart = codePointOffset(request.document, sourceUtf16Start);
           return new Response(
             JSON.stringify({
               answer,
-              attributions: [
-                {
-                  answer: {
-                    start: answerStart,
-                    end: answerStart + 7,
-                    text: "Fable 5",
-                  },
-                  source: {
-                    start: sourceStart,
-                    end: sourceStart + 7,
-                    text: "Fable 5",
-                    confidence: 0.94,
-                  },
-                },
-              ],
+              attributions:
+                selected.attributed === false
+                  ? []
+                  : [
+                      {
+                        answer: {
+                          start: answerStart,
+                          end: answerEnd,
+                          text: answer.slice(
+                            answerUtf16Start,
+                            answerUtf16End
+                          ),
+                        },
+                        source: {
+                          start: sourceStart,
+                          end: sourceStart + 7,
+                          text: "Fable 5",
+                          confidence: 0.94,
+                        },
+                      },
+                    ],
               credits_remaining: 999,
             }),
             { status: 200, headers: { "Content-Type": "application/json" } }
@@ -280,14 +344,110 @@ function recordDeterministic(good) {
       const answerRequest = window.__panelRequests.find((item) =>
         item.path.endsWith("/v1/answer")
       );
+      const themeButton = document.getElementById("theme-toggle");
+      const themeLabels = [themeButton?.getAttribute("aria-label")];
+      themeButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      themeLabels.push(themeButton?.getAttribute("aria-label"));
+      themeButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      themeLabels.push(themeButton?.getAttribute("aria-label"));
+      themeButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      themeLabels.push(themeButton?.getAttribute("aria-label"));
       return {
         context: document.getElementById("context-text").textContent,
         hasFixedSpans: !!document.querySelector(".attrib"),
         attributedText: document.querySelector(".attrib")?.textContent,
+        hasMarkdownHeading:
+          document.querySelector('[data-streamdown="heading-2"]')?.textContent ===
+          "Launch",
+        hasMarkdownStrong:
+          document.querySelector('[data-streamdown="strong"] .attrib')
+            ?.textContent === "Fable 5",
+        hasSafeMarkdownLink:
+          document.querySelector(
+            'button[data-streamdown="link"]'
+          )?.textContent === "worldwide",
+        blocksRemoteMarkdownImage: !document.querySelector(
+          'img[src*="tracker.invalid"]'
+        ),
+        themeLabels,
+        fitsNarrowPanel:
+          document.documentElement.scrollWidth <=
+            document.documentElement.clientWidth &&
+          document.getElementById("composer")?.getBoundingClientRect().width <=
+            window.innerWidth - 20,
         answerRequest,
         sent: window.__panelSent[0],
       };
     });
+
+    async function askBoundaryCase(question, expectedMode) {
+      const priorAnswerCount = await page.locator(".is-assistant").count();
+      await page.locator("#input").fill(question);
+      await page.locator("#send").click();
+      await page.waitForFunction(
+        ({ expectedQuestion, priorAnswerCount }) =>
+          window.__panelRequests.some(
+            (item) =>
+              item.path.endsWith("/v1/answer") &&
+              item.request?.question === expectedQuestion
+          ) &&
+          document.querySelectorAll(".is-assistant").length >
+            priorAnswerCount &&
+          !document.querySelector('[role="status"]:not([hidden])'),
+        { expectedQuestion: question, priorAnswerCount }
+      );
+      return page.evaluate((mode) => {
+        const answers = [...document.querySelectorAll(".is-assistant")];
+        const answer = answers.at(-1);
+        const attribution = answer?.querySelector(".attrib");
+        return {
+          attributedText: attribution?.textContent,
+          hasLiteralWrapper: answer?.textContent?.includes(
+            "<tldr-attribution"
+          ),
+          hasLink: !!answer?.querySelector(
+            'a, [data-streamdown="link"]'
+          ),
+          hasCodeBlock: !!answer?.querySelector(
+            '[data-streamdown="code-block"]'
+          ),
+          mode:
+            answer?.querySelector("[data-attribution-renderer]")?.getAttribute(
+              "data-attribution-renderer"
+            ) || "markdown",
+          rawText: answer?.textContent,
+          expectedMode: mode,
+        };
+      }, expectedMode);
+    }
+
+    const boundaryCases = [];
+    for (const [question, expectedText, expectedMode] of [
+      ["inline code case", "Fable 5", "plain"],
+      ["fenced code case", "Fable 5", "plain"],
+      ["link label case", "Fable 5", "plain"],
+      ["delimiter crossing case", "Fable 5** launch", "plain"],
+      ["block crossing case", "Fable 5\n\n- launch", "plain"],
+      ["entity case", "Fable 5", "plain"],
+      ["unicode markdown case", "🎓漢字", "markdown"],
+      ["unattributed code case", null, "markdown"],
+    ]) {
+      const result = await askBoundaryCase(question, expectedMode);
+      boundaryCases.push({
+        ...result,
+        good:
+          result.mode === expectedMode &&
+          (expectedText === null
+            ? result.hasCodeBlock
+            : result.attributedText === expectedText) &&
+          !result.hasLiteralWrapper &&
+          (question !== "link label case" || !result.hasLink),
+        question,
+      });
+    }
 
     const sentMessage = panelResult.sent?.[1];
     const sentOptions = panelResult.sent?.[2];
@@ -296,8 +456,17 @@ function recordDeterministic(good) {
     const good =
       panelResult.hasFixedSpans &&
       panelResult.attributedText === "Fable 5" &&
+      panelResult.hasMarkdownHeading &&
+      panelResult.hasMarkdownStrong &&
+      panelResult.hasSafeMarkdownLink &&
+      panelResult.blocksRemoteMarkdownImage &&
+      panelResult.fitsNarrowPanel &&
+      panelResult.themeLabels.some((label) => label?.startsWith("Theme: light")) &&
+      panelResult.themeLabels.some((label) => label?.startsWith("Theme: dark")) &&
+      panelResult.themeLabels.some((label) => label?.startsWith("Theme: system")) &&
       panelResult.answerRequest?.request?.max_output_tokens <= 128 &&
       /at most \d+ words/.test(panelResult.answerRequest?.request?.question || "") &&
+      boundaryCases.every((item) => item.good) &&
       sentMessage?.type === "highlight" &&
       sentMessage?.start === expectedFocus &&
       sentMessage?.end === expectedFocus + 7 &&
@@ -306,8 +475,12 @@ function recordDeterministic(good) {
       sentOptions?.frameId === 9;
     console.log("\n### Side-panel selection fixture");
     console.log(
-      `  [nonblocking seed + Unicode-safe fixed-span routing] ${good ? "PASS" : "FAIL"}` +
-        ` — frame=${sentOptions?.frameId}, source=${sentMessage?.start}`
+        `  [nonblocking seed + Unicode-safe fixed-span routing] ${good ? "PASS" : "FAIL"}` +
+        ` — frame=${sentOptions?.frameId}, source=${sentMessage?.start}, ` +
+        `markdown=${panelResult.hasMarkdownHeading}/${panelResult.hasMarkdownStrong}, ` +
+        `link/image=${panelResult.hasSafeMarkdownLink}/${panelResult.blocksRemoteMarkdownImage}, ` +
+        `boundaries=${boundaryCases.map((item) => `${item.question}:${item.mode}/${item.good}`).join(",")}, ` +
+        `narrow=${panelResult.fitsNarrowPanel}, themes=${panelResult.themeLabels.join("|")}`
     );
     recordDeterministic(good);
   } catch (error) {

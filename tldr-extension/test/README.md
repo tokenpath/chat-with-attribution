@@ -4,6 +4,14 @@ The suite has pure/unit coverage for offset math, summary policy, and background
 capture orchestration, plus Playwright integration coverage for the side panel
 and real content script.
 
+From `tldr-extension/`, build the packaged panel and run everything:
+
+```bash
+npm install
+npm run setup:test # first run on a machine
+npm test
+```
+
 ## Unit suite
 
 ```bash
@@ -18,7 +26,8 @@ This runs three files:
 - **`panel-logic.test.cjs`** checks the 24-word automatic-summary cutoff,
   adaptive word and token budgets, the deterministic “TL;DR is shorter” guard,
   code-point-safe truncation around emoji, TokenPath code-point to browser
-  UTF-16 offset conversion, and whitespace-free CJK handling.
+  UTF-16 offset conversion, whitespace-free CJK handling, and safe attribution
+  wrappers across Markdown, HTML-like text, overlaps, and emoji.
 - **`background.test.cjs`** holds `chrome.sidePanel.open()` unresolved and proves
   that capture still proceeds immediately. It also verifies exact-frame warm
   injection, retries for missing receivers and stale “page changed” responses,
@@ -27,8 +36,6 @@ This runs three files:
 ## Browser integration
 
 ```bash
-npm install        # first run
-npm run setup      # install Chromium and any vendored Linux libraries
 npm run test:e2e
 ```
 
@@ -37,9 +44,11 @@ scripts behind a small Chrome API shim, and drives selection → `contextmenu` �
 capture → fixed-span click or source-offset highlight. It covers:
 
 - side-panel bootstrap while `/credits` never resolves, adaptive summary
-  payloads, fixed server-span rendering, code-point offset conversion across a
-  LinkedIn-shaped emoji, stale-seed rejection, and routing a click to the
-  original tab and frame;
+  payloads, fixed server-span rendering inside Markdown, exact fallback for
+  inline/fenced code, link labels, delimiter/block crossings, entities, and
+  Unicode, narrow-panel layout, system/light/dark theme switching, code-point
+  offset conversion across a LinkedIn-shaped emoji, stale-seed rejection, and
+  routing a click to the original tab and frame;
 - a Gmail-shaped nested scroll pane whose complete message subtree is replaced
   between capture and highlight, including repeated text and inline elements;
 - a WhatsApp-shaped selection spanning link-preview text and a later image
