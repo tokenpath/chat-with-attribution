@@ -24,8 +24,8 @@ This runs four files:
   offsets, including synthetic block separators, headings, and exact
   sub-sentence ranges without sentence expansion.
 - **`panel-logic.test.cjs`** checks the 24-word automatic-summary cutoff,
-  adaptive word and token budgets, the deterministic “TL;DR is shorter” guard,
-  code-point-safe truncation around emoji, TokenPath code-point to browser
+  the absence of a low automatic-summary output cap, code-point-safe truncation
+  around emoji, TokenPath code-point to browser
   UTF-16 offset conversion, whitespace-free CJK handling, and the service-parity
   heatmap resolver across sparse mass, weak-token gaps, repeated source text,
   missing mass, and emoji.
@@ -50,17 +50,20 @@ scripts behind a small Chrome API shim, and drives selection → `contextmenu` �
 capture → streaming generation → cached heatmap → arbitrary answer selection →
 source-offset highlight. It covers:
 
-- side-panel bootstrap while `/credits` never resolves, adaptive summary
-  budgets, a messages-only TokenPath `/v1/generate` request, split named SSE
+- side-panel bootstrap while `/credits` never resolves, persisted Low / Medium /
+  High summary length and generation headroom, a messages-only TokenPath
+  `/v1/generate` request, split named SSE
   events, one TokenPath heatmap per answer, and reuse of that heatmap across
   different answer selections; exact raw-answer mapping across inline/fenced
   and indented code, real mouse selection in link labels, bold delimiters,
   block crossings, decoded entities, footnote definitions, hidden link
   destinations/image alt text, repeated text, and Unicode; serialized
   disconnect/key removal so a late delete cannot race a reconnect;
-  narrow-panel layout, system/light/dark theme switching, code-point offset
-  conversion across a LinkedIn-shaped emoji, stale-seed rejection, and routing
-  the resolved source range to the original tab and frame;
+  collapsed-by-default source text with accessible expansion, automatic
+  recollapse on replacement, always-visible capture errors, narrow-panel
+  layout, system/light/dark theme switching, code-point offset conversion
+  across a LinkedIn-shaped emoji, stale-seed rejection, and routing the resolved
+  source range to the original tab and frame;
 - delayed auth cleanup after a newer capture, out-of-order credit reads, rapid
   answer-selection responses, and content-script highlight ownership, proving
   stale async work cannot write into or clear newer UI state;

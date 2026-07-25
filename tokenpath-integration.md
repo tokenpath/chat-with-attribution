@@ -59,11 +59,11 @@ The request is deliberately messages-only apart from its output ceiling:
 
 ```json
 {
-  "max_output_tokens": 128,
+  "max_output_tokens": 512,
   "messages": [
     {
       "role": "system",
-      "content": "Grounding instructions plus the exact selected document"
+      "content": "Website origin, Markdown formatting guidance, and the exact selected document"
     },
     {
       "role": "user",
@@ -73,10 +73,10 @@ The request is deliberately messages-only apart from its output ceiling:
 }
 ```
 
-The system message treats the selected page text as untrusted source material,
-requires answers grounded only in it, permits Markdown, and forbids citations,
-source labels, and `[[...]]` marker syntax. Bounded prior user and assistant
-turns sit between the system message and latest question.
+The system message identifies the website origin, asks the model to answer the
+user's question, and requests concise Markdown with bullets or tables only when
+they improve readability. Bounded prior user and assistant turns sit between
+the system message and latest question.
 
 The API accepts 1–50 messages, requires the last role to be `user`, caps total
 message content at 420,000 characters, and accepts `max_output_tokens` from 16
@@ -102,17 +102,14 @@ message from `delta.text`, then uses `done.answer` as the canonical final
 string. A terminal `error` event carries the normal TokenPath error envelope.
 A new capture, navigation, or disconnect cancels in-flight generation.
 
-Automatic summaries use the existing shorter-than-source policy:
-
-- selections of 24 words or fewer skip automatic generation;
-- longer selections target 30% of the source, clamped to 12–80 words;
-- `max_output_tokens` is roughly 1.6 times that word budget, clamped to 16–128;
-- long whitespace-free CJK selections use an equivalent character budget; and
-- a deterministic display guard substitutes a bounded extractive prefix if the
-  model violates the requested limit.
-
-That guard runs before attribution, so the heatmap always indexes the answer the
-user actually sees.
+Selections of 24 words or fewer skip automatic generation; whitespace-free CJK
+uses a 48-character cutoff. Longer selections use a persisted client-side
+length preference: Low requests about 2–3 sentences with
+`max_output_tokens: 512`, Medium requests 4–6 with `768`, and High requests
+8–12 with `1024`. The ceilings leave completion headroom; prompt wording
+controls the intended length. The client does not clip or replace the result:
+the exact terminal `done.answer` is used for the UI, conversation history, and
+heatmap request.
 
 ## TokenPath heatmap
 

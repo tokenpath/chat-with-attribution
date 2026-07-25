@@ -214,11 +214,16 @@ function recordDeterministic(good) {
           end: "🎓漢字",
         },
       };
+      // Deliberately exceeds the old client-side summary budget. The terminal
+      // answer must remain byte-for-byte canonical instead of being replaced
+      // with an extractive prefix from `source`.
       const fallback = {
         answer:
-          "## Launch\n\nAfter 🎓, **Fable 5** shipped " +
-          "[worldwide](https://example.com).\n\n" +
-          "![tracking](https://tracker.invalid/pixel.png)",
+          "## Launch\n\nThe final streamed summary says **Fable 5** shipped " +
+          "[worldwide](https://example.com) after years of development, " +
+          "covering combat, quests, characters, accessibility, production " +
+          "updates, reviews, and final launch preparation.\n\n" +
+          "![tracking](https://tracker.invalid/pixel.png)\n",
         start: "Fable 5",
         end: "Fable 5",
       };
@@ -229,8 +234,8 @@ function recordDeterministic(good) {
           status,
           headers: { "Content-Type": "application/json" },
         });
-      const sseResponse = (answer) => {
-        const split = Math.max(1, Math.floor(answer.length / 2));
+      const sseResponse = (answer, streamedAnswer = answer) => {
+        const split = Math.max(1, Math.floor(streamedAnswer.length / 2));
         const encoder = new TextEncoder();
         const event = (content, finishReason = null) =>
           "event: delta\n" +
@@ -244,13 +249,13 @@ function recordDeterministic(good) {
             controller.enqueue(
               encoder.encode(
                 ": TOKENPATH PROCESSING\n\n" +
-                  event(answer.slice(0, split))
+                  event(streamedAnswer.slice(0, split))
               )
             );
             setTimeout(() => {
               controller.enqueue(
                 encoder.encode(
-                  event(answer.slice(split), "stop") +
+                  event(streamedAnswer.slice(split), "stop") +
                     "event: done\n" +
                     "data: " +
                     JSON.stringify({
@@ -277,6 +282,7 @@ function recordDeterministic(good) {
       };
 
       window.__panelSource = source;
+      window.__panelCanonicalSummary = fallback.answer;
       window.__panelSent = [];
       window.__panelRequests = [];
       const runtimeListeners = [];
@@ -335,6 +341,7 @@ function recordDeterministic(good) {
                   tabId: 42,
                   windowId: 3,
                   frameId: 9,
+                  url: "https://news.example/articles/fable-5?preview=true",
                   text: source,
                   error: null,
                 },
@@ -357,7 +364,14 @@ function recordDeterministic(good) {
               .reverse()
               .find((message) => message.role === "user")?.content || "";
           const selected = cases[question] || fallback;
-          return sseResponse(selected.answer);
+          return sseResponse(
+            selected.answer,
+            // Exercise controller finalization too: transient deltas may differ
+            // from the terminal `done.answer`, which owns the canonical result.
+            question.includes("summary of the given text")
+              ? "Temporary streamed draft."
+              : selected.answer
+          );
         }
         if (path.endsWith("/v1/attributions/heatmap")) {
           const selected = cases[request.question] || fallback;
@@ -410,6 +424,20 @@ function recordDeterministic(good) {
       };
     });
     await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("context-text")
+          ?.textContent?.includes("Waiting for a selection")
+    );
+    const pendingSourceState = await page.evaluate(() => {
+      const context = document.getElementById("context-text");
+      return {
+        hasToggle: !!document.getElementById("context-toggle"),
+        hidden: context?.hidden,
+        visible: context?.getClientRects().length === 1,
+      };
+    });
     await page.evaluate(() => {
       window.__panelRuntimeListeners[0]?.({
         type: "selection-captured",
@@ -418,10 +446,17 @@ function recordDeterministic(good) {
         tabId: 42,
         windowId: 3,
         frameId: 9,
+        url: "https://news.example/articles/fable-5?preview=true",
         text: window.__panelSource,
         error: null,
       });
-      window.__resolvePanelQuery([{ id: 42, windowId: 3 }]);
+      window.__resolvePanelQuery([
+        {
+          id: 42,
+          windowId: 3,
+          url: "https://news.example/articles/fable-5?preview=true",
+        },
+      ]);
     });
     await page.waitForFunction(
       () =>
@@ -430,6 +465,69 @@ function recordDeterministic(good) {
           ?.textContent.startsWith("Fable 5") &&
         document.querySelector('[data-answer-status="ready"]')
     );
+    const collapsedSourceState = await page.evaluate(() => {
+      const card = document.getElementById("context");
+      const context = document.getElementById("context-text");
+      const summaryLength = document.getElementById("summary-length");
+      const toggle = document.getElementById("context-toggle");
+      return {
+        ariaControls: toggle?.getAttribute("aria-controls"),
+        ariaExpanded: toggle?.getAttribute("aria-expanded"),
+        cardHeight: card?.getBoundingClientRect().height || 0,
+        contextHidden: context?.hidden,
+        contextVisible: context?.getClientRects().length === 1,
+        hasButton:
+          toggle instanceof HTMLButtonElement && toggle.type === "button",
+        summaryVisible: summaryLength?.getClientRects().length === 1,
+      };
+    });
+    await page.locator("#summary-length").focus();
+    const sourceStaysCollapsedOnSummaryFocus = await page.evaluate(
+      () =>
+        document.getElementById("context-text")?.hidden === true &&
+        document
+          .getElementById("context-toggle")
+          ?.getAttribute("aria-expanded") === "false"
+    );
+    await page.locator("#context-toggle").click();
+    const expandedSourceState = await page.evaluate(() => {
+      const context = document.getElementById("context-text");
+      const toggle = document.getElementById("context-toggle");
+      return {
+        ariaExpanded: toggle?.getAttribute("aria-expanded"),
+        context: context?.textContent || "",
+        contextHidden: context?.hidden,
+        contextVisible: context?.getClientRects().length === 1,
+      };
+    });
+    await page.locator("#context-toggle").click();
+    const sourceRecollapsed = await page.evaluate(
+      () =>
+        document.getElementById("context-text")?.hidden === true &&
+        document
+          .getElementById("context-toggle")
+          ?.getAttribute("aria-expanded") === "false"
+    );
+    if (process.env.TLDR_PANEL_SCREENSHOT_PREFIX) {
+      const setThemePreference = async (preference) => {
+        for (let index = 0; index < 4; index++) {
+          const label = await page
+            .locator("#theme-toggle")
+            .getAttribute("aria-label");
+          if (label?.startsWith(`Theme: ${preference}`)) return;
+          await page.locator("#theme-toggle").click();
+          await page.waitForTimeout(0);
+        }
+        throw new Error(`Could not switch panel to ${preference} theme`);
+      };
+      for (const theme of ["light", "dark"]) {
+        await setThemePreference(theme);
+        await page.screenshot({
+          path: `${process.env.TLDR_PANEL_SCREENSHOT_PREFIX}-${theme}.png`,
+        });
+      }
+      await setThemePreference("system");
+    }
 
     async function selectAnswerText(startText, endText = startText) {
       const before = await page.evaluate(() => window.__panelSent.length);
@@ -559,6 +657,7 @@ function recordDeterministic(good) {
       });
     }
 
+    await page.setViewportSize({ width: 320, height: 720 });
     const panelResult = await page.evaluate(async () => {
       window.__panelRuntimeListeners[0]?.({
         type: "selection-captured",
@@ -579,9 +678,61 @@ function recordDeterministic(good) {
         await new Promise((resolve) => setTimeout(resolve, 0));
         themeLabels.push(themeButton?.getAttribute("aria-label"));
       }
+      const cta = document.getElementById("tokenpath-cta");
+      const disconnect = document.getElementById("disconnect");
+      const wordmarkLink = document.querySelector(".tokenpath-wordmark-link");
+      cta?.focus();
+      const ctaRect = cta?.getBoundingClientRect();
+      const disconnectRect = disconnect?.getBoundingClientRect();
+      const wordmarkLinkRect = wordmarkLink?.getBoundingClientRect();
+      const generationRequests = window.__panelRequests.filter((item) =>
+        item.path.endsWith("/v1/generate")
+      );
+      const heatmapRequests = window.__panelRequests.filter((item) =>
+        item.path.endsWith("/v1/attributions/heatmap")
+      );
       return {
+        autoHeatmapAnswer: heatmapRequests[0]?.request?.answer,
+        canonicalSummary: window.__panelCanonicalSummary,
         context: document.getElementById("context-text").textContent,
+        displayedSummary:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        followupHistory:
+          generationRequests[1]?.request?.messages?.slice(-3) || [],
+        followupHistoryAnswer: generationRequests[1]?.request?.messages?.find(
+          (message) => message.role === "assistant"
+        )?.content,
         generation,
+        summaryLength:
+          document.getElementById("summary-length")?.value || null,
+        summaryLengthOptions: [
+          ...(document.getElementById("summary-length")?.options || []),
+        ].map((option) => option.value),
+        hasTokenPathWordmark:
+          document.querySelector(".tokenpath-wordmark")?.textContent ===
+            "tokenpath" &&
+          document.querySelector(".product-name")?.textContent === "TLDR",
+        hasTokenRail:
+          document.querySelector(".token-rail")?.getBoundingClientRect()
+            .height === 2,
+        hasUsableWordmarkTarget:
+          wordmarkLink instanceof HTMLAnchorElement &&
+          wordmarkLinkRect?.height >= 24,
+        cta:
+          cta instanceof HTMLAnchorElement
+            ? {
+                ariaLabel: cta.getAttribute("aria-label"),
+                focused: document.activeElement === cta,
+                href: cta.href,
+                rel: cta.rel,
+                target: cta.target,
+                text: cta.textContent?.trim(),
+              }
+            : null,
+        ctaDoesNotOverlapDisconnect:
+          !ctaRect ||
+          !disconnectRect ||
+          ctaRect.right + 4 <= disconnectRect.left,
         hasMarkdownHeading:
           document.querySelector('[data-streamdown="heading-2"]')?.textContent ===
           "Launch",
@@ -604,9 +755,81 @@ function recordDeterministic(good) {
           document.documentElement.scrollWidth <=
             document.documentElement.clientWidth &&
           document.getElementById("composer")?.getBoundingClientRect().width <=
-            window.innerWidth - 20,
+            window.innerWidth - 20 &&
+          document.getElementById("context")?.scrollWidth <=
+            document.getElementById("context")?.clientWidth,
       };
     });
+    await page.locator("#summary-length").selectOption("high");
+    const savedSummaryLength = await page.evaluate(() =>
+      localStorage.getItem("tldr-summary-length")
+    );
+    const generationCountBeforeOpaqueOrigin = await page.evaluate(
+      () =>
+        window.__panelRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length
+    );
+    await page.locator("#context-toggle").click();
+    const sourceExpandedBeforeReplacement = await page.evaluate(
+      () =>
+        document
+          .getElementById("context-toggle")
+          ?.getAttribute("aria-expanded") === "true"
+    );
+    await page.evaluate(() => {
+      window.__panelRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "opaque-origin-seed",
+        capturedAt: 2,
+        tabId: 42,
+        windowId: 3,
+        frameId: 9,
+        url: "file:///Users/private/document.html",
+        text: Array.from(
+          { length: 30 },
+          (_, index) => `replacement${index}`
+        ).join(" "),
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      (previousCount) =>
+        window.__panelRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length > previousCount,
+      generationCountBeforeOpaqueOrigin
+    );
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("context-text")
+          ?.textContent?.startsWith("replacement0") &&
+        document.getElementById("context-text")?.hidden === true &&
+        document
+          .getElementById("context-toggle")
+          ?.getAttribute("aria-expanded") === "false"
+    );
+    const replacementSourceCollapsed = await page.evaluate(
+      () =>
+        document.getElementById("context-text")?.hidden === true &&
+        document
+          .getElementById("context-toggle")
+          ?.getAttribute("aria-expanded") === "false"
+    );
+    const opaqueOriginGeneration = await page.evaluate(() => {
+      const generation = window.__panelRequests
+        .filter((item) => item.path.endsWith("/v1/generate"))
+        .at(-1);
+      const messages = generation?.request?.messages || [];
+      return {
+        maxOutputTokens: generation?.request?.max_output_tokens,
+        systemPrompt: messages.find((message) => message.role === "system")
+          ?.content,
+        userPrompt: messages.at(-1)?.content,
+      };
+    });
+    await page.locator("#summary-length").selectOption("low");
     await page.evaluate(() => {
       window.__delayTokenPathRemoval = true;
       document.getElementById("disconnect")?.click();
@@ -628,8 +851,41 @@ function recordDeterministic(good) {
     const disconnectSettled = await page.evaluate(
       () =>
         document.getElementById("tokenpath-key")?.disabled === false &&
-        document.getElementById("auth")?.hidden === false
+        document.getElementById("auth")?.hidden === false &&
+        document.getElementById("tokenpath-cta")?.getClientRects().length === 1
     );
+    const sourceError =
+      "The page changed before the selection could be captured.";
+    await page.evaluate((error) => {
+      window.__panelRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "source-error-seed",
+        capturedAt: 3,
+        tabId: 42,
+        windowId: 3,
+        frameId: 9,
+        url: "https://news.example/articles/fable-5?preview=true",
+        text: "",
+        error,
+      });
+    }, sourceError);
+    await page.waitForFunction(
+      (error) =>
+        document.getElementById("context-text")?.textContent === error,
+      sourceError
+    );
+    const sourceErrorState = await page.evaluate(() => {
+      const context = document.getElementById("context-text");
+      return {
+        context: context?.textContent || "",
+        hidden: context?.hidden,
+        hasToggle: !!document.getElementById("context-toggle"),
+        summaryVisible:
+          document.getElementById("summary-length")?.getClientRects().length ===
+          1,
+        visible: context?.getClientRects().length === 1,
+      };
+    });
 
     const firstMessage = firstSent?.[1];
     const firstOptions = firstSent?.[2];
@@ -637,27 +893,112 @@ function recordDeterministic(good) {
     const expectedFable = panelResult.context.lastIndexOf("Fable 5");
     const expectedWorldwide = panelResult.context.lastIndexOf("worldwide");
     const generationBody = panelResult.generation?.request || {};
+    const generationMessages = generationBody.messages || [];
+    const systemPrompt = generationMessages.find(
+      (message) => message.role === "system"
+    )?.content;
+    const summaryPrompt = generationMessages.at(-1)?.content;
     const good =
+      pendingSourceState.hasToggle === false &&
+      pendingSourceState.hidden === false &&
+      pendingSourceState.visible &&
+      collapsedSourceState.hasButton &&
+      collapsedSourceState.ariaControls === "context-text" &&
+      collapsedSourceState.ariaExpanded === "false" &&
+      collapsedSourceState.contextHidden === true &&
+      collapsedSourceState.contextVisible === false &&
+      collapsedSourceState.summaryVisible &&
+      collapsedSourceState.cardHeight <= 52 &&
+      sourceStaysCollapsedOnSummaryFocus &&
+      expandedSourceState.ariaExpanded === "true" &&
+      expandedSourceState.context === panelResult.context &&
+      expandedSourceState.contextHidden === false &&
+      expandedSourceState.contextVisible &&
+      sourceRecollapsed &&
+      sourceExpandedBeforeReplacement &&
+      replacementSourceCollapsed &&
+      sourceErrorState.context === sourceError &&
+      sourceErrorState.hidden === false &&
+      sourceErrorState.hasToggle === false &&
+      sourceErrorState.summaryVisible &&
+      sourceErrorState.visible &&
       firstHeatmapCount === 1 &&
       cachedHeatmapCount === 1 &&
       !panelResult.hasFixedSpans &&
       panelResult.hasSelectionHint &&
       panelResult.hasMarkdownHeading &&
       panelResult.hasMarkdownStrong &&
+      panelResult.displayedSummary.includes(
+        "The final streamed summary says Fable 5 shipped"
+      ) &&
+      panelResult.displayedSummary.includes("final launch preparation.") &&
+      !panelResult.displayedSummary.includes("Temporary streamed draft") &&
+      (panelResult.canonicalSummary.trim().match(/\S+/g)?.length || 0) > 16 &&
+      panelResult.autoHeatmapAnswer === panelResult.canonicalSummary &&
+      panelResult.followupHistoryAnswer === panelResult.canonicalSummary &&
+      panelResult.followupHistory[0]?.role === "user" &&
+      panelResult.followupHistory[0]?.content === summaryPrompt &&
+      panelResult.followupHistory[1]?.role === "assistant" &&
+      panelResult.followupHistory[1]?.content === panelResult.canonicalSummary &&
+      panelResult.followupHistory[2]?.role === "user" &&
+      panelResult.followupHistory[2]?.content === "inline code case" &&
       panelResult.hasSafeMarkdownLink &&
       panelResult.blocksRemoteMarkdownImage &&
       panelResult.fitsNarrowPanel &&
+      panelResult.hasTokenPathWordmark &&
+      panelResult.hasTokenRail &&
+      panelResult.hasUsableWordmarkTarget &&
+      panelResult.cta?.text === "Build with TokenPath" &&
+      panelResult.cta?.ariaLabel?.startsWith(panelResult.cta.text) &&
+      panelResult.cta?.ariaLabel?.includes("source attribution") &&
+      panelResult.cta?.focused === true &&
+      panelResult.cta?.href.startsWith(
+        "https://tokenpath.ai/?utm_source=tldr-extension"
+      ) &&
+      panelResult.cta?.target === "_blank" &&
+      panelResult.cta?.rel.includes("noopener") &&
+      panelResult.cta?.rel.includes("noreferrer") &&
+      panelResult.ctaDoesNotOverlapDisconnect &&
       disconnectPending &&
       disconnectSettled &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: light")) &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: dark")) &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: system")) &&
       Array.isArray(generationBody.messages) &&
+      systemPrompt?.startsWith(
+        "You are given some text from https://news.example. " +
+          "Answer the user's question."
+      ) &&
+      systemPrompt?.includes(
+        "- Prefer bullet points when they make the answer easier to scan."
+      ) &&
+      systemPrompt?.includes(
+        "- Use a Markdown table when the information is naturally tabular"
+      ) &&
+      !systemPrompt?.includes("/articles/fable-5") &&
+      !systemPrompt?.includes("preview=true") &&
+      !systemPrompt?.includes("citations") &&
+      !systemPrompt?.includes("source labels") &&
+      !systemPrompt?.includes("[[...]]") &&
+      opaqueOriginGeneration.systemPrompt?.startsWith(
+        "You are given some text from the current webpage. " +
+          "Answer the user's question."
+      ) &&
+      !opaqueOriginGeneration.systemPrompt?.includes("news.example") &&
+      !opaqueOriginGeneration.systemPrompt?.includes("/Users/private") &&
+      panelResult.summaryLength === "low" &&
+      panelResult.summaryLengthOptions.join(",") === "low,medium,high" &&
+      savedSummaryLength === "high" &&
+      summaryPrompt?.includes("Aim for 2-3 concise sentences") &&
+      opaqueOriginGeneration.userPrompt?.includes(
+        "Aim for 8-12 concise sentences"
+      ) &&
       !("document" in generationBody) &&
       !("question" in generationBody) &&
       !("model" in generationBody) &&
       !("stream" in generationBody) &&
-      generationBody.max_output_tokens <= 128 &&
+      generationBody.max_output_tokens === 512 &&
+      opaqueOriginGeneration.maxOutputTokens === 1024 &&
       firstMessage?.type === "highlight" &&
       firstMessage?.start === expectedFable &&
       firstMessage?.end === expectedFable + 7 &&
@@ -674,6 +1015,11 @@ function recordDeterministic(good) {
       `  [stream + one heatmap + arbitrary Markdown selections] ${good ? "PASS" : "FAIL"}` +
         ` — calls=${firstHeatmapCount}/${cachedHeatmapCount}, frame=${firstOptions?.frameId}, ` +
         `source=${firstMessage?.start}/${secondMessage?.start}, markdown=${panelResult.hasMarkdownHeading}/${panelResult.hasMarkdownStrong}, ` +
+        `canonical=${panelResult.autoHeatmapAnswer === panelResult.canonicalSummary}/${panelResult.followupHistoryAnswer === panelResult.canonicalSummary}, ` +
+        `length=${panelResult.summaryLength}/${savedSummaryLength}, output=${generationBody.max_output_tokens}/${opaqueOriginGeneration.maxOutputTokens}, ` +
+        `sourceCard=${collapsedSourceState.cardHeight.toFixed(0)}px/${expandedSourceState.contextVisible}/${replacementSourceCollapsed}/${sourceErrorState.visible}, ` +
+        `brand=${panelResult.hasTokenPathWordmark}/${panelResult.hasTokenRail}, ` +
+        `cta=${panelResult.cta?.text}/${panelResult.ctaDoesNotOverlapDisconnect}, ` +
         `boundaries=${boundaryCases.map((item) => `${item.question}:${item.good}`).join(",")}`
     );
     recordDeterministic(good);

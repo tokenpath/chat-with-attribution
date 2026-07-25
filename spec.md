@@ -12,8 +12,9 @@ page.
 ## User flow
 
 1. Select text in a page or nested frame and choose **TLDR**.
-2. The panel displays the captured text immediately, independently of API-key
-   validation or credit refresh.
+2. The panel confirms capture immediately in a compact source row,
+   independently of API-key validation or credit refresh. The full captured
+   text is collapsed by default and can be expanded on demand.
 3. For selections longer than 24 words, the panel automatically requests a
    constrained TL;DR. Shorter selections skip generation and show an
    “Already concise” note.
@@ -79,6 +80,11 @@ order—defines freshness. The panel installs its live listener before active-ta
 lookup, seed replay, or credit validation. Duplicate and stale seeds cannot
 replace a newer selection or change its highlight route.
 
+Successful captures keep the source excerpt collapsed so the answer owns the
+panel's vertical space. The row remains keyboard-expandable for inspection and
+recollapses when the captured text changes. Waiting, empty-capture, and capture
+error messages remain visible without requiring expansion.
+
 ## Canonical extraction and node map
 
 The content script walks visible text nodes intersecting the stored range. It
@@ -100,36 +106,40 @@ emoji while preserving repeated-string disambiguation.
 
 ## Summary and generation policy
 
-For a source of `N` whitespace-delimited words:
+Selections of 24 whitespace-delimited words or fewer skip the automatic model
+call. Whitespace-free CJK selections use an equivalent 48-character cutoff
+instead of being mistaken for a one-word selection.
 
-- `N <= 24`: skip the automatic model call.
-- Otherwise request at most `min(80, max(12, floor(0.3 * N)))` words.
-- Set `/v1/generate`'s `max_output_tokens` to
-  `min(128, max(16, ceil(maxWords * 1.6)))`.
+Longer selections use a locally persisted Low / Medium / High preference:
 
-The prompt asks only for the central point, with no title, label, preamble,
-explanation, or closing comment. A long whitespace-free CJK selection uses a
-proportional character budget instead. A deterministic display guard substitutes
-a bounded extractive prefix if the model's result is not strictly shorter or
-exceeds the requested budget. Document and conversation limits are counted by
-Unicode code point so truncation does not split surrogate pairs.
+- Low (default): about 2–3 concise sentences, with 512 tokens of headroom.
+- Medium: about 4–6 concise sentences, with 768 tokens of headroom.
+- High: about 8–12 concise sentences, with 1024 tokens of headroom.
+
+The prompt allows an equivalently sized list or table when structured formatting
+is clearer, and forbids a title, label, preamble, explanation, or closing
+comment. These token values are generous ceilings rather than target lengths;
+the prompt controls concision without cutting off a sentence. The terminal
+`done.answer` is preserved unchanged for display, history, and attribution.
+There is no client-side clipping or extractive fallback. Document and
+conversation limits are counted by Unicode code point so truncation does not
+split surrogate pairs.
 
 ## Streaming generation and just-in-time heatmap attribution
 
 The generator uses one streaming `POST /v1/generate` request per turn. Its body
 contains only messages and an optional `max_output_tokens`:
 
-- a system message containing the exact canonical document plus grounding and
-  display instructions;
+- a system message containing the website origin, exact canonical document,
+  and conditional Markdown formatting instructions;
 - bounded prior user and assistant turns; and
 - the latest user question.
 
 TokenPath chooses the model. Named SSE `delta` events update one stable
 assistant message; the terminal `done.answer` is canonical and may replace the
 locally accumulated deltas. Navigation, a newer capture, or disconnect cancels
-active generation. The automatic-summary display guard runs after `done` and
-before attribution, so TokenPath always indexes the exact answer that remains
-visible.
+active generation. The exact terminal answer is added to history and sent to
+attribution without client-side rewriting.
 
 Once generation finishes, the panel sends one
 `POST /v1/attributions/heatmap` request:

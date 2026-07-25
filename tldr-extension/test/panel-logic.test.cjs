@@ -10,35 +10,30 @@ for (const count of [1, 10, 24]) {
 }
 console.log("PASS: already-short selections skip model summarization");
 
-const medium = Logic.buildSummaryRequest(textWithWords(25));
-assert.strictEqual(medium.skip, false);
-assert.strictEqual(medium.maxWords, 12);
-assert.ok(medium.maxWords < medium.sourceWords);
-assert.ok(medium.maxOutputTokens >= 16 && medium.maxOutputTokens <= 128);
-assert.match(medium.prompt, /at most 12 words/);
+const defaultSummary = Logic.buildSummaryRequest(textWithWords(25));
+const lowSummary = Logic.buildSummaryRequest(textWithWords(25), "low");
+const mediumSummary = Logic.buildSummaryRequest(textWithWords(25), "medium");
+const highSummary = Logic.buildSummaryRequest(textWithWords(25), "high");
+assert.deepStrictEqual(defaultSummary, lowSummary);
+assert.strictEqual(lowSummary.skip, false);
+assert.strictEqual(lowSummary.maxOutputTokens, 512);
+assert.strictEqual(mediumSummary.maxOutputTokens, 768);
+assert.strictEqual(highSummary.maxOutputTokens, 1024);
+assert.match(lowSummary.prompt, /Aim for 2-3 concise sentences/);
+assert.match(mediumSummary.prompt, /Aim for 4-6 concise sentences/);
+assert.match(highSummary.prompt, /Aim for 8-12 concise sentences/);
+for (const request of [lowSummary, mediumSummary, highSummary]) {
+  assert.match(request.prompt, /Finish the summary cleanly/);
+  assert.match(request.prompt, /Do not add a title/);
+}
 
 const large = Logic.buildSummaryRequest(textWithWords(500));
-assert.strictEqual(large.maxWords, 80);
-assert.strictEqual(large.maxOutputTokens, 128);
-console.log("PASS: summary word and token budgets scale and cap");
-
-assert.strictEqual(
-  Logic.enforceShorterSummary("one two three four", "one two three"),
-  "one two…"
-);
-assert.strictEqual(
-  Logic.enforceShorterSummary("short answer", "this source has several more words"),
-  "short answer"
-);
-assert.ok(
-  Logic.enforceShorterSummary(textWithWords(30), textWithWords(25), 12)
-    .match(/\S+/g).length < 25
-);
-console.log("PASS: displayed TL;DR is always strictly shorter than its source");
+assert.strictEqual(large.prompt, lowSummary.prompt);
+console.log("PASS: low/medium/high summary prompts and headroom stay distinct");
 
 const cjk = Logic.buildSummaryRequest("这是一个用于验证没有空格的长文本摘要行为并确保模型不会返回比原始选择更长内容的测试段落它还包含更多字符以超过短文本阈值");
 assert.strictEqual(cjk.skip, false);
-assert.match(cjk.prompt, /characters/);
+assert.strictEqual(cjk.prompt, lowSummary.prompt);
 console.log("PASS: long CJK selections do not bypass summarization");
 
 assert.strictEqual(Logic.truncateCodePoints("ab🙂cd", 3), "ab🙂");

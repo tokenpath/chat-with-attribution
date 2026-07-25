@@ -25,10 +25,11 @@ On first use, paste a TokenPath API key from
 streaming generation and attribution; no separate model-provider key is needed.
 
 Selections of 24 words or fewer are already concise, so the extension skips the
-automatic model summary. Longer selections get an adaptive TL;DR prompt and
-output-token ceiling that scale with the source while remaining shorter than it.
-Long CJK text uses an equivalent character budget instead of being mistaken for
-a one-word selection.
+automatic model summary. A persistent Low / Medium / High control changes both
+the prompt's requested detail and generous output headroom (512 / 768 / 1024
+tokens), so length is directed by the model rather than enforced with a
+sentence-cutting cap. Low is the default. Long CJK text uses a character-aware
+cutoff instead of being mistaken for a one-word selection.
 
 ## How it works
 

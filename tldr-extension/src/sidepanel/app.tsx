@@ -1,16 +1,17 @@
 import {
+  ChevronRightIcon,
   CircleAlertIcon,
   EraserIcon,
   ExternalLinkIcon,
   KeyRoundIcon,
   MonitorIcon,
   MoonIcon,
-  SparklesIcon,
   SunIcon,
   TextSelectIcon,
 } from "lucide-react";
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -39,9 +40,22 @@ import {
   type PanelController,
   type PanelMessage,
   type PanelSnapshot,
+  type SummaryLength,
 } from "@/controller";
 import { answerRangeFromSelection } from "@/answer-selection";
 import { cn } from "@/lib/utils";
+
+const TOKENPATH_DEVELOPER_URL =
+  "https://tokenpath.ai/?utm_source=tldr-extension&utm_medium=product&utm_campaign=developer_cta";
+
+function TokenPathWordmark() {
+  return (
+    <span aria-hidden="true" className="tokenpath-wordmark">
+      <span className="tokenpath-wordmark-token">token</span>
+      <span className="tokenpath-wordmark-path">path</span>
+    </span>
+  );
+}
 
 const ANSWER_COMPONENTS = {
   img: () => null,
@@ -245,20 +259,35 @@ export function App({ controller }: { controller: PanelController }) {
     controller.getSnapshot
   );
   const [input, setInput] = useState("");
+  const [sourceExpanded, setSourceExpanded] = useState(false);
   const [tokenPathKey, setTokenPathKey] = useState("");
   const hasStreamingAnswer = snapshot.messages.some(
     (message) =>
       message.answerStatus === "streaming" && Boolean(message.text)
   );
+  const sourceTextVisible = !snapshot.hasContext || sourceExpanded;
+
+  useEffect(() => {
+    setSourceExpanded(false);
+  }, [snapshot.contextText, snapshot.hasContext]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-border/80 px-3.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="flex size-6 items-center justify-center rounded-md bg-foreground text-background shadow-xs">
-            <SparklesIcon className="size-3.5" />
-          </div>
-          <span className="text-sm font-semibold tracking-[-0.015em]">TLDR</span>
+      <header className="panel-header flex h-12 shrink-0 items-center justify-between px-3.5">
+        <div className="brand-lockup">
+          <a
+            aria-label="Visit TokenPath (opens in a new tab)"
+            className="tokenpath-wordmark-link"
+            href="https://tokenpath.ai"
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            <TokenPathWordmark />
+          </a>
+          <span aria-hidden="true" className="brand-divider">
+            /
+          </span>
+          <span className="product-name">TLDR</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span
@@ -292,14 +321,15 @@ export function App({ controller }: { controller: PanelController }) {
           </Button>
         </div>
       </header>
+      <div aria-hidden="true" className="token-rail" />
 
       <section
-        className="border-b border-border bg-muted/35 p-3"
+        className="auth-panel border-b border-border p-3"
         hidden={snapshot.connected}
         id="auth"
       >
         <div className="mb-2.5 flex items-start gap-2.5">
-          <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground">
+          <div className="auth-key-icon mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg border">
             <KeyRoundIcon className="size-3.5" />
           </div>
           <div className="min-w-0">
@@ -371,35 +401,89 @@ export function App({ controller }: { controller: PanelController }) {
         </div>
         <div className="mt-2.5 text-[11px] leading-4 text-muted-foreground">
           <div>
-            The selection, questions, and generated answer are sent to
-            TokenPath.
+            The website origin, selection, questions, and generated answer are
+            sent to TokenPath.
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
             <a
-              className="font-medium text-primary hover:underline"
+              className="brand-link font-medium"
               href="https://platform.tokenpath.ai"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               target="_blank"
             >
-              TokenPath key →
+              Get a free API key ↗
             </a>
           </div>
         </div>
       </section>
 
       <section
-        aria-label="Selected page text; focus to expand"
-        className="source-card shrink-0"
+        aria-label="Selected page text"
+        className={cn(
+          "source-card shrink-0",
+          snapshot.hasContext && !sourceExpanded && "is-collapsed",
+          sourceExpanded && "is-expanded"
+        )}
         id="context"
-        tabIndex={snapshot.hasContext ? 0 : -1}
       >
-        <div className="mb-1.5 flex items-center justify-between gap-2">
-          <div className="source-label">Selected from page</div>
-          {snapshot.hasContext && (
-            <span className="text-[10px] text-muted-foreground">Source</span>
+        <div
+          className={cn(
+            "source-card-header flex items-center justify-between gap-2",
+            sourceTextVisible && "mb-1.5"
           )}
+        >
+          {snapshot.hasContext ? (
+            <button
+              aria-label={
+                sourceExpanded
+                  ? "Hide selected page text"
+                  : "Show selected page text"
+              }
+              aria-controls="context-text"
+              aria-expanded={sourceExpanded}
+              className="source-toggle"
+              id="context-toggle"
+              onClick={() => setSourceExpanded((expanded) => !expanded)}
+              title={
+                sourceExpanded
+                  ? "Hide selected page text"
+                  : "Show selected page text"
+              }
+              type="button"
+            >
+              <ChevronRightIcon aria-hidden="true" />
+              <span className="source-label">Selected from page</span>
+            </button>
+          ) : (
+            <div className="source-label">Selected from page</div>
+          )}
+          <label
+            className="summary-length-control"
+            title="Applies to the next TLDR; also updates a summary that is still waiting to start"
+          >
+            <span>Summary</span>
+            <select
+              aria-label="Automatic summary length"
+              className="summary-length-select"
+              id="summary-length"
+              onChange={(event) =>
+                controller.setSummaryLength(
+                  event.currentTarget.value as SummaryLength
+                )
+              }
+              value={snapshot.summaryLength}
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
         </div>
-        <div className="context-text" id="context-text">
+        <div
+          className="context-text"
+          hidden={!sourceTextVisible}
+          id="context-text"
+        >
           {snapshot.contextText}
         </div>
       </section>
@@ -461,22 +545,21 @@ export function App({ controller }: { controller: PanelController }) {
           </PromptInputFooter>
         </PromptInput>
 
-        <footer className="mt-2 flex min-h-4 items-center justify-center gap-1.5 text-[10.5px] text-muted-foreground">
-          <span>
-            Powered by{" "}
-            <a
-              className="font-medium text-primary hover:underline"
-              href="https://tokenpath.ai"
-              rel="noreferrer"
-              target="_blank"
-            >
-              TokenPath
-            </a>
-          </span>
-          <span aria-hidden="true">·</span>
-          <span>token-level attribution</span>
+        <footer className="product-footer">
+          <a
+            aria-label="Build with TokenPath — add source attribution to your app (opens in a new tab)"
+            className="developer-cta"
+            href={TOKENPATH_DEVELOPER_URL}
+            id="tokenpath-cta"
+            rel="noopener noreferrer"
+            target="_blank"
+            title="Add exact source attribution to your AI app with TokenPath"
+          >
+            <span>Build with TokenPath</span>
+            <ExternalLinkIcon aria-hidden="true" />
+          </a>
           <button
-            className="ml-1 underline underline-offset-2 hover:text-foreground"
+            className="disconnect-button"
             hidden={!snapshot.tokenPathReady}
             id="disconnect"
             onClick={() => void controller.disconnect()}

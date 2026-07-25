@@ -2,6 +2,34 @@
 
 const TldrPanelLogic = (() => {
   const SHORT_SELECTION_WORDS = 24;
+  const SUMMARY_LENGTHS = {
+    low: {
+      maxOutputTokens: 512,
+      prompt:
+        "Write a brief summary of the given text. Aim for 2-3 concise " +
+        "sentences, or an equivalently compact list or table when structured " +
+        "formatting is clearer. Include only the most important points.",
+    },
+    medium: {
+      maxOutputTokens: 768,
+      prompt:
+        "Write a moderately detailed summary of the given text. Aim for 4-6 " +
+        "concise sentences, or an equivalently sized list or table when " +
+        "structured formatting is clearer. Cover the main point and important " +
+        "supporting details.",
+    },
+    high: {
+      maxOutputTokens: 1024,
+      prompt:
+        "Write a detailed summary of the given text. Aim for 8-12 concise " +
+        "sentences, or an equivalently detailed list or table when structured " +
+        "formatting is clearer. Cover the important claims, supporting " +
+        "details, qualifications, and conclusions.",
+    },
+  };
+  const SUMMARY_PROMPT_SUFFIX =
+    " Finish the summary cleanly. Do not add a title, a 'TL;DR:' label, a " +
+    "preamble, an explanation, or a closing comment.";
 
   function words(text) {
     return String(text || "").trim().match(/\S+/g) || [];
@@ -23,76 +51,24 @@ const TldrPanelLogic = (() => {
     };
   }
 
-  function buildSummaryRequest(text) {
+  function buildSummaryRequest(text, length = "low") {
     const source = measure(text);
     const shortLimit = source.characterMode ? 48 : SHORT_SELECTION_WORDS;
     if (source.units <= shortLimit) {
-      return {
-        skip: true,
-        sourceWords: source.wordList.length,
-        sourceUnits: source.units,
-      };
+      return { skip: true };
     }
 
-    const maxUnits = source.characterMode
-      ? Math.min(160, Math.max(24, Math.floor(source.units * 0.3)))
-      : Math.min(80, Math.max(12, Math.floor(source.units * 0.3)));
-    const maxOutputTokens = Math.min(
-      128,
-      Math.max(16, Math.ceil(maxUnits * (source.characterMode ? 2 : 1.6)))
-    );
-    const unitLabel = source.characterMode ? "characters" : "words";
+    const config =
+      length === "medium"
+        ? SUMMARY_LENGTHS.medium
+        : length === "high"
+          ? SUMMARY_LENGTHS.high
+          : SUMMARY_LENGTHS.low;
     return {
       skip: false,
-      sourceWords: source.wordList.length,
-      sourceUnits: source.units,
-      maxWords: source.characterMode ? null : maxUnits,
-      maxUnits,
-      maxOutputTokens,
-      prompt:
-        "Write only a TL;DR of the selected text in at most " +
-        maxUnits +
-        " " +
-        unitLabel +
-        ". It must be shorter than the selection. Preserve only the " +
-        "central point. Do not add a title, a 'TL;DR:' label, a preamble, " +
-        "an explanation, or a closing comment.",
+      maxOutputTokens: config.maxOutputTokens,
+      prompt: config.prompt + SUMMARY_PROMPT_SUFFIX,
     };
-  }
-
-  // The prompt and token ceiling should normally enforce this. This final
-  // guard makes the user-facing contract deterministic if a model ignores
-  // them: a TL;DR is always bounded and visibly shorter than its source.
-  function enforceShorterSummary(answer, source, requestedMaxUnits = null) {
-    const cleanAnswer = String(answer || "").trim();
-    const sourceMeasure = measure(source);
-    const answerMeasure = measure(cleanAnswer);
-    const answerUnits = sourceMeasure.characterMode
-      ? answerMeasure.codePoints.length
-      : answerMeasure.wordList.length;
-    const budget = Math.max(
-      1,
-      Math.min(
-        Number.isFinite(requestedMaxUnits)
-          ? Math.trunc(requestedMaxUnits)
-          : Math.max(1, sourceMeasure.units - 1),
-        Math.max(1, sourceMeasure.units - 1)
-      )
-    );
-    if (
-      cleanAnswer &&
-      answerUnits < sourceMeasure.units &&
-      answerUnits <= budget &&
-      answerMeasure.codePoints.length < sourceMeasure.codePoints.length
-    ) {
-      return cleanAnswer;
-    }
-
-    // Deterministic extractive fallback: even if the model ignores both the
-    // prompt and token ceiling, never render the whole source as its own TL;DR.
-    return sourceMeasure.characterMode
-      ? sourceMeasure.codePoints.slice(0, budget).join("") + "…"
-      : sourceMeasure.wordList.slice(0, budget).join(" ") + "…";
   }
 
   // TokenPath's limits use Unicode code points; String#slice uses UTF-16 code
@@ -341,7 +317,6 @@ const TldrPanelLogic = (() => {
   return {
     SHORT_SELECTION_WORDS,
     buildSummaryRequest,
-    enforceShorterSummary,
     truncateCodePoints,
     codePointToUtf16Map,
     codePointOffsetToUtf16,

@@ -9,21 +9,17 @@ interface TldrHeatmap {
 
 interface TldrSummaryRequest {
   skip: boolean;
-  sourceWords: number;
-  sourceUnits: number;
-  maxWords?: number | null;
-  maxUnits?: number;
   maxOutputTokens?: number;
   prompt?: string;
 }
 
+type TldrSummaryLength = "low" | "medium" | "high";
+
 interface TldrPanelLogicApi {
-  buildSummaryRequest(text: string): TldrSummaryRequest;
-  enforceShorterSummary(
-    answer: string,
-    source: string,
-    requestedMaxUnits?: number | null
-  ): string;
+  buildSummaryRequest(
+    text: string,
+    length?: TldrSummaryLength
+  ): TldrSummaryRequest;
   truncateCodePoints(text: string, maxCodePoints: number): string;
   resolveHeatmapSpan(
     heatmap: TldrHeatmap,

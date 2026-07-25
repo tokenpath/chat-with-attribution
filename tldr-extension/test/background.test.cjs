@@ -103,7 +103,15 @@ assert.ok(clickHandler, "context-menu listener registered");
   const seed = storedObject["seed:42"];
   assert.strictEqual(seed.frameId, 7);
   assert.strictEqual(seed.windowId, 3);
+  assert.strictEqual(seed.url, "https://mail.google.com/mail/u/0/");
   assert.ok(seed.captureId);
+  const runtimeCapture = calls.find(
+    ([name, message]) =>
+      name === "runtime.sendMessage" &&
+      message?.type === "selection-captured" &&
+      message?.captureId === seed.captureId
+  )?.[1];
+  assert.strictEqual(runtimeCapture?.url, seed.url);
   console.log("PASS: selection capture does not wait for side-panel opening");
   console.log("PASS: Gmail/nested-frame capture preserves the originating frame");
   console.log("PASS: content injection begins before panel focus can hide selection");
