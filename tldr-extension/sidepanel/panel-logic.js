@@ -131,60 +131,211 @@ const TldrPanelLogic = (() => {
     return map[index];
   }
 
-  function escapeHtmlText(text) {
-    return String(text || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-  }
-
-  function escapeReservedAttributionTags(text) {
-    return String(text || "").replace(
-      /<(\/?)tldr-attribution\b/gi,
-      "&lt;$1tldr-attribution"
-    );
-  }
-
-  // Streamdown parses Markdown before it renders the answer. Inject a
-  // sanitizer-whitelisted custom element around each server-provided answer
-  // span so Markdown can be rendered without losing TokenPath's original
-  // source bounds. Attributed content is escaped and rendered literally; this
-  // prevents answer text from breaking out of the custom element.
-  function annotateMarkdownAttributions(answer, attributions) {
-    const text = String(answer || "");
-    const sorted = [...(Array.isArray(attributions) ? attributions : [])]
-      .filter(
-        (item) =>
-          Number.isInteger(item.answerStart) &&
-          Number.isInteger(item.answerEnd) &&
-          item.answerStart >= 0 &&
-          item.answerEnd > item.answerStart &&
-          item.answerStart < text.length &&
-          Number.isFinite(item.sourceStart) &&
-          Number.isFinite(item.sourceEnd) &&
-          item.sourceEnd > item.sourceStart
-      )
-      .sort((a, b) => a.answerStart - b.answerStart);
-
-    let cursor = 0;
-    let markdown = "";
-    for (const item of sorted) {
-      if (item.answerStart < cursor) continue;
-      const answerEnd = Math.min(item.answerEnd, text.length);
-      markdown += escapeReservedAttributionTags(
-        text.slice(cursor, item.answerStart)
-      );
-      const confidence = Number.isFinite(item.confidence)
-        ? ` confidence="${Number(item.confidence)}"`
-        : "";
-      markdown +=
-        `<tldr-attribution source_start="${Number(item.sourceStart)}"` +
-        ` source_end="${Number(item.sourceEnd)}"${confidence}>` +
-        escapeHtmlText(text.slice(item.answerStart, answerEnd)) +
-        "</tldr-attribution>";
-      cursor = answerEnd;
+  function answerTokensOverlapping(answerOffsets, spanStart, spanEnd) {
+    const overlapping = new Set();
+    for (let index = 0; index < answerOffsets.length; index++) {
+      const [tokenStart, tokenEnd] = answerOffsets[index];
+      if (tokenEnd > spanStart && tokenStart < spanEnd) {
+        overlapping.add(index);
+      }
     }
-    return markdown + escapeReservedAttributionTags(text.slice(cursor));
+    return overlapping;
+  }
+
+  function isAlphaNumeric(character) {
+    return /[\p{L}\p{N}]/u.test(character || "");
+  }
+
+  function codePointBefore(text, offset) {
+    if (offset <= 0) return "";
+    let start = offset - 1;
+    if (
+      /[\uDC00-\uDFFF]/.test(text[start]) &&
+      start > 0 &&
+      /[\uD800-\uDBFF]/.test(text[start - 1])
+    ) {
+      start--;
+    }
+    return text.slice(start, offset);
+  }
+
+  function verbatimSnap(
+    answerSpanText,
+    document,
+    attentionStart,
+    attentionEnd,
+    minLength = 2
+  ) {
+    const needle = String(answerSpanText || "").trim();
+    if (Array.from(needle).length < minLength) return null;
+
+    const center = (attentionStart + attentionEnd) / 2;
+    let best = null;
+    let bestDistance = Infinity;
+    let index = document.indexOf(needle);
+    while (index !== -1) {
+      const matchStart = index;
+      const matchEnd = index + needle.length;
+      if (matchEnd > attentionStart && matchStart < attentionEnd) {
+        const distance = Math.abs((matchStart + matchEnd) / 2 - center);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = { start: matchStart, end: matchEnd };
+        }
+      }
+      index = document.indexOf(needle, index + 1);
+    }
+    return best;
+  }
+
+  // Browser port of tokenpath/service_backend/spans.py::resolve_span.
+  //
+  // The heatmap offset tables have already been converted from TokenPath's
+  // Unicode code-point coordinates to browser-native UTF-16 coordinates by
+  // the API adapter. Keeping the service's aggregation and span-growth rules
+  // here means every answer selection can be resolved locally from one cached
+  // heatmap without making another attribution request.
+  function resolveHeatmapSpan(
+    heatmap,
+    spanStart,
+    spanEnd,
+    document = null,
+    answer = null,
+    relativeThreshold = 0.25,
+    maxGap = 3
+  ) {
+    if (
+      !heatmap ||
+      !Number.isInteger(spanStart) ||
+      !Number.isInteger(spanEnd) ||
+      spanStart < 0 ||
+      spanEnd <= spanStart
+    ) {
+      return null;
+    }
+
+    const answerOffsets = heatmap.answerOffsets || [];
+    const documentOffsets = heatmap.documentOffsets || [];
+    const documentTokenCount = documentOffsets.length;
+    const answerTokens = answerTokensOverlapping(
+      answerOffsets,
+      spanStart,
+      spanEnd
+    );
+    if (answerTokens.size === 0 || documentTokenCount === 0) return null;
+
+    const contributions = [];
+    const documentScores = new Map();
+    const entryCount = Math.min(
+      heatmap.row?.length || 0,
+      heatmap.col?.length || 0,
+      heatmap.data?.length || 0
+    );
+    for (let index = 0; index < entryCount; index++) {
+      const answerIndex = heatmap.row[index];
+      const documentIndex = heatmap.col[index];
+      const mass = heatmap.data[index];
+      if (
+        !Number.isFinite(mass) ||
+        mass <= 0 ||
+        !answerTokens.has(answerIndex) ||
+        !Number.isInteger(documentIndex) ||
+        documentIndex < 0 ||
+        documentIndex >= documentTokenCount
+      ) {
+        continue;
+      }
+      contributions.push([answerIndex, documentIndex, mass]);
+      documentScores.set(
+        documentIndex,
+        (documentScores.get(documentIndex) || 0) + mass
+      );
+    }
+    if (documentScores.size === 0) return null;
+
+    let peak = null;
+    let peakScore = -Infinity;
+    for (const [token, score] of documentScores) {
+      if (score > peakScore) {
+        peak = token;
+        peakScore = score;
+      }
+    }
+    if (peak == null || !Number.isFinite(peakScore) || peakScore <= 0) {
+      return null;
+    }
+
+    const threshold = peakScore * relativeThreshold;
+    const aboveThreshold = (token) =>
+      token >= 0 &&
+      token < documentTokenCount &&
+      (documentScores.get(token) || 0) >= threshold;
+    const grow = (anchor, step) => {
+      let edge = anchor;
+      while (true) {
+        let jump = null;
+        for (let distance = 1; distance <= maxGap + 1; distance++) {
+          const candidate = edge + step * distance;
+          if (aboveThreshold(candidate)) {
+            jump = candidate;
+            break;
+          }
+        }
+        if (jump == null) return edge;
+        edge = jump;
+      }
+    };
+
+    const startToken = grow(peak, -1);
+    const endToken = grow(peak, 1);
+    const perTokenMass = new Map();
+    for (const [answerIndex, documentIndex, mass] of contributions) {
+      if (documentIndex < startToken || documentIndex > endToken) continue;
+      perTokenMass.set(
+        answerIndex,
+        (perTokenMass.get(answerIndex) || 0) + mass
+      );
+    }
+    let confidence = 0;
+    for (const mass of perTokenMass.values()) {
+      confidence = Math.max(confidence, mass);
+    }
+
+    let charStart = documentOffsets[startToken][0];
+    let charEnd = documentOffsets[endToken][1];
+    if (typeof document === "string") {
+      while (charStart > 0) {
+        const character = codePointBefore(document, charStart);
+        if (!isAlphaNumeric(character)) break;
+        charStart -= character.length;
+      }
+      while (charEnd < document.length) {
+        const character = String.fromCodePoint(
+          document.codePointAt(charEnd) || 0
+        );
+        if (!isAlphaNumeric(character)) break;
+        charEnd += character.length;
+      }
+
+      if (typeof answer === "string") {
+        const verbatim = verbatimSnap(
+          answer.slice(spanStart, spanEnd),
+          document,
+          charStart,
+          charEnd
+        );
+        if (verbatim) {
+          charStart = verbatim.start;
+          charEnd = verbatim.end;
+        }
+      }
+    }
+
+    return {
+      start: charStart,
+      end: charEnd,
+      confidence: Math.round(confidence * 1_000_000) / 1_000_000,
+    };
   }
 
   return {
@@ -194,7 +345,7 @@ const TldrPanelLogic = (() => {
     truncateCodePoints,
     codePointToUtf16Map,
     codePointOffsetToUtf16,
-    annotateMarkdownAttributions,
+    resolveHeatmapSpan,
   };
 })();
 

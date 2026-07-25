@@ -18,7 +18,7 @@ npm test
 npm run test:unit
 ```
 
-This runs three files:
+This runs four files:
 
 - **`roundtrip.test.cjs`** checks canonical extraction offsets against raw DOM
   offsets, including synthetic block separators, headings, and exact
@@ -26,8 +26,14 @@ This runs three files:
 - **`panel-logic.test.cjs`** checks the 24-word automatic-summary cutoff,
   adaptive word and token budgets, the deterministic “TL;DR is shorter” guard,
   code-point-safe truncation around emoji, TokenPath code-point to browser
-  UTF-16 offset conversion, whitespace-free CJK handling, and safe attribution
-  wrappers across Markdown, HTML-like text, overlaps, and emoji.
+  UTF-16 offset conversion, whitespace-free CJK handling, and the service-parity
+  heatmap resolver across sparse mass, weak-token gaps, repeated source text,
+  missing mass, and emoji.
+- **`api-clients.test.cjs`** exercises TokenPath's named generation SSE across
+  byte-fragmented Unicode, terminal and error events, malformed/incomplete
+  streams, caller cancellation, canonical `done.answer`, HTTP error details,
+  heatmap validation, code-point offset conversion, and cancellation or timeout
+  while a response body is still arriving.
 - **`background.test.cjs`** holds `chrome.sidePanel.open()` unresolved and proves
   that capture still proceeds immediately. It also verifies exact-frame warm
   injection, retries for missing receivers and stale “page changed” responses,
@@ -41,14 +47,23 @@ npm run test:e2e
 
 `e2e.mjs` loads representative fixtures and public pages, injects the real
 scripts behind a small Chrome API shim, and drives selection → `contextmenu` →
-capture → fixed-span click or source-offset highlight. It covers:
+capture → streaming generation → cached heatmap → arbitrary answer selection →
+source-offset highlight. It covers:
 
 - side-panel bootstrap while `/credits` never resolves, adaptive summary
-  payloads, fixed server-span rendering inside Markdown, exact fallback for
-  inline/fenced code, link labels, delimiter/block crossings, entities, and
-  Unicode, narrow-panel layout, system/light/dark theme switching, code-point
-  offset conversion across a LinkedIn-shaped emoji, stale-seed rejection, and
-  routing a click to the original tab and frame;
+  budgets, a messages-only TokenPath `/v1/generate` request, split named SSE
+  events, one TokenPath heatmap per answer, and reuse of that heatmap across
+  different answer selections; exact raw-answer mapping across inline/fenced
+  and indented code, real mouse selection in link labels, bold delimiters,
+  block crossings, decoded entities, footnote definitions, hidden link
+  destinations/image alt text, repeated text, and Unicode; serialized
+  disconnect/key removal so a late delete cannot race a reconnect;
+  narrow-panel layout, system/light/dark theme switching, code-point offset
+  conversion across a LinkedIn-shaped emoji, stale-seed rejection, and routing
+  the resolved source range to the original tab and frame;
+- delayed auth cleanup after a newer capture, out-of-order credit reads, rapid
+  answer-selection responses, and content-script highlight ownership, proving
+  stale async work cannot write into or clear newer UI state;
 - a Gmail-shaped nested scroll pane whose complete message subtree is replaced
   between capture and highlight, including repeated text and inline elements;
 - a WhatsApp-shaped selection spanning link-preview text and a later image
@@ -73,7 +88,7 @@ capture → fixed-span click or source-offset highlight. It covers:
 - rejection after query/hash route identity changes;
 - exact Range capture when Chrome's flattened selection hint omits an invisible
   character, followed by clearing the native page selection without losing
-  fixed-span highlighting;
+  later heatmap-resolved highlighting;
 - a Substack-shaped late-injection selection spanning header and body, including
   CSS-uppercase dates, `user-select:none` reaction controls, and a visibly
   rendered `aria-hidden` ancestor;
@@ -103,7 +118,8 @@ available, `npx playwright install-deps chromium` is the standard alternative.
 
 The tests mock rather than launch a packaged Chrome extension, so a final
 load-unpacked pass should verify the real context menu, side panel, TokenPath
-HTTP and authentication flow, clickable fixed attribution spans, nested Gmail
+HTTP/authentication flow, streamed Markdown, selecting arbitrary answer text to
+navigate, repeated selections without new attribution calls, nested Gmail
 scrolling, and detached-DOM unique remapping. Restricted pages such as
 `chrome://` remain unavailable to content scripts by design.
 

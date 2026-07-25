@@ -137,23 +137,153 @@ function recordDeterministic(good) {
   }
 }
 
-// Side-panel regression: a never-resolving credits refresh must not hold the
-// seed behind "Waiting…"; fixed attribution spans route to the original frame.
-// The LinkedIn-shaped emoji also verifies that TokenPath's code-point answer
-// and source offsets become browser-native UTF-16 offsets at the API boundary.
+// Side-panel regression: TokenPath streams a Markdown answer, is called once
+// for the whole-answer heatmap, and resolves every later answer selection
+// locally from that cache before routing to the original page frame.
 {
   const page = await browser.newPage();
   try {
     await page.setViewportSize({ width: 360, height: 720 });
     await page.addInitScript(() => {
       const source =
-        "Fable 5 appeared during the first preview with early concept art and an initial cast reveal 🎓. " +
-        "Later, after several production updates and a new showcase, Fable 5 shipped worldwide to players across every supported market.";
+        "Fable 5 appeared during the first preview with early concept art, an initial cast reveal, and a long discussion of the team's ambitions 🎓. " +
+        "Several years of production updates followed while the studio refined combat, quests, characters, and accessibility across every supported platform. " +
+        "Later, after a new showcase, Fable 5 shipped worldwide to players and reviewers.";
+      const cases = {
+        "inline code case": {
+          answer: "Inline: use `Fable 5` now.",
+          start: "Fable 5",
+          end: "Fable 5",
+        },
+        "fenced code case": {
+          answer: "```txt\nFable 5\n```",
+          start: "Fable 5",
+          end: "Fable 5",
+        },
+        "indented code case": {
+          answer: "Example:\n\n    Fable 5\n    launch complete",
+          start: "Fable 5",
+          end: "launch",
+        },
+        "link label case": {
+          answer: "[Fable 5](https://example.com)",
+          start: "Fable 5",
+          end: "Fable 5",
+        },
+        "delimiter crossing case": {
+          answer: "**Fable 5** launch complete",
+          start: "Fable 5",
+          end: "launch",
+        },
+        "block crossing case": {
+          answer: "Fable 5\n\n- launch complete",
+          start: "Fable 5",
+          end: "launch",
+        },
+        "entity case": {
+          answer: "Fable 5 &amp; launch",
+          start: "Fable 5",
+          end: "launch",
+        },
+        "entity exact case": {
+          answer: "Symbol: &copy;",
+          start: "&copy;",
+          end: "&copy;",
+        },
+        "hidden link destination case": {
+          answer:
+            "[details](https://example.com/Fable%205) followed by Fable 5",
+          start: "Fable 5",
+          end: "Fable 5",
+          occurrence: "last",
+        },
+        "hidden image alt case": {
+          answer: "![Fable 5](https://example.com/image.png)\n\nFable 5",
+          start: "Fable 5",
+          end: "Fable 5",
+          occurrence: "last",
+        },
+        "footnote definition case": {
+          answer: "Claim[^1]\n\n[^1]: Fable 5 note 1 detail",
+          start: "Fable 5",
+          end: "detail",
+        },
+        "unicode markdown case": {
+          answer: "Result: **🎓漢字** shipped.",
+          start: "🎓漢字",
+          end: "🎓漢字",
+        },
+      };
+      const fallback = {
+        answer:
+          "## Launch\n\nAfter 🎓, **Fable 5** shipped " +
+          "[worldwide](https://example.com).\n\n" +
+          "![tracking](https://tracker.invalid/pixel.png)",
+        start: "Fable 5",
+        end: "Fable 5",
+      };
+      const codePointOffset = (text, utf16Offset) =>
+        Array.from(text.slice(0, utf16Offset)).length;
+      const responseJson = (body, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      const sseResponse = (answer) => {
+        const split = Math.max(1, Math.floor(answer.length / 2));
+        const encoder = new TextEncoder();
+        const event = (content, finishReason = null) =>
+          "event: delta\n" +
+          "data: " +
+          JSON.stringify({
+            text: content,
+          }) +
+          "\n\n";
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                ": TOKENPATH PROCESSING\n\n" +
+                  event(answer.slice(0, split))
+              )
+            );
+            setTimeout(() => {
+              controller.enqueue(
+                encoder.encode(
+                  event(answer.slice(split), "stop") +
+                    "event: done\n" +
+                    "data: " +
+                    JSON.stringify({
+                      answer,
+                      model: "google/gemini-3.1-flash-lite",
+                      usage: {
+                        input_tokens: 42,
+                        output_tokens: 12,
+                        billed_tokens: 39,
+                      },
+                      credits_remaining: 99_999_961,
+                    }) +
+                    "\n\n"
+                )
+              );
+              controller.close();
+            }, 12);
+          },
+        });
+        return new Response(stream, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      };
+
       window.__panelSource = source;
       window.__panelSent = [];
       window.__panelRequests = [];
       const runtimeListeners = [];
       window.__panelRuntimeListeners = runtimeListeners;
+      const localStore = {
+        tokenpathKey: "tpk_test",
+      };
       window.chrome = {
         tabs: {
           query: () =>
@@ -176,11 +306,25 @@ function recordDeterministic(good) {
         },
         storage: {
           local: {
-            async get() {
-              return { tokenpathKey: "tpk_test" };
+            async get(keys) {
+              const requested = Array.isArray(keys) ? keys : [keys];
+              return Object.fromEntries(
+                requested
+                  .filter((key) => key in localStore)
+                  .map((key) => [key, localStore[key]])
+              );
             },
-            async set() {},
-            async remove() {},
+            async set(values) {
+              Object.assign(localStore, values);
+            },
+            async remove(key) {
+              if (key === "tokenpathKey" && window.__delayTokenPathRemoval) {
+                await new Promise((resolve) => {
+                  window.__resolveTokenPathRemoval = resolve;
+                });
+              }
+              delete localStore[key];
+            },
           },
           session: {
             async get(key) {
@@ -202,112 +346,71 @@ function recordDeterministic(good) {
 
       window.fetch = async (url, options = {}) => {
         const path = String(url);
+        const request = options.body ? JSON.parse(options.body) : null;
         if (path.endsWith("/v1/me/credits")) {
           return new Promise(() => {});
         }
-        const request = options.body ? JSON.parse(options.body) : null;
         window.__panelRequests.push({ path, request });
-        if (path.endsWith("/v1/answer")) {
-          const cases = {
-            "inline code case": {
-              answer: "Inline: use `Fable 5` now.",
-              start: "Fable 5",
-              end: "Fable 5",
-            },
-            "fenced code case": {
-              answer: "```txt\nFable 5\n```",
-              start: "Fable 5",
-              end: "Fable 5",
-            },
-            "link label case": {
-              answer: "[Fable 5](https://example.com)",
-              start: "Fable 5",
-              end: "Fable 5",
-            },
-            "delimiter crossing case": {
-              answer: "**Fable 5** launch complete",
-              start: "Fable 5",
-              end: "launch",
-            },
-            "block crossing case": {
-              answer: "Fable 5\n\n- launch complete",
-              start: "Fable 5",
-              end: "launch",
-            },
-            "entity case": {
-              answer: "Fable 5 &amp; launch",
-              start: "Fable 5",
-              end: "Fable 5",
-            },
-            "unicode markdown case": {
-              answer: "Result: **🎓漢字** shipped.",
-              start: "🎓漢字",
-              end: "🎓漢字",
-            },
-            "unattributed code case": {
-              answer: "```js\nconst ready = true;\n```",
-              attributed: false,
-            },
-          };
-          const fallback = {
-            answer:
-              "## Launch\n\nAfter 🎓, **Fable 5** shipped " +
-              "[worldwide](https://example.com).\n\n" +
-              "![tracking](https://tracker.invalid/pixel.png)",
-            start: "Fable 5",
-            end: "Fable 5",
-          };
-          const selected = cases[request.question] || fallback;
-          const answer = selected.answer;
-          const answerUtf16Start =
-            selected.attributed === false ? 0 : answer.indexOf(selected.start);
-          const answerUtf16End =
-            selected.attributed === false
-              ? 0
-              : answer.indexOf(selected.end, answerUtf16Start) +
-                selected.end.length;
-          const sourceUtf16Start = request.document.lastIndexOf("Fable 5");
-          const codePointOffset = (text, utf16Offset) =>
-            Array.from(text.slice(0, utf16Offset)).length;
-          const answerStart = codePointOffset(answer, answerUtf16Start);
-          const answerEnd = codePointOffset(answer, answerUtf16End);
-          const sourceStart = codePointOffset(request.document, sourceUtf16Start);
-          return new Response(
-            JSON.stringify({
-              answer,
-              attributions:
-                selected.attributed === false
-                  ? []
-                  : [
-                      {
-                        answer: {
-                          start: answerStart,
-                          end: answerEnd,
-                          text: answer.slice(
-                            answerUtf16Start,
-                            answerUtf16End
-                          ),
-                        },
-                        source: {
-                          start: sourceStart,
-                          end: sourceStart + 7,
-                          text: "Fable 5",
-                          confidence: 0.94,
-                        },
-                      },
-                    ],
-              credits_remaining: 999,
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } }
-          );
+        if (path.endsWith("/v1/generate")) {
+          const question =
+            [...(request.messages || [])]
+              .reverse()
+              .find((message) => message.role === "user")?.content || "";
+          const selected = cases[question] || fallback;
+          return sseResponse(selected.answer);
         }
-        return new Response("{}", { status: 404 });
+        if (path.endsWith("/v1/attributions/heatmap")) {
+          const selected = cases[request.question] || fallback;
+          const answerRanges = [
+            [selected.start, selected.end],
+            ...(request.answer.includes("worldwide")
+              ? [["worldwide", "worldwide"]]
+              : []),
+          ].map(([startText, endText]) => {
+            const occurrence = selected.occurrence || "first";
+            const start =
+              occurrence === "last"
+                ? request.answer.lastIndexOf(startText)
+                : request.answer.indexOf(startText);
+            const endStart =
+              occurrence === "last"
+                ? request.answer.lastIndexOf(endText)
+                : request.answer.indexOf(endText, start);
+            const end = endStart + endText.length;
+            return [
+              codePointOffset(request.answer, start),
+              codePointOffset(request.answer, end),
+            ];
+          });
+          const sourceTerms = answerRanges.length === 2
+            ? ["Fable 5", "worldwide"]
+            : ["Fable 5"];
+          const documentRanges = sourceTerms.map((term) => {
+            const start = request.document.lastIndexOf(term);
+            // Return an intentionally narrow token range. The frontend's port
+            // of TokenPath's resolver must word-snap and verbatim-disambiguate.
+            return [
+              codePointOffset(request.document, start + 1),
+              codePointOffset(
+                request.document,
+                start + Math.max(2, term.length - 1)
+              ),
+            ];
+          });
+          return responseJson({
+            row: answerRanges.map((_, index) => index),
+            col: documentRanges.map((_, index) => index),
+            data: answerRanges.map((_, index) => 0.94 - index * 0.06),
+            shape: [answerRanges.length, documentRanges.length],
+            answer_offsets: answerRanges,
+            document_offsets: documentRanges,
+          });
+        }
+        return responseJson({}, 404);
       };
     });
     await page.goto(PANEL_URL);
     await page.evaluate(() => {
-      // Deliver the capture before tabs.query resolves. The panel must already
-      // be listening and replay it once its window identity is known.
       window.__panelRuntimeListeners[0]?.({
         type: "selection-captured",
         captureId: "seed-1",
@@ -321,13 +424,142 @@ function recordDeterministic(good) {
       window.__resolvePanelQuery([{ id: 42, windowId: 3 }]);
     });
     await page.waitForFunction(
-      () => document.getElementById("context-text")?.textContent.startsWith("Fable 5")
+      () =>
+        document
+          .getElementById("context-text")
+          ?.textContent.startsWith("Fable 5") &&
+        document.querySelector('[data-answer-status="ready"]')
     );
-    await page.waitForSelector(".attrib");
+
+    async function selectAnswerText(startText, endText = startText) {
+      const before = await page.evaluate(() => window.__panelSent.length);
+      await page.evaluate(
+        ({ startText, endText }) => {
+          const root = [
+            ...document.querySelectorAll("[data-answer-content]"),
+          ].at(-1);
+          const walker = document.createTreeWalker(
+            root,
+            NodeFilter.SHOW_TEXT
+          );
+          const nodes = [];
+          let node;
+          while ((node = walker.nextNode())) nodes.push(node);
+          const startNode = nodes.find((candidate) =>
+            candidate.data.includes(startText)
+          );
+          const startIndex = startNode?.data.indexOf(startText) ?? -1;
+          const startPosition = nodes.indexOf(startNode);
+          const endNode = nodes
+            .slice(Math.max(0, startPosition))
+            .find((candidate) => candidate.data.includes(endText));
+          const endIndex = endNode?.data.indexOf(endText) ?? -1;
+          if (!startNode || !endNode || startIndex < 0 || endIndex < 0) {
+            throw new Error(`Could not select ${startText}..${endText}`);
+          }
+          const range = document.createRange();
+          range.setStart(startNode, startIndex);
+          range.setEnd(endNode, endIndex + endText.length);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          root.dispatchEvent(
+            new PointerEvent("pointerup", { bubbles: true, button: 0 })
+          );
+        },
+        { startText, endText }
+      );
+      await page.waitForFunction(
+        (count) => window.__panelSent.length > count,
+        before
+      );
+      return page.evaluate(() => window.__panelSent.at(-1));
+    }
+
+    const firstHeatmapCount = await page.evaluate(
+      () =>
+        window.__panelRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length
+    );
+    const firstSent = await selectAnswerText("Fable 5");
+    const secondSent = await selectAnswerText("worldwide");
+    const realLinkBefore = await page.evaluate(
+      () => window.__panelSent.length
+    );
+    const realLink = page
+      .locator('[data-answer-content] [data-streamdown="link"]')
+      .first();
+    await realLink.scrollIntoViewIfNeeded();
+    const linkBox = await realLink.boundingBox();
+    if (!linkBox) throw new Error("Markdown link was not rendered");
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    await page.mouse.move(linkBox.x + 2, linkBox.y + linkBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      linkBox.x + linkBox.width - 2,
+      linkBox.y + linkBox.height / 2,
+      { steps: 8 }
+    );
+    await page.mouse.up();
+    await page.waitForFunction(
+      (count) => window.__panelSent.length > count,
+      realLinkBefore
+    );
+    const realLinkSent = await page.evaluate(() => window.__panelSent.at(-1));
+    const cachedHeatmapCount = await page.evaluate(
+      () =>
+        window.__panelRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length
+    );
+
+    const boundaryCases = [];
+    for (const [question, startText, endText, selector] of [
+      ["inline code case", "Fable 5", "Fable 5", "code"],
+      ["fenced code case", "Fable 5", "Fable 5", '[data-streamdown="code-block"]'],
+      ["indented code case", "Fable 5", "launch", '[data-streamdown="code-block"]'],
+      ["link label case", "Fable 5", "Fable 5", '[data-streamdown="link"]'],
+      ["delimiter crossing case", "Fable 5", "launch", '[data-streamdown="strong"]'],
+      ["block crossing case", "Fable 5", "launch", "li"],
+      ["entity case", "Fable 5", "launch", "[data-answer-content]"],
+      ["entity exact case", "©", "©", "[data-answer-content]"],
+      ["hidden link destination case", "Fable 5", "Fable 5", "[data-answer-content]"],
+      ["hidden image alt case", "Fable 5", "Fable 5", "[data-answer-content]"],
+      ["footnote definition case", "Fable 5", "detail", "[data-footnotes]"],
+      ["unicode markdown case", "🎓漢字", "🎓漢字", '[data-streamdown="strong"]'],
+    ]) {
+      await page.locator("#input").fill(question);
+      await page.locator("#send").click();
+      await page.waitForFunction(
+        (expectedQuestion) =>
+          window.__panelRequests.some(
+            (item) =>
+              item.path.endsWith("/v1/attributions/heatmap") &&
+              item.request?.question === expectedQuestion
+          ) &&
+          [...document.querySelectorAll("[data-answer-status]")].at(-1)
+            ?.dataset.answerStatus === "ready",
+        question
+      );
+      const sent = await selectAnswerText(startText, endText);
+      const rendered = await page.evaluate(
+        (selector) =>
+          !![...document.querySelectorAll(".is-assistant")]
+            .at(-1)
+            ?.querySelector(selector),
+        selector
+      );
+      boundaryCases.push({
+        question,
+        good:
+          rendered &&
+          sent?.[1]?.type === "highlight" &&
+          sent?.[2]?.frameId === 9,
+      });
+    }
 
     const panelResult = await page.evaluate(async () => {
-      // A delayed older capture from another tab must be rejected without
-      // changing where this answer's attribution is routed.
       window.__panelRuntimeListeners[0]?.({
         type: "selection-captured",
         captureId: "stale-seed",
@@ -337,155 +569,523 @@ function recordDeterministic(good) {
         frameId: 12,
         text: "stale",
       });
-      document.querySelector(".attrib").click();
-      for (let i = 0; i < 100 && window.__panelSent.length === 0; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      const answerRequest = window.__panelRequests.find((item) =>
-        item.path.endsWith("/v1/answer")
+      const generation = window.__panelRequests.find((item) =>
+        item.path.endsWith("/v1/generate")
       );
       const themeButton = document.getElementById("theme-toggle");
       const themeLabels = [themeButton?.getAttribute("aria-label")];
-      themeButton?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      themeLabels.push(themeButton?.getAttribute("aria-label"));
-      themeButton?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      themeLabels.push(themeButton?.getAttribute("aria-label"));
-      themeButton?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      themeLabels.push(themeButton?.getAttribute("aria-label"));
+      for (let index = 0; index < 3; index++) {
+        themeButton?.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        themeLabels.push(themeButton?.getAttribute("aria-label"));
+      }
       return {
         context: document.getElementById("context-text").textContent,
-        hasFixedSpans: !!document.querySelector(".attrib"),
-        attributedText: document.querySelector(".attrib")?.textContent,
+        generation,
         hasMarkdownHeading:
           document.querySelector('[data-streamdown="heading-2"]')?.textContent ===
           "Launch",
         hasMarkdownStrong:
-          document.querySelector('[data-streamdown="strong"] .attrib')
-            ?.textContent === "Fable 5",
+          document.querySelector('[data-streamdown="strong"]')?.textContent ===
+          "Fable 5",
         hasSafeMarkdownLink:
-          document.querySelector(
-            'button[data-streamdown="link"]'
-          )?.textContent === "worldwide",
+          document.querySelector('[data-streamdown="link"]')?.textContent ===
+          "worldwide",
         blocksRemoteMarkdownImage: !document.querySelector(
           'img[src*="tracker.invalid"]'
         ),
+        hasFixedSpans: !!document.querySelector(".attrib"),
+        hasSelectionHint:
+          document
+            .querySelector('[data-answer-status="ready"]')
+            ?.textContent.includes("Select any text to find its source") || false,
         themeLabels,
         fitsNarrowPanel:
           document.documentElement.scrollWidth <=
             document.documentElement.clientWidth &&
           document.getElementById("composer")?.getBoundingClientRect().width <=
             window.innerWidth - 20,
-        answerRequest,
-        sent: window.__panelSent[0],
       };
     });
+    await page.evaluate(() => {
+      window.__delayTokenPathRemoval = true;
+      document.getElementById("disconnect")?.click();
+    });
+    await page.waitForFunction(
+      () =>
+        document.getElementById("tokenpath-key")?.disabled === true &&
+        document.getElementById("auth-connect")?.disabled === true
+    );
+    const disconnectPending = await page.evaluate(
+      () =>
+        document.getElementById("tokenpath-key")?.disabled === true &&
+        document.getElementById("auth-connect")?.disabled === true
+    );
+    await page.evaluate(() => window.__resolveTokenPathRemoval?.());
+    await page.waitForFunction(
+      () => document.getElementById("tokenpath-key")?.disabled === false
+    );
+    const disconnectSettled = await page.evaluate(
+      () =>
+        document.getElementById("tokenpath-key")?.disabled === false &&
+        document.getElementById("auth")?.hidden === false
+    );
 
-    async function askBoundaryCase(question, expectedMode) {
-      const priorAnswerCount = await page.locator(".is-assistant").count();
-      await page.locator("#input").fill(question);
-      await page.locator("#send").click();
-      await page.waitForFunction(
-        ({ expectedQuestion, priorAnswerCount }) =>
-          window.__panelRequests.some(
-            (item) =>
-              item.path.endsWith("/v1/answer") &&
-              item.request?.question === expectedQuestion
-          ) &&
-          document.querySelectorAll(".is-assistant").length >
-            priorAnswerCount &&
-          !document.querySelector('[role="status"]:not([hidden])'),
-        { expectedQuestion: question, priorAnswerCount }
-      );
-      return page.evaluate((mode) => {
-        const answers = [...document.querySelectorAll(".is-assistant")];
-        const answer = answers.at(-1);
-        const attribution = answer?.querySelector(".attrib");
-        return {
-          attributedText: attribution?.textContent,
-          hasLiteralWrapper: answer?.textContent?.includes(
-            "<tldr-attribution"
-          ),
-          hasLink: !!answer?.querySelector(
-            'a, [data-streamdown="link"]'
-          ),
-          hasCodeBlock: !!answer?.querySelector(
-            '[data-streamdown="code-block"]'
-          ),
-          mode:
-            answer?.querySelector("[data-attribution-renderer]")?.getAttribute(
-              "data-attribution-renderer"
-            ) || "markdown",
-          rawText: answer?.textContent,
-          expectedMode: mode,
-        };
-      }, expectedMode);
-    }
-
-    const boundaryCases = [];
-    for (const [question, expectedText, expectedMode] of [
-      ["inline code case", "Fable 5", "plain"],
-      ["fenced code case", "Fable 5", "plain"],
-      ["link label case", "Fable 5", "plain"],
-      ["delimiter crossing case", "Fable 5** launch", "plain"],
-      ["block crossing case", "Fable 5\n\n- launch", "plain"],
-      ["entity case", "Fable 5", "plain"],
-      ["unicode markdown case", "🎓漢字", "markdown"],
-      ["unattributed code case", null, "markdown"],
-    ]) {
-      const result = await askBoundaryCase(question, expectedMode);
-      boundaryCases.push({
-        ...result,
-        good:
-          result.mode === expectedMode &&
-          (expectedText === null
-            ? result.hasCodeBlock
-            : result.attributedText === expectedText) &&
-          !result.hasLiteralWrapper &&
-          (question !== "link label case" || !result.hasLink),
-        question,
-      });
-    }
-
-    const sentMessage = panelResult.sent?.[1];
-    const sentOptions = panelResult.sent?.[2];
-    const sourceText = panelResult.context;
-    const expectedFocus = sourceText.lastIndexOf("Fable 5");
+    const firstMessage = firstSent?.[1];
+    const firstOptions = firstSent?.[2];
+    const secondMessage = secondSent?.[1];
+    const expectedFable = panelResult.context.lastIndexOf("Fable 5");
+    const expectedWorldwide = panelResult.context.lastIndexOf("worldwide");
+    const generationBody = panelResult.generation?.request || {};
     const good =
-      panelResult.hasFixedSpans &&
-      panelResult.attributedText === "Fable 5" &&
+      firstHeatmapCount === 1 &&
+      cachedHeatmapCount === 1 &&
+      !panelResult.hasFixedSpans &&
+      panelResult.hasSelectionHint &&
       panelResult.hasMarkdownHeading &&
       panelResult.hasMarkdownStrong &&
       panelResult.hasSafeMarkdownLink &&
       panelResult.blocksRemoteMarkdownImage &&
       panelResult.fitsNarrowPanel &&
+      disconnectPending &&
+      disconnectSettled &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: light")) &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: dark")) &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: system")) &&
-      panelResult.answerRequest?.request?.max_output_tokens <= 128 &&
-      /at most \d+ words/.test(panelResult.answerRequest?.request?.question || "") &&
-      boundaryCases.every((item) => item.good) &&
-      sentMessage?.type === "highlight" &&
-      sentMessage?.start === expectedFocus &&
-      sentMessage?.end === expectedFocus + 7 &&
-      sentMessage?.captureId === "seed-1" &&
-      panelResult.sent?.[0] === 42 &&
-      sentOptions?.frameId === 9;
+      Array.isArray(generationBody.messages) &&
+      !("document" in generationBody) &&
+      !("question" in generationBody) &&
+      !("model" in generationBody) &&
+      !("stream" in generationBody) &&
+      generationBody.max_output_tokens <= 128 &&
+      firstMessage?.type === "highlight" &&
+      firstMessage?.start === expectedFable &&
+      firstMessage?.end === expectedFable + 7 &&
+      firstMessage?.captureId === "seed-1" &&
+      secondMessage?.start === expectedWorldwide &&
+      secondMessage?.end === expectedWorldwide + "worldwide".length &&
+      realLinkSent?.[1]?.start === expectedWorldwide &&
+      realLinkSent?.[1]?.end === expectedWorldwide + "worldwide".length &&
+      firstSent?.[0] === 42 &&
+      firstOptions?.frameId === 9 &&
+      boundaryCases.every((item) => item.good);
     console.log("\n### Side-panel selection fixture");
     console.log(
-        `  [nonblocking seed + Unicode-safe fixed-span routing] ${good ? "PASS" : "FAIL"}` +
-        ` — frame=${sentOptions?.frameId}, source=${sentMessage?.start}, ` +
-        `markdown=${panelResult.hasMarkdownHeading}/${panelResult.hasMarkdownStrong}, ` +
-        `link/image=${panelResult.hasSafeMarkdownLink}/${panelResult.blocksRemoteMarkdownImage}, ` +
-        `boundaries=${boundaryCases.map((item) => `${item.question}:${item.mode}/${item.good}`).join(",")}, ` +
-        `narrow=${panelResult.fitsNarrowPanel}, themes=${panelResult.themeLabels.join("|")}`
+      `  [stream + one heatmap + arbitrary Markdown selections] ${good ? "PASS" : "FAIL"}` +
+        ` — calls=${firstHeatmapCount}/${cachedHeatmapCount}, frame=${firstOptions?.frameId}, ` +
+        `source=${firstMessage?.start}/${secondMessage?.start}, markdown=${panelResult.hasMarkdownHeading}/${panelResult.hasMarkdownStrong}, ` +
+        `boundaries=${boundaryCases.map((item) => `${item.question}:${item.good}`).join(",")}`
     );
     recordDeterministic(good);
   } catch (error) {
     console.log(
       `\n### Side-panel selection fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
+    );
+    recordDeterministic(false);
+  } finally {
+    await page.close();
+  }
+}
+
+// Controller stale-state regressions: an auth failure that pauses while the
+// saved key is removed must not append its error card to a newer capture.
+{
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(() => {
+      const oldSource = "Old selection stays short enough to skip its automatic summary.";
+      const newSource = "New selection owns every message shown after the capture changes.";
+      const responseJson = (body, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      const runtimeListeners = [];
+      const localStore = { tokenpathKey: "tpk_stale_context" };
+
+      window.__staleContextSource = newSource;
+      window.__staleContextRuntimeListeners = runtimeListeners;
+      window.chrome = {
+        tabs: {
+          async query() {
+            return [{ id: 51, windowId: 7 }];
+          },
+          async sendMessage() {
+            return { ok: true };
+          },
+          onUpdated: { addListener() {} },
+          onRemoved: { addListener() {} },
+        },
+        runtime: {
+          onMessage: {
+            addListener(listener) {
+              runtimeListeners.push(listener);
+            },
+          },
+        },
+        storage: {
+          local: {
+            async get(keys) {
+              const requested = Array.isArray(keys) ? keys : [keys];
+              return Object.fromEntries(
+                requested
+                  .filter((key) => key in localStore)
+                  .map((key) => [key, localStore[key]])
+              );
+            },
+            async set(values) {
+              Object.assign(localStore, values);
+            },
+            async remove(key) {
+              if (key === "tokenpathKey" && window.__delayRejectedKeyRemoval) {
+                window.__rejectedKeyRemovalPending = true;
+                await new Promise((resolve) => {
+                  window.__resolveRejectedKeyRemoval = resolve;
+                });
+              }
+              delete localStore[key];
+            },
+          },
+          session: {
+            async get(key) {
+              return {
+                [key]: {
+                  captureId: "stale-context-1",
+                  capturedAt: 1,
+                  tabId: 51,
+                  windowId: 7,
+                  frameId: 0,
+                  text: oldSource,
+                  error: null,
+                },
+              };
+            },
+          },
+        },
+      };
+
+      window.fetch = async (url) => {
+        const path = String(url);
+        if (path.endsWith("/v1/me/credits")) {
+          return responseJson({ available_tokens: 1_000 });
+        }
+        if (path.endsWith("/v1/generate")) {
+          return responseJson(
+            {
+              error: {
+                code: "invalid_api_key",
+                message: "The API key is invalid.",
+                request_id: "req_stale_context",
+              },
+            },
+            401
+          );
+        }
+        return responseJson({}, 404);
+      };
+    });
+
+    await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent?.startsWith("Old") &&
+        document.getElementById("auth")?.hidden === true
+    );
+    await page.evaluate(() => {
+      window.__delayRejectedKeyRemoval = true;
+    });
+    await page.locator("#input").fill("What does this say?");
+    await page.locator("#send").click();
+    await page.waitForFunction(() => window.__rejectedKeyRemovalPending === true);
+    await page.evaluate(() => {
+      window.__staleContextRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "stale-context-2",
+        capturedAt: 2,
+        tabId: 51,
+        windowId: 7,
+        frameId: 0,
+        text: window.__staleContextSource,
+        error: null,
+      });
+      window.__resolveRejectedKeyRemoval?.();
+    });
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent?.startsWith("New") &&
+        document.getElementById("tokenpath-key")?.disabled === false
+    );
+    const result = await page.evaluate(() => ({
+      context: document.getElementById("context-text")?.textContent || "",
+      messages: [...document.querySelectorAll("#messages .is-assistant")].map(
+        (element) => element.textContent || ""
+      ),
+      hasErrorCard: !!document.querySelector("#messages .message-error"),
+    }));
+    const good =
+      result.context ===
+        "New selection owns every message shown after the capture changes." &&
+      result.messages.length === 1 &&
+      result.messages[0].includes("Already concise") &&
+      !result.messages.some((message) => message.includes("key was rejected")) &&
+      !result.hasErrorCard;
+    console.log("\n### Side-panel stale auth/context fixture");
+    console.log(
+      `  [old auth failure cannot write into new capture] ${good ? "PASS" : "FAIL"}` +
+        ` — context="${result.context}", messages=${result.messages.length}`
+    );
+    recordDeterministic(good);
+  } catch (error) {
+    console.log(
+      `\n### Side-panel stale auth/context fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
+    );
+    recordDeterministic(false);
+  } finally {
+    await page.close();
+  }
+}
+
+// Same-auth balance responses are sequenced, and rapid answer selections carry
+// highlight ownership IDs so a late A response cannot clear newer highlight B.
+{
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(() => {
+      const source =
+        "Alpha begins the selected source while beta appears at the end.";
+      const answer = "Alpha and beta.";
+      const responseJson = (body, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      const doneStream = () =>
+        new Response(
+          "event: done\n" +
+            "data: " +
+            JSON.stringify({
+              answer,
+              model: "google/gemini-3.1-flash-lite",
+              usage: {
+                input_tokens: 30,
+                output_tokens: 4,
+                billed_tokens: 27,
+              },
+              credits_remaining: 900,
+            }) +
+            "\n\n",
+          {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }
+        );
+      const localStore = { tokenpathKey: "tpk_sequence" };
+      const runtimeListeners = [];
+
+      window.__creditRequestCount = 0;
+      window.__highlightMessages = [];
+      window.__pendingHighlightResponses = [];
+      window.__activeHighlightId = null;
+      window.chrome = {
+        tabs: {
+          async query() {
+            return [{ id: 62, windowId: 8 }];
+          },
+          sendMessage(_tabId, message) {
+            window.__highlightMessages.push(message);
+            if (message.type === "highlight") {
+              window.__activeHighlightId = message.highlightId || null;
+              return new Promise((resolve) => {
+                window.__pendingHighlightResponses.push({ message, resolve });
+              });
+            }
+            if (message.type === "clear-highlight") {
+              const matches =
+                !message.highlightId ||
+                message.highlightId === window.__activeHighlightId;
+              if (matches) window.__activeHighlightId = null;
+              return Promise.resolve({ ok: matches });
+            }
+            return Promise.resolve({ ok: true });
+          },
+          onUpdated: { addListener() {} },
+          onRemoved: { addListener() {} },
+        },
+        runtime: {
+          onMessage: {
+            addListener(listener) {
+              runtimeListeners.push(listener);
+            },
+          },
+        },
+        storage: {
+          local: {
+            async get(keys) {
+              const requested = Array.isArray(keys) ? keys : [keys];
+              return Object.fromEntries(
+                requested
+                  .filter((key) => key in localStore)
+                  .map((key) => [key, localStore[key]])
+              );
+            },
+            async set(values) {
+              Object.assign(localStore, values);
+            },
+            async remove(key) {
+              delete localStore[key];
+            },
+          },
+          session: {
+            async get(key) {
+              return {
+                [key]: {
+                  captureId: "sequence-seed",
+                  capturedAt: 1,
+                  tabId: 62,
+                  windowId: 8,
+                  frameId: 4,
+                  text: source,
+                  error: null,
+                },
+              };
+            },
+          },
+        },
+      };
+
+      window.fetch = async (url) => {
+        const path = String(url);
+        if (path.endsWith("/v1/me/credits")) {
+          window.__creditRequestCount++;
+          if (window.__creditRequestCount === 1) {
+            return new Promise((resolve) => {
+              window.__resolveOldCreditRead = () =>
+                resolve(responseJson({ available_tokens: 1_000 }));
+            });
+          }
+          return responseJson({ available_tokens: 800 });
+        }
+        if (path.endsWith("/v1/generate")) return doneStream();
+        if (path.endsWith("/v1/attributions/heatmap")) {
+          const betaDocumentStart = source.indexOf("beta");
+          return responseJson({
+            row: [0, 1],
+            col: [0, 1],
+            data: [0.9, 0.8],
+            shape: [2, 2],
+            answer_offsets: [
+              [0, 5],
+              [10, 14],
+            ],
+            document_offsets: [
+              [0, 5],
+              [betaDocumentStart, betaDocumentStart + 4],
+            ],
+          });
+        }
+        return responseJson({}, 404);
+      };
+    });
+
+    await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent?.startsWith("Alpha") &&
+        document.getElementById("auth")?.hidden === true
+    );
+    await page.locator("#input").fill("Compare the two terms.");
+    await page.locator("#send").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') &&
+        document.getElementById("credits")?.textContent === "800 tokens"
+    );
+
+    const selectText = async (text) => {
+      const prior = await page.evaluate(
+        () => window.__pendingHighlightResponses.length
+      );
+      await page.evaluate((selectedText) => {
+        const root = document.querySelector("[data-answer-content]");
+        const walker = document.createTreeWalker(
+          root,
+          NodeFilter.SHOW_TEXT
+        );
+        let node;
+        while ((node = walker.nextNode())) {
+          const start = node.data.indexOf(selectedText);
+          if (start === -1) continue;
+          const range = document.createRange();
+          range.setStart(node, start);
+          range.setEnd(node, start + selectedText.length);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          root.dispatchEvent(
+            new PointerEvent("pointerup", { bubbles: true, button: 0 })
+          );
+          return;
+        }
+        throw new Error(`Could not select ${selectedText}`);
+      }, text);
+      await page.waitForFunction(
+        (count) => window.__pendingHighlightResponses.length > count,
+        prior
+      );
+    };
+
+    await selectText("Alpha");
+    await selectText("beta");
+    await page.evaluate(() => {
+      window.__pendingHighlightResponses[1].resolve({ ok: true });
+    });
+    await page.evaluate(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await page.evaluate(() => {
+      window.__pendingHighlightResponses[0].resolve({ ok: true });
+    });
+    await page.waitForFunction(
+      () =>
+        window.__highlightMessages.filter(
+          (message) => message.type === "clear-highlight"
+        ).length >= 1
+    );
+
+    await page.evaluate(() => window.__resolveOldCreditRead?.());
+    await page.waitForTimeout(30);
+    const result = await page.evaluate(() => {
+      const highlights = window.__highlightMessages.filter(
+        (message) => message.type === "highlight"
+      );
+      const clears = window.__highlightMessages.filter(
+        (message) => message.type === "clear-highlight"
+      );
+      return {
+        activeHighlightId: window.__activeHighlightId,
+        creditText: document.getElementById("credits")?.textContent || "",
+        firstHighlightId: highlights[0]?.highlightId || null,
+        secondHighlightId: highlights[1]?.highlightId || null,
+        staleClearId: clears.at(-1)?.highlightId || null,
+      };
+    });
+    const good =
+      result.creditText === "800 tokens" &&
+      result.firstHighlightId &&
+      result.secondHighlightId &&
+      result.firstHighlightId !== result.secondHighlightId &&
+      result.staleClearId === result.firstHighlightId &&
+      result.activeHighlightId === result.secondHighlightId;
+    console.log("\n### Side-panel stale response sequencing fixture");
+    console.log(
+      `  [credit epoch + highlight ownership] ${good ? "PASS" : "FAIL"}` +
+        ` — credits=${result.creditText}, active=${result.activeHighlightId}, staleClear=${result.staleClearId}`
+    );
+    recordDeterministic(good);
+  } catch (error) {
+    console.log(
+      `\n### Side-panel stale response sequencing fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
     );
     recordDeterministic(false);
   } finally {
@@ -554,12 +1154,43 @@ function recordDeterministic(good) {
         const focus = CSS.highlights.get("tldr-attrib");
         const focusRange = focus && [...focus][0];
         const parent = focusRange?.startContainer?.parentElement;
+        let ownedHighlight;
+        window.__tldrMsg(
+          {
+            type: "highlight",
+            start,
+            end: start + 7,
+            highlightId: "newer-highlight",
+          },
+          null,
+          (value) => (ownedHighlight = value)
+        );
+        let staleClear;
+        window.__tldrMsg(
+          { type: "clear-highlight", highlightId: "older-highlight" },
+          null,
+          (value) => (staleClear = value)
+        );
+        const focusAfterStaleClear =
+          [...(CSS.highlights.get("tldr-attrib") || [])][0]?.toString() || "";
+        let matchingClear;
+        window.__tldrMsg(
+          { type: "clear-highlight", highlightId: "newer-highlight" },
+          null,
+          (value) => (matchingClear = value)
+        );
+        const clearedByOwner = !CSS.highlights.get("tldr-attrib");
         return {
           response,
           text: focusRange?.toString() || "",
           second: !!parent?.closest(".second"),
           scrollTop: document.getElementById("pane").scrollTop,
           source,
+          ownedHighlight,
+          staleClear,
+          focusAfterStaleClear,
+          matchingClear,
+          clearedByOwner,
         };
       },
       { source: captured.text, start: secondStart }
@@ -571,7 +1202,12 @@ function recordDeterministic(good) {
       result.response?.ok &&
       result.text === "Fable 5" &&
       result.second &&
-      result.scrollTop > 0;
+      result.scrollTop > 0 &&
+      result.ownedHighlight?.ok &&
+      result.staleClear?.ok === false &&
+      result.focusAfterStaleClear === "Fable 5" &&
+      result.matchingClear?.ok &&
+      result.clearedByOwner;
     console.log("\n### Gmail-like dynamic message fixture");
     console.log(
       `  [frame content capture + remap + highlight] ${good ? "PASS" : "FAIL"}` +

@@ -4,8 +4,9 @@
 
 TLDR is a Chrome Manifest V3 extension. A user selects text in a page, chooses
 **TLDR** from the context menu, and receives a side-panel chat grounded in that
-selection. TokenPath returns attributed spans with each answer. Clicking an
-attributed claim highlights and scrolls to its exact source range in the live
+selection. TokenPath streams each answer, then returns one answer-to-document
+heatmap. Selecting any part of an answer resolves that range against the cached
+heatmap, highlights its supporting source range, and scrolls there in the live
 page.
 
 ## User flow
@@ -17,7 +18,7 @@ page.
    constrained TL;DR. Shorter selections skip generation and show an
    “Already concise” note.
 4. Ask follow-up questions in the composer.
-5. Click an attributed span in an answer to highlight and center the matching
+5. Select any text in a completed answer to highlight and center its supporting
    source text in the originating page frame.
 
 ## Components
@@ -34,17 +35,17 @@ page.
   capture/version epochs, and frame-targeted highlight messages.
 - **`src/sidepanel/app.tsx`** renders the React panel with source-owned Vercel
   AI Elements conversation, message, and prompt-input primitives.
-- **`src/sidepanel/markdown-attribution.ts`** verifies that answer offsets are
-  safe to carry through Markdown parsing and selects the exact fallback when
-  they are not.
+- **`src/sidepanel/answer-selection.ts`** maps a DOM selection inside rendered
+  Streamdown Markdown back to the exact raw-answer character bounds.
 - **`src/sidepanel/components/ai-elements/`** contains the trimmed, editable AI
   Elements source used by the Chrome side panel.
 - **`sidepanel/panel.js`** and **`sidepanel/panel.css`** are generated,
   self-contained Vite assets loaded by the MV3 extension page.
-- **`sidepanel/panel-logic.js`** contains pure summary and Unicode-safe
-  truncation helpers.
+- **`sidepanel/panel-logic.js`** contains pure summary, Unicode-safe truncation,
+  and heatmap-to-source span-resolution helpers.
 - **`sidepanel/tokenpath.js`** calls TokenPath directly with the API key in
-  `chrome.storage.local` and adapts `/v1/answer` attribution spans for the panel.
+  `chrome.storage.local`, streams messages-only generation, validates sparse
+  heatmaps, and adapts their offset tables for browser use.
 
 ## Selection capture and panel bootstrap
 
@@ -91,10 +92,11 @@ and records every emitted character's raw node offset:
 `start` and `end` index the canonical extraction string in JavaScript UTF-16
 code units. The node map never crosses the extension-message boundary. The exact
 canonical string is sent as TokenPath's `document` and is not normalized again.
-TokenPath returns Unicode code-point bounds; the API adapter converts both
-answer and source bounds against their exact strings before the panel slices an
-answer or the content script resolves a DOM range. This prevents cumulative
-highlight drift after emoji while preserving repeated-string disambiguation.
+TokenPath returns heatmap token offsets as Unicode code-point bounds. The API
+adapter converts the full answer and document offset tables against their exact
+strings before the panel aggregates a selected answer range or the content
+script resolves a DOM range. This prevents cumulative highlight drift after
+emoji while preserving repeated-string disambiguation.
 
 ## Summary and generation policy
 
@@ -102,7 +104,7 @@ For a source of `N` whitespace-delimited words:
 
 - `N <= 24`: skip the automatic model call.
 - Otherwise request at most `min(80, max(12, floor(0.3 * N)))` words.
-- Set `max_output_tokens` to
+- Set `/v1/generate`'s `max_output_tokens` to
   `min(128, max(16, ceil(maxWords * 1.6)))`.
 
 The prompt asks only for the central point, with no title, label, preamble,
@@ -112,54 +114,85 @@ a bounded extractive prefix if the model's result is not strictly shorter or
 exceeds the requested budget. Document and conversation limits are counted by
 Unicode code point so truncation does not split surrogate pairs.
 
-## Generation and fixed-span attribution
+## Streaming generation and just-in-time heatmap attribution
 
-Each generated turn uses one `POST /v1/answer` request containing the canonical
-document, the latest question, bounded prior turns, and—only for automatic
-summaries—`max_output_tokens`.
+The generator uses one streaming `POST /v1/generate` request per turn. Its body
+contains only messages and an optional `max_output_tokens`:
 
-The response contains the answer plus server-selected spans:
+- a system message containing the exact canonical document plus grounding and
+  display instructions;
+- bounded prior user and assistant turns; and
+- the latest user question.
+
+TokenPath chooses the model. Named SSE `delta` events update one stable
+assistant message; the terminal `done.answer` is canonical and may replace the
+locally accumulated deltas. Navigation, a newer capture, or disconnect cancels
+active generation. The automatic-summary display guard runs after `done` and
+before attribution, so TokenPath always indexes the exact answer that remains
+visible.
+
+Once generation finishes, the panel sends one
+`POST /v1/attributions/heatmap` request:
 
 ```js
 {
-  answer: "...",
-  attributions: [{
-    answer: { start, end },
-    source: { start, end, confidence }
-  }]
+  document: "the canonical extracted selection",
+  question: "the latest user turn",
+  answer: "the exact final displayed answer"
 }
 ```
 
-The API client adapts each attributed source to
-`{answerStart, answerEnd, sourceStart, sourceEnd, confidence}`. Entries with a
-null source are not clickable. The panel first parses the answer into a
-positioned GFM syntax tree. Markdown rendering is used only when every
-nonoverlapping attribution lies wholly inside one ordinary text leaf, that
-leaf's raw source equals its rendered value, and it is outside links, code,
-HTML, footnotes, or other offset-changing constructs. `panel-logic.js` then
-wraps each verified range in an escaped, sanitizer-whitelisted
-`tldr-attribution` element.
+The response is a sparse COO matrix:
 
-If any range crosses Markdown leaves or blocks, occurs inside code or a link,
-or relies on escaped/entity text, the whole answer uses a whitespace-preserving
-plain renderer that slices the original string at the exact server offsets.
-React maps either path to keyboard-accessible `.attrib` spans; clicking one
-sends its source bounds to the frame from which that answer's selection was
-captured. This fallback avoids literal wrapper tags, partial clickable ranges,
-and attribution clicks that also activate a model-generated link.
+```js
+{
+  row: [0, 0, 1],
+  col: [4, 5, 7],
+  data: [0.8, 0.3, 0.6],
+  shape: [answerTokenCount, documentTokenCount],
+  answer_offsets: [[0, 4], [5, 9]],
+  document_offsets: [[0, 3], [4, 8]]
+}
+```
 
-Raw HTML cannot forge an attribution: pre-existing `tldr-attribution` tags in a
-model answer are escaped before trusted wrappers are inserted. Streamdown's
-sanitizer and external-link confirmation remain active, remote images are
-suppressed, and rendered links are limited to HTTP(S) and mail links.
+`sidepanel/tokenpath.js` validates matching COO lengths and matrix bounds, then
+converts both offset tables from Unicode code points to UTF-16. The immutable
+artifact `{document, question, answer, heatmap}` belongs to that assistant
+message. An attribution failure marks only its source map unavailable; the
+generated answer remains usable. Capture and generation epochs prevent a late
+heatmap from attaching to newer state.
 
-Character bounds, rather than a text search, identify the intended occurrence
-when a phrase such as `Fable 5` appears more than once in the captured document.
+Streamdown always renders the answer as Markdown. `answer-selection.ts` parses
+the same GFM into source-positioned visible leaves, excluding hidden link
+destinations and image metadata while decoding entities and escapes. It aligns
+Streamdown's text nodes to that visible map, so a user selection recovers exact
+raw-answer bounds across emphasis, selectable links, inline or fenced code,
+blocks, repeated phrases, and Unicode. Collapsed, empty, or out-of-answer
+selections are ignored.
+
+The local resolver mirrors TokenPath's service-side span policy:
+
+1. Find every answer token overlapping the selected raw-answer range.
+2. Sum its positive sparse attribution mass per document token.
+3. Start at the peak and grow across tokens at or above 25% of that peak,
+   bridging at most three weaker tokens.
+4. Convert the resolved token interval to document character bounds and snap
+   outward across adjacent alphanumeric characters.
+5. If the selected answer text occurs verbatim in the document, snap only to an
+   occurrence that overlaps the attention-derived interval, choosing the
+   nearest center when needed.
+
+The resolved range and confidence are computed entirely in the panel. Repeated
+answer selections reuse the same cached heatmap and make no more attribution
+requests. Streamdown's sanitizer and external-link confirmation remain active,
+remote images are suppressed, and rendered links are limited to HTTP(S) and
+mail links.
 
 ## Mutation and ambiguity policy
 
 Before highlighting, the content script verifies the route, stable source
-scope, rendered state, and mapped characters for the clicked attribution span.
+scope, rendered state, and mapped characters for the heatmap-resolved source
+span.
 Unrelated nodes elsewhere in the captured selection may hydrate or rerender
 without invalidating an unchanged target. A connected target Text node whose
 data React changed in place is still rejected.
@@ -181,7 +214,7 @@ Range still occupies the captured source path and raw offsets. Paths and
 occurrence order are hints, never sufficient evidence after a reorder. A stable
 source is never allowed to fall through to a page-wide match, where the same
 words might belong to another message, post, or article region. Fresh
-projections are built lazily on an attribution click and have source/candidate
+projections are built lazily on an answer selection and have source/candidate
 caps; the extension does not observe or mirror page mutations continuously.
 
 Identity-less captures may use a body-wide fallback only when the complete
@@ -195,16 +228,19 @@ extension does not use `window.find` or select the first arbitrary copy.
 |---|---|---|
 | background → content frame | `capture-selection` | `captureId`, `selectionText`, targeted `frameId` |
 | background → panel | `selection-captured` | `captureId`, time, tab/window/frame IDs, `text` or `error` |
-| panel → content frame | `highlight` | `captureId`, `start`, `end`, targeted `frameId` |
-| panel → content frame | `clear-highlight` | `captureId`, targeted `frameId` |
+| panel → content frame | `highlight` | `captureId`, `highlightId`, `start`, `end`, targeted `frameId` |
+| panel → content frame | `clear-highlight` | `captureId`, optional owning `highlightId`, targeted `frameId` |
 
 ## Lifecycle and non-goals
 
 A URL change invalidates source mapping and requires a new capture. Capture IDs,
-context versions, and highlight epochs prevent stale generation or click work
-from overwriting or clearing a newer selection's highlight.
+context versions, highlight epochs, and per-highlight ownership IDs prevent stale
+generation or click work from overwriting or clearing a newer selection's
+highlight. Balance observations are similarly sequenced so a delayed credits
+read cannot replace a newer post-request balance.
 
 Out of scope for this version: whole-page or Readability extraction,
-shadow-root traversal, streaming answers, persisted chats, OAuth, and restricted
-Chrome pages. A selection belongs to one frame; cross-frame selections are
-unsupported.
+shadow-root traversal, persisted chats, OAuth, user-selectable models, and
+restricted Chrome pages. A selection belongs to one frame; cross-frame
+selections are unsupported. The model behind TokenPath's messages-only
+`/v1/generate` is intentionally not user-selectable.

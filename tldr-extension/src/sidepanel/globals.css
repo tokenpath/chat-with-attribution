@@ -57,8 +57,6 @@
   --sidebar: oklch(0.965 0.007 255);
   --sidebar-border: oklch(0.87 0.014 255);
   --evidence: oklch(0.78 0.16 86);
-  --evidence-soft: oklch(0.93 0.1 90 / 0.55);
-  --evidence-line: oklch(0.63 0.15 78 / 0.78);
 }
 
 [data-theme="dark"] {
@@ -83,8 +81,6 @@
   --sidebar: oklch(0.205 0.015 255);
   --sidebar-border: oklch(1 0 0 / 0.15);
   --evidence: oklch(0.82 0.14 88);
-  --evidence-soft: oklch(0.7 0.13 85 / 0.22);
-  --evidence-line: oklch(0.84 0.14 88 / 0.82);
 }
 
 @layer base {
@@ -204,48 +200,55 @@
   white-space: nowrap;
 }
 
-.attrib {
+.selectable-answer [data-answer-content] {
+  cursor: text;
+  user-select: text;
+}
+
+.selectable-answer [data-streamdown="link"] {
+  cursor: text;
+  user-select: text;
+}
+
+.answer-link {
   display: inline;
-  border-radius: 0.18rem;
-  background:
-    linear-gradient(
-      to bottom,
-      transparent 12%,
-      var(--evidence-soft) 12%,
-      var(--evidence-soft) 92%,
-      transparent 92%
-    );
-  box-decoration-break: clone;
-  border-bottom: 1.5px dashed var(--evidence-line);
-  color: inherit;
-  cursor: pointer;
-  -webkit-box-decoration-break: clone;
-  transition:
-    background-color 120ms ease,
-    box-shadow 120ms ease;
 }
 
-.attrib:hover {
-  background-color: color-mix(in oklab, var(--evidence) 12%, transparent);
-  box-shadow: 0 0 0 1px var(--evidence-line);
+.answer-link-open {
+  display: inline-flex;
+  width: 0.85em;
+  height: 0.85em;
+  align-items: center;
+  margin-left: 0.16em;
+  vertical-align: 0.05em;
+  user-select: none;
 }
 
-.attrib:focus-visible {
-  box-shadow:
-    0 0 0 2px var(--background),
-    0 0 0 4px var(--evidence-line);
+.answer-link-open svg {
+  width: 100%;
+  height: 100%;
 }
 
-.attrib-low {
-  background: transparent;
-  border-bottom-style: dotted;
+.answer-attribution-status {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+  color: var(--muted-foreground);
+  font-size: 0.66rem;
+  line-height: 1rem;
+  user-select: none;
+}
+
+.answer-attribution-error {
+  color: var(--destructive);
 }
 
 [data-streamdown="root"] {
   overflow-wrap: anywhere;
 }
 
-[data-streamdown="root"] a {
+[data-streamdown="root"] [data-streamdown="link"] {
   color: var(--primary);
   text-decoration-line: underline;
   text-decoration-thickness: 1px;

@@ -82,89 +82,190 @@ assert.ok(Number.isNaN(Logic.codePointOffsetToUtf16(multiEmojiMap, 5)));
 assert.ok(Number.isNaN(Logic.codePointOffsetToUtf16(multiEmojiMap, 1.5)));
 console.log("PASS: TokenPath code-point offsets convert to exact browser UTF-16 bounds");
 
-const markdownAnswer =
-  "## Result\n\nThe **Fable 5** launch uses `five` teams & partners.";
-const fableStart = markdownAnswer.indexOf("Fable 5");
-const partnersStart = markdownAnswer.indexOf("partners");
-const attributedMarkdown = Logic.annotateMarkdownAttributions(markdownAnswer, [
-  {
-    answerStart: fableStart,
-    answerEnd: fableStart + "Fable 5".length,
-    sourceStart: 17,
-    sourceEnd: 24,
-    confidence: 0.91,
-  },
-  {
-    answerStart: partnersStart,
-    answerEnd: partnersStart + "partners".length,
-    sourceStart: 70,
-    sourceEnd: 78,
-  },
-]);
-assert.ok(attributedMarkdown.startsWith("## Result\n\nThe **"));
-assert.ok(
-  attributedMarkdown.includes(
-    '<tldr-attribution source_start="17" source_end="24" confidence="0.91">Fable 5</tldr-attribution>'
-  )
+const heatmap = {
+  row: [1, 2, 2],
+  col: [1, 2, 3],
+  data: [0.9, 0.2, 0.15],
+  shape: [3, 4],
+  documentOffsets: [[0, 5], [6, 10], [11, 16], [17, 22]],
+  answerOffsets: [[0, 3], [4, 8], [9, 14]],
+};
+const heatmapDocument = "alpha beta gamma delta";
+const betaSpan = Logic.resolveHeatmapSpan(
+  heatmap,
+  4,
+  8,
+  heatmapDocument,
+  "the beta value"
 );
-assert.ok(
-  attributedMarkdown.includes(
-    '<tldr-attribution source_start="70" source_end="78">partners</tldr-attribution>'
-  )
+assert.deepStrictEqual(betaSpan, { start: 6, end: 10, confidence: 0.9 });
+const valueSpan = Logic.resolveHeatmapSpan(
+  heatmap,
+  9,
+  14,
+  heatmapDocument,
+  "the beta value"
 );
-assert.ok(attributedMarkdown.endsWith("</tldr-attribution>."));
-
-const htmlLikeAnswer = "Use <tag> and <tldr-attribution source_start=\"0\">";
-const tagStart = htmlLikeAnswer.indexOf("<tag>");
-const safeAttributedMarkdown = Logic.annotateMarkdownAttributions(
-  htmlLikeAnswer,
-  [
-    {
-      answerStart: tagStart,
-      answerEnd: tagStart + "<tag>".length,
-      sourceStart: 3,
-      sourceEnd: 8,
-    },
-  ]
-);
-assert.ok(safeAttributedMarkdown.includes("&lt;tag&gt;"));
-assert.ok(
-  safeAttributedMarkdown.includes(
-    '&lt;tldr-attribution source_start="0">'
-  )
-);
-
-const emojiAnswer = "A 🎓 launch";
-const emojiStart = emojiAnswer.indexOf("🎓");
-const emojiMarkdown = Logic.annotateMarkdownAttributions(emojiAnswer, [
-  {
-    answerStart: emojiStart,
-    answerEnd: emojiStart + "🎓".length,
-    sourceStart: 11,
-    sourceEnd: 13,
-  },
-]);
-assert.ok(emojiMarkdown.includes(">🎓</tldr-attribution>"));
-
-const overlapAnswer = "alpha beta gamma";
-const overlapMarkdown = Logic.annotateMarkdownAttributions(overlapAnswer, [
-  {
-    answerStart: 0,
-    answerEnd: 10,
-    sourceStart: 0,
-    sourceEnd: 10,
-  },
-  {
-    answerStart: 6,
-    answerEnd: 10,
-    sourceStart: 20,
-    sourceEnd: 24,
-  },
-]);
 assert.strictEqual(
-  (overlapMarkdown.match(/<tldr-attribution/g) || []).length,
+  heatmapDocument.slice(valueSpan.start, valueSpan.end),
+  "gamma delta"
+);
+assert.strictEqual(valueSpan.confidence, 0.35);
+assert.strictEqual(
+  Logic.resolveHeatmapSpan(heatmap, 0, 3, heatmapDocument, "the beta value"),
+  null
+);
+console.log("PASS: arbitrary answer spans aggregate cached heatmap rows");
+
+const bridged = Logic.resolveHeatmapSpan(
+  {
+    row: [0, 0, 0, 0],
+    col: [0, 1, 2, 3],
+    data: [0.9, 0.05, 0.05, 0.6],
+    shape: [1, 4],
+    documentOffsets: [[0, 5], [6, 10], [11, 16], [17, 22]],
+    answerOffsets: [[0, 4]],
+  },
+  0,
+  4,
+  heatmapDocument,
+  "fact"
+);
+assert.strictEqual(
+  heatmapDocument.slice(bridged.start, bridged.end),
+  heatmapDocument
+);
+
+const weakNeighbor = Logic.resolveHeatmapSpan(
+  {
+    row: [0, 0],
+    col: [1, 2],
+    data: [0.9, 0.02],
+    shape: [1, 4],
+    documentOffsets: [[0, 5], [6, 10], [11, 16], [17, 22]],
+    answerOffsets: [[0, 4]],
+  },
+  0,
+  4,
+  heatmapDocument,
+  "fact"
+);
+assert.strictEqual(
+  heatmapDocument.slice(weakNeighbor.start, weakNeighbor.end),
+  "beta"
+);
+
+const beyondGap = Logic.resolveHeatmapSpan(
+  {
+    row: [0, 0],
+    col: [0, 3],
+    data: [0.9, 0.6],
+    shape: [1, 4],
+    documentOffsets: [[0, 5], [6, 10], [11, 16], [17, 22]],
+    answerOffsets: [[0, 4]],
+  },
+  0,
+  4,
+  heatmapDocument,
+  "fact",
+  0.25,
   1
 );
-console.log("PASS: attributed Markdown preserves raw bounds and escapes custom tags");
+assert.strictEqual(
+  heatmapDocument.slice(beyondGap.start, beyondGap.end),
+  "alpha"
+);
+
+const bestTokenConfidence = Logic.resolveHeatmapSpan(
+  {
+    row: [0, 1],
+    col: [0, 0],
+    data: [0.8, 0.05],
+    shape: [2, 1],
+    documentOffsets: [[0, 3]],
+    answerOffsets: [[0, 2], [2, 3]],
+  },
+  0,
+  3
+);
+assert.strictEqual(bestTokenConfidence.confidence, 0.8);
+
+const paraphrase = Logic.resolveHeatmapSpan(
+  {
+    row: [0],
+    col: [1],
+    data: [0.9],
+    shape: [1, 4],
+    documentOffsets: [[0, 5], [6, 10], [11, 16], [17, 22]],
+    answerOffsets: [[0, 7]],
+  },
+  0,
+  7,
+  heatmapDocument,
+  "revenue"
+);
+assert.strictEqual(
+  heatmapDocument.slice(paraphrase.start, paraphrase.end),
+  "beta"
+);
+assert.strictEqual(
+  Logic.resolveHeatmapSpan(
+    {
+      row: [0],
+      col: [99],
+      data: [0.9],
+      shape: [1, 4],
+      documentOffsets: [[0, 5], [6, 10], [11, 16], [17, 22]],
+      answerOffsets: [[0, 4]],
+    },
+    0,
+    4
+  ),
+  null
+);
+console.log("PASS: resolver golden vectors stay in sync with TokenPath");
+
+const repeatedDocument = "Fable 5 appeared first. Later Fable 5 shipped worldwide.";
+const secondFable = repeatedDocument.lastIndexOf("Fable 5");
+const repeated = Logic.resolveHeatmapSpan(
+  {
+    row: [0],
+    col: [0],
+    data: [0.94],
+    shape: [1, 1],
+    documentOffsets: [[secondFable + 1, secondFable + 6]],
+    answerOffsets: [[0, 7]],
+  },
+  0,
+  7,
+  repeatedDocument,
+  "Fable 5"
+);
+assert.deepStrictEqual(
+  { start: repeated.start, end: repeated.end },
+  { start: secondFable, end: secondFable + 7 }
+);
+console.log("PASS: source span growth and attention-local duplicate snapping match TokenPath");
+
+const emojiDocument = "A 🎓 launch happened.";
+const emojiHeatmap = {
+  row: [0],
+  col: [0],
+  data: [0.8],
+  shape: [1, 1],
+  documentOffsets: [[2, 4]],
+  answerOffsets: [[0, 2]],
+};
+assert.deepStrictEqual(
+  Logic.resolveHeatmapSpan(
+    emojiHeatmap,
+    0,
+    2,
+    emojiDocument,
+    "🎓"
+  ),
+  { start: 2, end: 4, confidence: 0.8 }
+);
+console.log("PASS: heatmap resolution uses browser UTF-16 offsets around emoji");
 
 console.log("\nAll panel-logic assertions passed.");

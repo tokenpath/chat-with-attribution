@@ -59,7 +59,9 @@ export const MessageResponse = memo(
   (previous, next) =>
     previous.children === next.children &&
     previous.isAnimating === next.isAnimating &&
-    previous.components === next.components
+    previous.components === next.components &&
+    previous.mode === next.mode &&
+    previous.parseIncompleteMarkdown === next.parseIncompleteMarkdown
 );
 
 MessageResponse.displayName = "MessageResponse";

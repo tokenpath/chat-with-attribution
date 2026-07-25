@@ -7,7 +7,7 @@
   // Guard against same-version double-injection (manifest + on-demand
   // scripting.executeScript). A versioned marker lets a fresh script replace a
   // stale isolated-world listener after an unpacked extension reload.
-  const CONTENT_VERSION = "2026-07-24.2";
+  const CONTENT_VERSION = "2026-07-25.1";
   if (window.__tldrContentLoaded === CONTENT_VERSION) return;
   window.__tldrContentLoaded = CONTENT_VERSION;
 
@@ -29,6 +29,7 @@
   let extraction = null;
 
   let highlight = null;
+  let activeHighlightId = null;
 
   // --- Selection snapshot ---------------------------------------------------
 
@@ -137,12 +138,21 @@
         const ok =
           (!msg.captureId || msg.captureId === extraction?.captureId) &&
           highlightRange(msg.start, msg.end);
+        if (ok) {
+          activeHighlightId =
+            typeof msg.highlightId === "string" && msg.highlightId
+              ? msg.highlightId
+              : null;
+        }
         sendResponse({ ok });
         break;
       }
       case "clear-highlight": {
-        const ok =
+        const captureMatches =
           !msg.captureId || msg.captureId === extraction?.captureId;
+        const highlightMatches =
+          !msg.highlightId || msg.highlightId === activeHighlightId;
+        const ok = captureMatches && highlightMatches;
         if (ok) clearHighlight();
         sendResponse({ ok });
         break;
@@ -1505,6 +1515,7 @@
   }
 
   function clearHighlight() {
+    activeHighlightId = null;
     if (!("highlights" in CSS)) {
       const selection = window.getSelection();
       if (selection) selection.removeAllRanges();

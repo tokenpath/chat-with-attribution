@@ -1,9 +1,10 @@
-interface TldrAttribution {
-  answerStart: number;
-  answerEnd: number;
-  sourceStart: number;
-  sourceEnd: number;
-  confidence?: number;
+interface TldrHeatmap {
+  row: number[];
+  col: number[];
+  data: number[];
+  shape: [number, number];
+  documentOffsets: Array<[number, number]>;
+  answerOffsets: Array<[number, number]>;
 }
 
 interface TldrSummaryRequest {
@@ -24,20 +25,37 @@ interface TldrPanelLogicApi {
     requestedMaxUnits?: number | null
   ): string;
   truncateCodePoints(text: string, maxCodePoints: number): string;
-  annotateMarkdownAttributions(
-    answer: string,
-    attributions: TldrAttribution[]
-  ): string;
+  resolveHeatmapSpan(
+    heatmap: TldrHeatmap,
+    spanStart: number,
+    spanEnd: number,
+    document?: string | null,
+    answer?: string | null,
+    relativeThreshold?: number,
+    maxGap?: number
+  ): {
+    start: number;
+    end: number;
+    confidence: number;
+  } | null;
+  codePointToUtf16Map(text: string): number[];
+  codePointOffsetToUtf16(map: number[], offset: number): number;
 }
 
 interface TokenPathFailure extends Error {
   status: number;
   code: string;
+  details: Record<string, unknown> | null;
 }
 
 interface TokenPathApi {
   Error: {
-    new (status: number, code: string, message: string): TokenPathFailure;
+    new (
+      status: number,
+      code: string,
+      message: string,
+      details?: Record<string, unknown> | null
+    ): TokenPathFailure;
     prototype: TokenPathFailure;
   };
   PLATFORM_URL: string;
@@ -46,16 +64,31 @@ interface TokenPathApi {
   setKey(key: string): Promise<void>;
   clearKey(): Promise<void>;
   fetchCredits(): Promise<number>;
-  answer(input: {
-    document: string;
-    question: string;
-    messages: Array<{ role: "user" | "assistant"; content: string }>;
+  generate(input: {
+    messages: Array<{
+      role: "system" | "user" | "assistant";
+      content: string;
+    }>;
     maxOutputTokens?: number | null;
+    onDelta?: (delta: string, accumulated: string) => void;
+    signal?: AbortSignal;
   }): Promise<{
     answer: string;
-    attributions: TldrAttribution[];
+    model: string;
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+      billed_tokens: number;
+    };
     creditsRemaining: number | null;
   }>;
+  heatmap(input: {
+    document: string;
+    question: string;
+    answer: string;
+    threshold?: number;
+    signal?: AbortSignal;
+  }): Promise<TldrHeatmap>;
 }
 
 declare const TldrPanelLogic: TldrPanelLogicApi;

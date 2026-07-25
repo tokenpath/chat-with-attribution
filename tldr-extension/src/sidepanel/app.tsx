@@ -1,13 +1,21 @@
 import {
+  CircleAlertIcon,
   EraserIcon,
+  ExternalLinkIcon,
   KeyRoundIcon,
   MonitorIcon,
   MoonIcon,
   SparklesIcon,
   SunIcon,
+  TextSelectIcon,
 } from "lucide-react";
-import type { HTMLAttributes, KeyboardEvent, MouseEvent, ReactNode } from "react";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import type { ComponentProps } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -28,212 +36,128 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  type HighlightSource,
   type PanelController,
   type PanelMessage,
   type PanelSnapshot,
 } from "@/controller";
+import { answerRangeFromSelection } from "@/answer-selection";
 import { cn } from "@/lib/utils";
-import {
-  normalizeAttributions,
-  supportsAttributedMarkdown,
-} from "@/markdown-attribution";
 
-type AttributionElementProps = HTMLAttributes<HTMLElement> & {
-  source_start?: string | number;
-  source_end?: string | number;
-  confidence?: string | number;
-  node?: unknown;
+const ANSWER_COMPONENTS = {
+  img: () => null,
+  a: ({
+    children,
+    className,
+    href,
+    node: _node,
+    title,
+  }: ComponentProps<"a"> & { node?: unknown }) => (
+    <span className="answer-link">
+      <span
+        className={className}
+        data-streamdown="link"
+        onClick={() => {
+          if (!href || !window.getSelection()?.isCollapsed) return;
+          window.open(href, "_blank", "noopener,noreferrer");
+        }}
+        title={title || href}
+      >
+        {children}
+      </span>
+      {href && (
+        <a
+          aria-label={`Open link: ${href}`}
+          className="answer-link-open"
+          draggable={false}
+          href={href}
+          rel="noreferrer"
+          target="_blank"
+          title={`Open ${href}`}
+        >
+          <ExternalLinkIcon aria-hidden="true" />
+        </a>
+      )}
+    </span>
+  ),
 };
 
-function AttributionSpan({
-  children,
-  className,
-  confidence,
-  controller,
-  source,
-  sourceEnd,
-  sourceStart,
-  ...props
-}: {
-  children: ReactNode;
-  className?: string;
-  confidence?: number;
-  controller: PanelController;
-  source?: HighlightSource;
-  sourceEnd: number;
-  sourceStart: number;
-} & Omit<HTMLAttributes<HTMLSpanElement>, "children">) {
-  const hasConfidence = Number.isFinite(confidence);
-  const isLowConfidence =
-    hasConfidence && Number(confidence) < 0.35;
-  const title = hasConfidence
-    ? `${Math.round(Number(confidence) * 100)}% match — click to find in the page`
-    : "Click to find this in the page";
-  const activate = () => {
-    if (!source) return;
-    void controller.onAttributionClick(sourceStart, sourceEnd, source);
-  };
-  const onClick = (event: MouseEvent<HTMLSpanElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    activate();
-  };
-  const onKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    event.stopPropagation();
-    activate();
-  };
-
-  return (
-    <span
-      {...props}
-      className={cn("attrib", isLowConfidence && "attrib-low", className)}
-      onClick={onClick}
-      onKeyDown={onKeyDown}
-      role="button"
-      tabIndex={0}
-      title={title}
-    >
-      {children}
-    </span>
-  );
-}
-
-function PlainAttributedResponse({
-  attributions,
-  controller,
+function AnswerResponse({
   message,
+  controller,
 }: {
-  attributions: TldrAttribution[];
-  controller: PanelController;
   message: PanelMessage;
+  controller: PanelController;
 }) {
-  const parts: ReactNode[] = [];
-  let cursor = 0;
-  for (const [index, attribution] of attributions.entries()) {
-    parts.push(message.text.slice(cursor, attribution.answerStart));
-    parts.push(
-      <AttributionSpan
-        confidence={attribution.confidence}
-        controller={controller}
-        key={`${attribution.answerStart}-${attribution.answerEnd}-${index}`}
-        source={message.source}
-        sourceEnd={attribution.sourceEnd}
-        sourceStart={attribution.sourceStart}
-      >
-        {message.text.slice(
-          attribution.answerStart,
-          attribution.answerEnd
-        )}
-      </AttributionSpan>
-    );
-    cursor = attribution.answerEnd;
-  }
-  parts.push(message.text.slice(cursor));
+  const answerRoot = useRef<HTMLDivElement>(null);
+  const locateSelection = useCallback(() => {
+    if (
+      !answerRoot.current ||
+      message.answerStatus === "streaming" ||
+      !message.text
+    ) {
+      return;
+    }
+    const range = answerRangeFromSelection(answerRoot.current, message.text);
+    if (!range) return;
+    void controller.onAnswerSelection(message.id, range.start, range.end);
+  }, [controller, message.answerStatus, message.id, message.text]);
+  const selectionTitle =
+    message.answerStatus === "ready"
+      ? "Select any text in this answer to find its source"
+      : undefined;
 
   return (
     <div
-      className="whitespace-pre-wrap break-words text-sm leading-6"
-      data-attribution-renderer="plain"
+      className="selectable-answer"
+      data-answer-status={message.answerStatus}
+      title={selectionTitle}
     >
-      {parts}
-    </div>
-  );
-}
-
-function AttributedResponse({
-  message,
-  controller,
-}: {
-  message: PanelMessage;
-  controller: PanelController;
-}) {
-  const source = message.source;
-  const rendering = useMemo(
-    () => {
-      const attributions = normalizeAttributions(
-        message.text,
-        message.attributions || []
-      );
-      const markdown = supportsAttributedMarkdown(message.text, attributions);
-      return {
-        attributions,
-        markdown,
-        content: markdown
-          ? TldrPanelLogic.annotateMarkdownAttributions(
-              message.text,
-              attributions
-            )
-          : message.text,
-      };
-    },
-    [message.attributions, message.text]
-  );
-  const components = useMemo(() => {
-    const Attribution = ({
-      source_start: sourceStartValue,
-      source_end: sourceEndValue,
-      confidence: confidenceValue,
-      node: _node,
-      children,
-      className,
-      ...props
-    }: AttributionElementProps) => {
-      const sourceStart = Number(sourceStartValue);
-      const sourceEnd = Number(sourceEndValue);
-      const confidence = Number(confidenceValue);
-
-      return (
-        <AttributionSpan
-          className={className}
-          confidence={confidence}
-          controller={controller}
-          source={source}
-          sourceEnd={sourceEnd}
-          sourceStart={sourceStart}
-          {...props}
+      <div
+        data-answer-content=""
+        onKeyUp={locateSelection}
+        onPointerUp={(event) => {
+          if (event.button !== 0) return;
+          requestAnimationFrame(locateSelection);
+        }}
+        ref={answerRoot}
+      >
+        <MessageResponse
+          components={ANSWER_COMPONENTS as never}
+          mode={
+            message.answerStatus === "streaming" ? "streaming" : "static"
+          }
+          parseIncompleteMarkdown={message.answerStatus === "streaming"}
+          skipHtml
+          urlTransform={(url, key) => {
+            if (key === "src") return null;
+            return /^(https?:|mailto:)/i.test(url) ? url : null;
+          }}
         >
-          {children}
-        </AttributionSpan>
-      );
-    };
-
-    const BlockedImage = () => null;
-
-    return {
-      img: BlockedImage,
-      "tldr-attribution": Attribution,
-    };
-  }, [controller, source]);
-
-  if (!rendering.markdown) {
-    return (
-      <PlainAttributedResponse
-        attributions={rendering.attributions}
-        controller={controller}
-        message={message}
-      />
-    );
-  }
-
-  return (
-    <MessageResponse
-      allowedTags={{
-        "tldr-attribution": ["source_start", "source_end", "confidence"],
-      }}
-      components={components as never}
-      literalTagContent={["tldr-attribution"]}
-      mode="static"
-      parseIncompleteMarkdown={false}
-      urlTransform={(url, key) => {
-        if (key === "src") return null;
-        return /^(https?:|mailto:)/i.test(url) ? url : null;
-      }}
-    >
-      {rendering.content}
-    </MessageResponse>
+          {message.text}
+        </MessageResponse>
+      </div>
+      {message.answerStatus === "attributing" && (
+        <div className="answer-attribution-status" role="status">
+          <Spinner className="size-3" />
+          <span>Mapping this answer to the page…</span>
+        </div>
+      )}
+      {message.answerStatus === "ready" && (
+        <div className="answer-attribution-status">
+          <TextSelectIcon className="size-3" />
+          <span>Select any text to find its source</span>
+        </div>
+      )}
+      {message.answerStatus === "unavailable" && (
+        <div
+          className="answer-attribution-status answer-attribution-error"
+          title={message.attribution?.error}
+        >
+          <CircleAlertIcon className="size-3" />
+          <span>Source map unavailable</span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -261,7 +185,7 @@ function ChatMessage({
         )}
       >
         {message.kind === "answer" ? (
-          <AttributedResponse controller={controller} message={message} />
+          <AnswerResponse controller={controller} message={message} />
         ) : (
           <div className="whitespace-pre-wrap break-words">
             {message.text}
@@ -321,7 +245,11 @@ export function App({ controller }: { controller: PanelController }) {
     controller.getSnapshot
   );
   const [input, setInput] = useState("");
-  const [authKey, setAuthKey] = useState("");
+  const [tokenPathKey, setTokenPathKey] = useState("");
+  const hasStreamingAnswer = snapshot.messages.some(
+    (message) =>
+      message.answerStatus === "streaming" && Boolean(message.text)
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
@@ -375,36 +303,57 @@ export function App({ controller }: { controller: PanelController }) {
             <KeyRoundIcon className="size-3.5" />
           </div>
           <div className="min-w-0">
-            <div className="text-sm font-semibold">Connect TokenPath</div>
+            <div className="text-sm font-semibold">
+              Connect TokenPath
+            </div>
             <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              Paste an API key to generate grounded, attributed answers.
+              One key generates the answer and maps it back to the page.
             </p>
           </div>
         </div>
         <form
-          className="flex gap-2"
+          className="grid gap-2"
           id="auth-form"
           onSubmit={async (event) => {
             event.preventDefault();
-            const connected = await controller.connect(authKey);
-            if (connected) setAuthKey("");
+            const connected = await controller.connect(tokenPathKey);
+            if (connected) {
+              setTokenPathKey("");
+            }
           }}
         >
-          <Input
-            aria-label="TokenPath API key"
-            autoComplete="off"
-            autoFocus={!snapshot.hasContext}
-            className="min-w-0 flex-1 font-mono text-xs"
-            disabled={snapshot.authBusy}
-            id="auth-key"
-            onChange={(event) => setAuthKey(event.currentTarget.value)}
-            placeholder="tpk_live_…"
-            spellCheck={false}
-            type="password"
-            value={authKey}
-          />
+          <div className="grid grid-cols-[5.25rem_minmax(0,1fr)] items-center gap-2">
+            <label
+              className="text-[11px] font-medium text-muted-foreground"
+              htmlFor="tokenpath-key"
+            >
+              TokenPath
+            </label>
+            <Input
+              aria-label="TokenPath API key"
+              autoComplete="off"
+              autoFocus={!snapshot.hasContext}
+              className="min-w-0 font-mono text-xs"
+              disabled={snapshot.authBusy}
+              id="tokenpath-key"
+              onChange={(event) =>
+                setTokenPathKey(event.currentTarget.value)
+              }
+              placeholder={
+                snapshot.tokenPathReady
+                  ? "Saved — leave blank to keep"
+                  : "tpk_live_…"
+              }
+              spellCheck={false}
+              type="password"
+              value={tokenPathKey}
+            />
+          </div>
           <Button
-            disabled={!authKey.trim() || snapshot.authBusy}
+            disabled={
+              snapshot.authBusy ||
+              (!snapshot.tokenPathReady && !tokenPathKey.trim())
+            }
             id="auth-connect"
             size="sm"
             type="submit"
@@ -420,16 +369,21 @@ export function App({ controller }: { controller: PanelController }) {
         >
           {snapshot.authError}
         </div>
-        <div className="mt-2.5 flex flex-wrap items-center justify-between gap-1.5 text-[11px] leading-4 text-muted-foreground">
-          <span>Only the selection and your questions are sent.</span>
-          <a
-            className="font-medium text-primary hover:underline"
-            href="https://platform.tokenpath.ai"
-            rel="noreferrer"
-            target="_blank"
-          >
-            Get an API key →
-          </a>
+        <div className="mt-2.5 text-[11px] leading-4 text-muted-foreground">
+          <div>
+            The selection, questions, and generated answer are sent to
+            TokenPath.
+          </div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+            <a
+              className="font-medium text-primary hover:underline"
+              href="https://platform.tokenpath.ai"
+              rel="noreferrer"
+              target="_blank"
+            >
+              TokenPath key →
+            </a>
+          </div>
         </div>
       </section>
 
@@ -468,7 +422,7 @@ export function App({ controller }: { controller: PanelController }) {
               message={message}
             />
           ))}
-          {snapshot.busy && <ThinkingMessage />}
+          {snapshot.busy && !hasStreamingAnswer && <ThinkingMessage />}
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
@@ -523,7 +477,7 @@ export function App({ controller }: { controller: PanelController }) {
           <span>token-level attribution</span>
           <button
             className="ml-1 underline underline-offset-2 hover:text-foreground"
-            hidden={!snapshot.connected}
+            hidden={!snapshot.tokenPathReady}
             id="disconnect"
             onClick={() => void controller.disconnect()}
             type="button"
