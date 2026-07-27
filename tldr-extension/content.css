@@ -1,4 +1,4 @@
-/* TLDR — highlight style for the CSS Custom Highlight API.
+/* TokenPath — highlight style for the CSS Custom Highlight API.
    No DOM is mutated, so the node map stays valid across repeated highlights. */
 ::highlight(tldr-attrib) {
   background-color: rgba(255, 212, 0, 0.45);

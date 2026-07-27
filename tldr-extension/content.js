@@ -1,4 +1,4 @@
-// TLDR — content script.
+// TokenPath — content script.
 // Owns the node map: char offsets in the extracted text -> live Text nodes.
 // The map NEVER crosses the message boundary; the panel only exchanges
 // { text } and { start, end } char offsets with us.
@@ -7,7 +7,7 @@
   // Guard against same-version double-injection (manifest + on-demand
   // scripting.executeScript). A versioned marker lets a fresh script replace a
   // stale isolated-world listener after an unpacked extension reload.
-  const CONTENT_VERSION = "2026-07-25.1";
+  const CONTENT_VERSION = "2026-07-27.2";
   if (window.__tldrContentLoaded === CONTENT_VERSION) return;
   window.__tldrContentLoaded = CONTENT_VERSION;
 
@@ -16,6 +16,10 @@
   const MAX_QUOTE_MATCHES = 256;
   const MAX_QUOTE_SOURCE_LENGTH = 500_000;
   const MAX_CAPTURE_CONTEXT_SOURCE_LENGTH = 100_000;
+  const MAX_FULL_PAGE_SOURCE_LENGTH = 400_000;
+  const MAX_FULL_PAGE_RAW_SOURCE_LENGTH = 2_000_000;
+  const MAX_FULL_PAGE_MAP_ENTRIES = 50_000;
+  const MAX_FULL_PAGE_TEXT_NODES = 100_000;
 
   // The live Range snapshotted at contextmenu time (before the menu click can
   // collapse the visible selection).
@@ -129,9 +133,30 @@
         extraction.captureId = msg.captureId || null;
         // The exact DOM map is now owned by `extraction`; the browser's native
         // blue selection is no longer needed and makes the page look stuck in
-        // selection mode after the user chooses TLDR.
+        // selection mode after the user chooses a TokenPath action.
         sendResponse({ text: extraction.text, error: extraction.error });
         if (!extraction.error) clearNativeSelection();
+        break;
+      }
+      case "capture-page": {
+        const exactContextSelection =
+          pendingExtraction && !pendingExtraction.error
+            ? pendingExtraction
+            : extractFromRange(liveSelectionRange());
+        pendingExtraction = null;
+        const capturedSelection = !exactContextSelection.error;
+        extraction = capturedSelection
+          ? exactContextSelection
+          : extractFullPage();
+        clearHighlight();
+        extraction.captureId = msg.captureId || null;
+        sendResponse({
+          captureMode: capturedSelection ? "selection" : "full-page",
+          text: extraction.text,
+          error: extraction.error,
+          truncated: extraction.truncated === true,
+        });
+        if (capturedSelection) clearNativeSelection();
         break;
       }
       case "highlight": {
@@ -177,6 +202,46 @@
   }
 
   // --- Extraction -----------------------------------------------------------
+
+  function extractFullPage() {
+    const root = document.body;
+    if (!root) {
+      return {
+        text: "",
+        map: [],
+        error: "This page has no readable document body.",
+        truncated: false,
+      };
+    }
+
+    // Full-page capture is not constrained by CSS user-select. Include all
+    // rendered text while keeping the same private DOM map used by selection
+    // attribution. Stop at the API/storage-safe prefix instead of building and
+    // then transferring an unbounded page string.
+    const rebuilt = extractFullPageRoot(root);
+    if (!rebuilt.text.trim() || !rebuilt.map.length) {
+      return {
+        text: "",
+        map: [],
+        error: "No readable text was found on this page.",
+        truncated: false,
+      };
+    }
+
+    return {
+      text: rebuilt.text,
+      map: rebuilt.map,
+      error: null,
+      truncated: rebuilt.overflow,
+      fullPage: true,
+      renderedOnly: true,
+      anchor: {
+        selector: "body",
+        kind: "body",
+        routeKey: currentRouteKey(),
+      },
+    };
+  }
 
   function extractFromRange(range) {
     if (!range) {
@@ -286,6 +351,7 @@
     // source. A saved child path cannot safely choose between repeated quotes
     // after a reorder.
     if (scope && rebaseExtractionWithin(scope)) return true;
+    if (scope === document.body) return false;
 
     // If a stable source identity was captured, never fall through to a body
     // search: the same words may occur in another tweet/message.
@@ -294,7 +360,9 @@
   }
 
   function rebaseExtractionWithin(scope) {
-    const rebuilt = extractFromRoot(scope);
+    const rebuilt = extraction?.fullPage
+      ? extractFullPageRoot(scope)
+      : extractFromRoot(scope, extraction?.renderedOnly === true);
     const needle = extraction.text;
     const first = rebuilt.text.indexOf(needle);
     if (first < 0 || rebuilt.text.indexOf(needle, first + 1) >= 0) return false;
@@ -302,8 +370,10 @@
     const end = first + needle.length;
     const map = sliceMap(rebuilt.map, first, end);
     if (!map.length) return false;
-    attachAnchorPaths(map, extraction.anchor);
-    attachScopeQuoteContexts(map, extraction.anchor);
+    if (!extraction.fullPage) {
+      attachAnchorPaths(map, extraction.anchor);
+      attachScopeQuoteContexts(map, extraction.anchor);
+    }
     extraction.map = map;
     return true;
   }
@@ -808,7 +878,7 @@
         error:
           first < 0
             ? "The page changed before the selection could be captured."
-            : "That selection appears more than once. Select it again so TLDR can keep the exact occurrence.",
+            : "That selection appears more than once. Select it again so TokenPath can keep the exact occurrence.",
       };
     }
     const canonicalStart = canonicalOffsets[first];
@@ -842,6 +912,125 @@
   // folding ASCII-only and length-preserving so canonicalOffsets stay exact.
   function foldComparisonChar(ch) {
     return ch >= "A" && ch <= "Z" ? ch.toLowerCase() : ch;
+  }
+
+  function extractFullPageRoot(root) {
+    const styleCache = new WeakMap();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const map = [];
+    let text = "";
+    let prevBlock = null;
+    let prevTextNode = null;
+    let rawCharacters = 0;
+    let visitedTextNodes = 0;
+    let node;
+
+    while ((node = walker.nextNode())) {
+      visitedTextNodes += 1;
+      if (
+        visitedTextNodes > MAX_FULL_PAGE_TEXT_NODES ||
+        map.length >= MAX_FULL_PAGE_MAP_ENTRIES ||
+        rawCharacters >= MAX_FULL_PAGE_RAW_SOURCE_LENGTH ||
+        text.length >= MAX_FULL_PAGE_SOURCE_LENGTH
+      ) {
+        return { text, map, overflow: true };
+      }
+      if (!isRenderedTextNode(node, styleCache)) continue;
+
+      const block = nearestBlock(node, styleCache);
+      const needsSeparator =
+        text.length > 0 &&
+        (block !== prevBlock ||
+          hasLineBreakBetween(prevTextNode, node, root));
+      const availableOutput =
+        MAX_FULL_PAGE_SOURCE_LENGTH -
+        text.length -
+        (needsSeparator ? 1 : 0);
+      if (availableOutput <= 0) {
+        return { text, map, overflow: true };
+      }
+
+      const normalized = normalizeSliceBounded(
+        node.data,
+        MAX_FULL_PAGE_RAW_SOURCE_LENGTH - rawCharacters,
+        availableOutput
+      );
+      rawCharacters += normalized.consumedRaw;
+      if (normalized.out) {
+        if (needsSeparator) text += "\n";
+        const start = text.length;
+        text += normalized.out;
+        map.push({
+          start,
+          end: text.length,
+          node,
+          rawOffsets: normalized.rawOffsets,
+          messageAnchor: makeWhatsAppMessageAnchor(node),
+        });
+        prevBlock = block;
+        prevTextNode = node;
+      }
+
+      if (
+        normalized.overflow ||
+        map.length >= MAX_FULL_PAGE_MAP_ENTRIES ||
+        rawCharacters >= MAX_FULL_PAGE_RAW_SOURCE_LENGTH ||
+        text.length >= MAX_FULL_PAGE_SOURCE_LENGTH
+      ) {
+        return { text, map, overflow: true };
+      }
+    }
+    return { text, map, overflow: false };
+  }
+
+  function normalizeSliceBounded(raw, maxRawCharacters, maxOutputCharacters) {
+    let out = "";
+    const rawOffsets = [];
+    let inWs = false;
+    let index = 0;
+    const rawLimit = Math.min(
+      raw.length,
+      Math.max(0, Math.floor(maxRawCharacters))
+    );
+    const outputLimit = Math.max(0, Math.floor(maxOutputCharacters));
+
+    while (index < rawLimit) {
+      const first = raw.charCodeAt(index);
+      const width =
+        first >= 0xd800 &&
+        first <= 0xdbff &&
+        index + 1 < raw.length &&
+        raw.charCodeAt(index + 1) >= 0xdc00 &&
+        raw.charCodeAt(index + 1) <= 0xdfff
+          ? 2
+          : 1;
+      if (index + width > rawLimit) break;
+
+      const chunk = raw.slice(index, index + width);
+      if (isWs(chunk)) {
+        if (!inWs) {
+          if (out.length + 1 > outputLimit) break;
+          inWs = true;
+          out += " ";
+          rawOffsets.push(index);
+        }
+      } else {
+        if (out.length + width > outputLimit) break;
+        inWs = false;
+        out += chunk;
+        for (let offset = 0; offset < width; offset++) {
+          rawOffsets.push(index + offset);
+        }
+      }
+      index += width;
+    }
+
+    return {
+      consumedRaw: index,
+      out,
+      overflow: index < raw.length,
+      rawOffsets,
+    };
   }
 
   function extractFromRoot(

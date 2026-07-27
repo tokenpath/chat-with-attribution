@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "TLDR — Chat with Page Selection",
+  "name": "TokenPath — Chat with Attribution",
   "version": "0.1.0",
-  "description": "Select text, right-click TLDR, and chat with the selection. Answers link back to the exact source span in the page.",
+  "description": "Summarize, simplify, or ask about selected text or full pages and PDFs, then trace any answer span back to its source.",
   "permissions": [
     "contextMenus",
     "sidePanel",
@@ -34,6 +34,6 @@
     }
   ],
   "action": {
-    "default_title": "TLDR"
+    "default_title": "TokenPath — Chat with Attribution"
   }
 }

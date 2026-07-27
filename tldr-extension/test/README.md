@@ -18,7 +18,7 @@ npm test
 npm run test:unit
 ```
 
-This runs four files:
+This runs five files:
 
 - **`roundtrip.test.cjs`** checks canonical extraction offsets against raw DOM
   offsets, including synthetic block separators, headings, and exact
@@ -34,10 +34,22 @@ This runs four files:
   streams, caller cancellation, canonical `done.answer`, HTTP error details,
   heatmap validation, code-point offset conversion, and cancellation or timeout
   while a response body is still arriving.
+- **`pdf-text-extractor.test.cjs`** verifies fragment-free credentialed PDF
+  downloads, signature and 50 MiB limits, strict native-viewer reply binding,
+  Unicode-safe 400,000-character truncation, scan/timeout/abort failures, and
+  unconditional hidden-viewer cleanup.
 - **`background.test.cjs`** holds `chrome.sidePanel.open()` unresolved and proves
   that capture still proceeds immediately. It also verifies exact-frame warm
   injection, retries for missing receivers and stale “page changed” responses,
-  Gmail or nested-frame routing, click-order race handling, and seed metadata.
+  Gmail or nested-frame routing, click-order race handling, seed metadata, and
+  startup migration from the older single context-menu item to a **TokenPath**
+  submenu with **TLDR**, **Simplify**, and **Ask a question** actions.
+  Native-PDF coverage includes legacy and modern OOPIF detection, direct
+  context-menu capture, full-document descriptor routing for no-selection
+  clicks, exact-frame full-page HTML routing for all three actions,
+  bounded/contextual text-fragment encoding (including Unicode and reserved grammar),
+  URL-commit-before-reload ordering, and clearing highlights without losing
+  ordinary PDF anchors.
 
 ## Browser integration
 
@@ -46,12 +58,14 @@ npm run test:e2e
 ```
 
 `e2e.mjs` loads representative fixtures and public pages, injects the real
-scripts behind a small Chrome API shim, and drives selection → `contextmenu` →
-capture → streaming generation → cached heatmap → arbitrary answer selection →
-source-offset highlight. It covers:
+scripts behind a small Chrome API shim, and drives selection → **TokenPath**
+submenu action → capture → optional streaming generation → cached heatmap →
+arbitrary answer selection → source-offset highlight. TLDR summarizes,
+Simplify explains in plainer language, and Ask a question makes no generation
+or attribution request until the composer is submitted. It covers:
 
-- side-panel bootstrap while `/credits` never resolves, persisted Low / Medium /
-  High summary length and generation headroom, a messages-only TokenPath
+- side-panel bootstrap while `/credits` never resolves, persisted Short /
+  Medium / Detailed summary length and generation headroom, a messages-only TokenPath
   `/v1/generate` request, split named SSE
   events, one TokenPath heatmap per answer, and reuse of that heatmap across
   different answer selections; exact raw-answer mapping across inline/fenced
@@ -66,7 +80,19 @@ source-offset highlight. It covers:
   source range to the original tab and frame;
 - delayed auth cleanup after a newer capture, out-of-order credit reads, rapid
   answer-selection responses, and content-script highlight ownership, proving
-  stale async work cannot write into or clear newer UI state;
+  stale async work cannot write into or clear newer UI state, plus side-panel
+  teardown cleanup for owned page and PDF highlights;
+- native-PDF panel routing through the background worker, reuse of the normal
+  generation/heatmap path, same-document text-fragment and viewer-anchor
+  updates, explicit clearing, and genuine-navigation invalidation without
+  bouncing the tab back to the old PDF;
+- full-PDF reading state, hidden native-viewer extraction, normal
+  generation/heatmap reuse, and replacement races where a newer capture aborts
+  the old read and ignores its delayed viewer reply;
+- full-page rendered-text capture that ignores a stale selection, includes
+  visible non-selectable text, excludes hidden/script/style text, safely caps a
+  surrogate-boundary prefix, and preserves repeated-phrase attribution after a
+  DOM replacement;
 - a Gmail-shaped nested scroll pane whose complete message subtree is replaced
   between capture and highlight, including repeated text and inline elements;
 - a WhatsApp-shaped selection spanning link-preview text and a later image
@@ -120,11 +146,25 @@ available, `npx playwright install-deps chromium` is the standard alternative.
 ## Still manual
 
 The tests mock rather than launch a packaged Chrome extension, so a final
-load-unpacked pass should verify the real context menu, side panel, TokenPath
-HTTP/authentication flow, streamed Markdown, selecting arbitrary answer text to
-navigate, repeated selections without new attribution calls, nested Gmail
-scrolling, and detached-DOM unique remapping. Restricted pages such as
-`chrome://` remain unavailable to content scripts by design.
+load-unpacked pass should first verify that the **TokenPath** submenu exposes
+**TLDR**, **Simplify**, and **Ask a question**. Confirm that TLDR summarizes,
+Simplify starts a plain-language explanation, and Ask a question opens a
+captured chat without a generation or attribution request until submit. The
+pass should also verify the
+side panel, TokenPath HTTP/authentication flow, streamed Markdown, selecting
+arbitrary answer text to navigate, repeated selections without new attribution
+calls, nested Gmail scrolling, detached-DOM unique remapping, and searchable-PDF
+selection or full-document capture/highlight/clear behavior. Also right-click
+ordinary HTML without a selection and verify that the panel labels and
+attributes the entire rendered page. Restricted pages
+such as `chrome://` remain unavailable to content scripts by design; PDFs are
+handled separately through Chrome's native viewer. The PDF pass should use a
+top-level searchable file, first right-click without a selection and confirm
+that the hidden-copy read leaves the visible viewer untouched, then confirm that
+the native viewer finds an attributed span (including a repeated phrase with
+context). Inspect Back/Clear behavior because Chrome records fragment
+navigation in session history. An embedded PDF should remain unsupported
+without navigating or reloading its outer page.
 
 Deterministic fixture failures set a nonzero exit code. Public-site smoke checks
 remain diagnostic because network availability and third-party markup can

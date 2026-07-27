@@ -5,17 +5,100 @@ const vm = require("vm");
 
 const calls = [];
 let clickHandler;
+let installedHandler;
+let runtimeMessageHandler;
+let autoCommitTabUpdates = true;
+let detectedContentType = "text/html";
+let pendingTabCommit = null;
 let sendMessageImpl = () => Promise.resolve({ text: "Fable 5", error: null });
+let executeScriptImpl = (options) =>
+  Promise.resolve(
+    options?.func ? [{ result: detectedContentType }] : undefined
+  );
+const tabUpdateListeners = new Set();
+const tabUrls = new Map();
+const contextMenuItems = new Map([
+  [
+    "tldr-capture",
+    {
+      id: "tldr-capture",
+      title: "TLDR",
+      contexts: ["selection"],
+    },
+  ],
+]);
+
+function emitTabCommit(tabId, url) {
+  tabUrls.set(tabId, url);
+  for (const listener of tabUpdateListeners) {
+    listener(tabId, { url }, { id: tabId, url });
+  }
+}
+
+function dispatchRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    try {
+      const keepAlive = runtimeMessageHandler(message, {}, resolve);
+      assert.strictEqual(
+        keepAlive,
+        true,
+        `${message.type} must keep the runtime response channel open`
+      );
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 const chrome = {
   runtime: {
-    onInstalled: { addListener() {} },
+    onInstalled: {
+      addListener(handler) {
+        installedHandler = handler;
+      },
+    },
+    onMessage: {
+      addListener(handler) {
+        runtimeMessageHandler = handler;
+      },
+    },
     sendMessage(message) {
       calls.push(["runtime.sendMessage", message]);
       return Promise.resolve();
     },
   },
   contextMenus: {
-    create() {},
+    create(options, callback) {
+      calls.push(["contextMenus.create", options]);
+      if (contextMenuItems.has(options.id)) {
+        chrome.runtime.lastError = { message: "Duplicate menu item ID" };
+      } else {
+        contextMenuItems.set(options.id, { ...options });
+      }
+      callback?.();
+      delete chrome.runtime.lastError;
+    },
+    update(id, options, callback) {
+      calls.push(["contextMenus.update", id, options]);
+      if (!contextMenuItems.has(id)) {
+        chrome.runtime.lastError = { message: "Menu item not found" };
+      } else {
+        contextMenuItems.set(id, {
+          ...contextMenuItems.get(id),
+          ...options,
+        });
+      }
+      callback();
+      delete chrome.runtime.lastError;
+    },
+    remove(id, callback) {
+      calls.push(["contextMenus.remove", id]);
+      if (!contextMenuItems.delete(id)) {
+        chrome.runtime.lastError = { message: "Menu item not found" };
+      }
+      callback();
+      delete chrome.runtime.lastError;
+    },
     onClicked: {
       addListener(handler) {
         clickHandler = handler;
@@ -37,11 +120,36 @@ const chrome = {
       calls.push(["tabs.sendMessage", tabId, message, options]);
       return sendMessageImpl(tabId, message, options);
     },
+    update(tabId, properties) {
+      calls.push(["tabs.update", tabId, properties]);
+      if (autoCommitTabUpdates) {
+        Promise.resolve().then(() => emitTabCommit(tabId, properties.url));
+      } else {
+        pendingTabCommit = () => emitTabCommit(tabId, properties.url);
+      }
+      return Promise.resolve({ id: tabId, pendingUrl: properties.url });
+    },
+    reload(tabId) {
+      calls.push(["tabs.reload", tabId]);
+      return Promise.resolve();
+    },
+    get(tabId) {
+      calls.push(["tabs.get", tabId]);
+      return Promise.resolve({ id: tabId, url: tabUrls.get(tabId) });
+    },
+    onUpdated: {
+      addListener(listener) {
+        tabUpdateListeners.add(listener);
+      },
+      removeListener(listener) {
+        tabUpdateListeners.delete(listener);
+      },
+    },
   },
   scripting: {
-    executeScript() {
-      calls.push(["scripting.executeScript"]);
-      return Promise.resolve();
+    executeScript(options) {
+      calls.push(["scripting.executeScript", options]);
+      return executeScriptImpl(options);
     },
     insertCSS() {
       calls.push(["scripting.insertCSS"]);
@@ -59,20 +167,97 @@ const chrome = {
 };
 
 const source = readFileSync(join(__dirname, "..", "background.js"), "utf8");
-vm.runInNewContext(source, {
+const sandbox = {
   chrome,
   console: { error() {}, warn() {} },
   Date,
   Promise,
   Math,
-});
+  URL,
+  clearTimeout,
+  setTimeout,
+};
+vm.runInNewContext(source, sandbox);
 
 assert.ok(clickHandler, "context-menu listener registered");
+assert.ok(runtimeMessageHandler, "runtime PDF listener registered");
+assert.ok(installedHandler, "context-menu installer registered");
 
 (async () => {
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(
+    contextMenuItems.has("tldr-capture"),
+    false,
+    "startup must remove the legacy standalone TLDR item"
+  );
+  assert.ok(
+    calls.some(
+      ([name, id]) =>
+        name === "contextMenus.remove" && id === "tldr-capture"
+    ),
+    "legacy menu migration runs on service-worker startup"
+  );
+  assert.strictEqual(
+    calls.some(([name]) => name === "contextMenus.removeAll"),
+    false,
+    "menu migration must never race startup by removing every item"
+  );
+
+  const expectedMenus = [
+    ["TokenPath", "TokenPath", undefined],
+    ["tokenpath-tldr", "TLDR", "TokenPath"],
+    ["tokenpath-simplify", "Simplify", "TokenPath"],
+    ["tokenpath-ask", "Ask a question", "TokenPath"],
+  ];
+  for (const [id, title, parentId] of expectedMenus) {
+    const item = contextMenuItems.get(id);
+    assert.ok(item, `${id} is created on service-worker startup`);
+    assert.strictEqual(item.title, title);
+    assert.strictEqual(item.parentId, parentId);
+    assert.deepStrictEqual(Array.from(item.contexts || []), [
+      "selection",
+      "page",
+      "frame",
+    ]);
+  }
+
+  const reinstallStart = calls.length;
+  installedHandler();
+  await new Promise((resolve) => setImmediate(resolve));
+  const reinstallCalls = calls.slice(reinstallStart);
+  assert.deepStrictEqual(
+    reinstallCalls
+      .filter(([name]) => name === "contextMenus.update")
+      .map(([, id]) => id),
+    expectedMenus.map(([id]) => id),
+    "onInstalled idempotently upserts the complete menu tree"
+  );
+  assert.strictEqual(
+    reinstallCalls.some(([name]) => name === "contextMenus.create"),
+    false,
+    "onInstalled does not duplicate an existing menu tree"
+  );
+  assert.strictEqual(
+    reinstallCalls.some(([name]) => name === "contextMenus.remove"),
+    false,
+    "legacy migration runs once per service-worker lifetime"
+  );
+  console.log("PASS: startup migrates and idempotently upserts the TokenPath menu tree");
+
+  const parentClickStart = calls.length;
+  await clickHandler(
+    { menuItemId: "TokenPath", frameId: 0, selectionText: "ignored" },
+    { id: 41, windowId: 3, url: "https://example.com/" }
+  );
+  assert.strictEqual(
+    calls.length,
+    parentClickStart,
+    "the TokenPath parent menu is non-actionable"
+  );
+
   await clickHandler(
     {
-      menuItemId: "tldr-capture",
+      menuItemId: "tokenpath-tldr",
       frameId: 7,
       selectionText: "Fable 5",
     },
@@ -104,6 +289,8 @@ assert.ok(clickHandler, "context-menu listener registered");
   assert.strictEqual(seed.frameId, 7);
   assert.strictEqual(seed.windowId, 3);
   assert.strictEqual(seed.url, "https://mail.google.com/mail/u/0/");
+  assert.strictEqual(seed.intent, "tldr");
+  assert.strictEqual(seed.captureMode, "selection");
   assert.ok(seed.captureId);
   const runtimeCapture = calls.find(
     ([name, message]) =>
@@ -112,6 +299,7 @@ assert.ok(clickHandler, "context-menu listener registered");
       message?.captureId === seed.captureId
   )?.[1];
   assert.strictEqual(runtimeCapture?.url, seed.url);
+  assert.strictEqual(runtimeCapture?.intent, "tldr");
   console.log("PASS: selection capture does not wait for side-panel opening");
   console.log("PASS: Gmail/nested-frame capture preserves the originating frame");
   console.log("PASS: content injection begins before panel focus can hide selection");
@@ -127,7 +315,7 @@ assert.ok(clickHandler, "context-menu listener registered");
   const retryStart = calls.length;
   await clickHandler(
     {
-      menuItemId: "tldr-capture",
+      menuItemId: "tokenpath-tldr",
       frameId: 0,
       selectionText: "Substack selection",
     },
@@ -160,7 +348,7 @@ assert.ok(clickHandler, "context-menu listener registered");
   const contentRetryStart = calls.length;
   await clickHandler(
     {
-      menuItemId: "tldr-capture",
+      menuItemId: "tokenpath-tldr",
       frameId: 0,
       selectionText: "Recovered selection",
     },
@@ -187,13 +375,16 @@ assert.ok(clickHandler, "context-menu listener registered");
     });
   const storageStart = calls.length;
   const older = clickHandler(
-    { menuItemId: "tldr-capture", frameId: 0, selectionText: "older" },
+    { menuItemId: "tokenpath-tldr", frameId: 0, selectionText: "older" },
     { id: 99, windowId: 3, url: "https://x.com/home" }
   );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(pending.length, 1);
   const newer = clickHandler(
-    { menuItemId: "tldr-capture", frameId: 0, selectionText: "newer" },
+    { menuItemId: "tokenpath-tldr", frameId: 0, selectionText: "newer" },
     { id: 99, windowId: 3, url: "https://x.com/home" }
   );
+  await new Promise((resolve) => setImmediate(resolve));
   assert.strictEqual(pending.length, 2);
   pending[1]({ text: "newer", error: null });
   await newer;
@@ -210,6 +401,542 @@ assert.ok(clickHandler, "context-menu listener registered");
     "a slow older extraction must not replace the newer click"
   );
   console.log("PASS: out-of-order extraction completion keeps the newest click");
+
+  const mimeResolvers = [];
+  executeScriptImpl = (options) =>
+    options?.func
+      ? new Promise((resolve) => {
+          mimeResolvers.push(resolve);
+        })
+      : Promise.resolve();
+  sendMessageImpl = () =>
+    Promise.resolve({
+      text: "newer full-page context",
+      error: null,
+      captureMode: "full-page",
+    });
+  const mimeRaceStart = calls.length;
+  const olderMimeCapture = clickHandler(
+    { menuItemId: "tokenpath-tldr", frameId: 4 },
+    { id: 100, windowId: 3, url: "https://example.com/race" }
+  );
+  const newerMimeCapture = clickHandler(
+    { menuItemId: "tokenpath-ask", frameId: 8 },
+    { id: 100, windowId: 3, url: "https://example.com/race" }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(mimeResolvers.length, 2);
+  mimeResolvers[1]([{ result: "text/html" }]);
+  await newerMimeCapture;
+  mimeResolvers[0]([{ result: "text/html" }]);
+  await olderMimeCapture;
+  executeScriptImpl = (options) =>
+    Promise.resolve(
+      options?.func ? [{ result: detectedContentType }] : undefined
+    );
+
+  const mimeRaceCalls = calls.slice(mimeRaceStart);
+  const mimeRaceMessages = mimeRaceCalls.filter(
+    ([name]) => name === "tabs.sendMessage"
+  );
+  assert.strictEqual(
+    mimeRaceMessages.length,
+    1,
+    "an older MIME probe must not overwrite the newer frame extraction"
+  );
+  assert.strictEqual(mimeRaceMessages[0][3].frameId, 8);
+  const mimeRaceSeeds = mimeRaceCalls
+    .filter(([name]) => name === "storage.session.set")
+    .map(([, value]) => value["seed:100"]);
+  assert.strictEqual(mimeRaceSeeds.length, 1);
+  assert.strictEqual(mimeRaceSeeds[0].intent, "ask");
+  assert.strictEqual(mimeRaceSeeds[0].frameId, 8);
+  assert.strictEqual(mimeRaceSeeds[0].captureMode, "full-page");
+  console.log("PASS: a stale MIME probe cannot replace a newer page capture");
+
+  const pdfCaptureStart = calls.length;
+  detectedContentType = "application/pdf";
+  await clickHandler(
+    {
+      menuItemId: "tokenpath-tldr",
+      frameId: 4,
+      frameUrl:
+        "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html",
+      pageUrl: "https://example.com/reports/dummy.pdf",
+      selectionText: "  Dummy PDF file  ",
+    },
+    {
+      id: 120,
+      windowId: 3,
+      url: "https://example.com/reports/dummy.pdf",
+    }
+  );
+  detectedContentType = "text/html";
+  const pdfCaptureCalls = calls.slice(pdfCaptureStart);
+  assert.strictEqual(
+    pdfCaptureCalls.some(
+      ([name, options]) =>
+        name === "scripting.executeScript" &&
+        options?.files?.includes("content.js")
+    ),
+    false,
+    "the protected native PDF viewer must not receive a content-script injection"
+  );
+  assert.strictEqual(
+    pdfCaptureCalls.some(([name]) => name === "tabs.sendMessage"),
+    false,
+    "PDF capture must use contextMenus.selectionText directly"
+  );
+  const pdfSeed = pdfCaptureCalls.find(
+    ([name]) => name === "storage.session.set"
+  )[1]["seed:120"];
+  assert.strictEqual(pdfSeed.text, "Dummy PDF file");
+  assert.strictEqual(pdfSeed.sourceType, "chrome-pdf");
+  assert.strictEqual(pdfSeed.url, "https://example.com/reports/dummy.pdf");
+  console.log("PASS: Chrome PDF selections bypass protected viewer injection");
+
+  detectedContentType = "application/pdf";
+  const modernPdfCaptureStart = calls.length;
+  await clickHandler(
+    {
+      menuItemId: "tokenpath-simplify",
+      frameId: 6,
+      // Modern OOPIF PDF context menus can report the original PDF URL here
+      // instead of the protected viewer extension URL.
+      frameUrl: "https://example.com/reports/modern.pdf",
+      pageUrl: "https://example.com/reports/modern.pdf",
+      selectionText: "Modern PDF selection",
+    },
+    {
+      id: 121,
+      windowId: 3,
+      url: "https://example.com/reports/modern.pdf",
+    }
+  );
+  detectedContentType = "text/html";
+  const modernPdfCaptureCalls = calls.slice(modernPdfCaptureStart);
+  assert.strictEqual(
+    modernPdfCaptureCalls.some(([name]) => name === "tabs.sendMessage"),
+    false,
+    "modern PDF capture must not depend on its OOPIF frame URL"
+  );
+  const modernPdfSeed = modernPdfCaptureCalls.find(
+    ([name]) => name === "storage.session.set"
+  )[1]["seed:121"];
+  assert.strictEqual(modernPdfSeed.text, "Modern PDF selection");
+  assert.strictEqual(modernPdfSeed.sourceType, "chrome-pdf");
+  assert.strictEqual(modernPdfSeed.intent, "simplify");
+  console.log("PASS: modern OOPIF PDFs are detected by top-level MIME type");
+
+  detectedContentType = "application/pdf";
+  const fullPdfCaptureStart = calls.length;
+  const fullPdfCapture = clickHandler(
+    {
+      menuItemId: "tokenpath-ask",
+      frameId: 0,
+      frameUrl:
+        "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html",
+      pageUrl: "https://example.com/reports/full.pdf",
+      selectionText: "",
+    },
+    {
+      id: 123,
+      windowId: 3,
+      url: "https://example.com/reports/full.pdf",
+    }
+  );
+  assert.strictEqual(
+    calls
+      .slice(fullPdfCaptureStart)
+      .some(([name]) => name === "sidePanel.open"),
+    true,
+    "full-PDF capture must open the side panel in the context-menu gesture"
+  );
+  await fullPdfCapture;
+  detectedContentType = "text/html";
+  const fullPdfCaptureCalls = calls.slice(fullPdfCaptureStart);
+  assert.strictEqual(
+    fullPdfCaptureCalls.some(([name]) => name === "tabs.sendMessage"),
+    false,
+    "full-PDF capture must not message the protected viewer"
+  );
+  const fullPdfSeed = fullPdfCaptureCalls.find(
+    ([name]) => name === "storage.session.set"
+  )[1]["seed:123"];
+  assert.strictEqual(fullPdfSeed.sourceType, "chrome-pdf");
+  assert.strictEqual(fullPdfSeed.captureMode, "full-pdf");
+  assert.strictEqual(fullPdfSeed.intent, "ask");
+  assert.strictEqual(fullPdfSeed.text, "");
+  assert.strictEqual(fullPdfSeed.error, null);
+  assert.strictEqual(
+    fullPdfSeed.url,
+    "https://example.com/reports/full.pdf"
+  );
+  const fullPdfRuntimeCapture = fullPdfCaptureCalls.find(
+    ([name, message]) =>
+      name === "runtime.sendMessage" &&
+      message?.type === "selection-captured" &&
+      message?.captureId === fullPdfSeed.captureId
+  )?.[1];
+  assert.strictEqual(fullPdfRuntimeCapture?.captureMode, "full-pdf");
+  assert.strictEqual(fullPdfRuntimeCapture?.intent, "ask");
+  assert.strictEqual(fullPdfRuntimeCapture?.error, null);
+  console.log("PASS: no-selection PDFs hand full-document capture to the panel");
+
+  const fullPageActions = [
+    ["tokenpath-tldr", "tldr"],
+    ["tokenpath-simplify", "simplify"],
+    ["tokenpath-ask", "ask"],
+  ];
+  for (const [index, [menuItemId, intent]] of fullPageActions.entries()) {
+    const pageText = `Whole frame article for ${intent}`;
+    sendMessageImpl = (_tabId, message) =>
+      Promise.resolve(
+        message.type === "capture-page"
+          ? {
+              text: pageText,
+              error: null,
+              truncated: intent === "simplify",
+            }
+          : {
+              text: "stale page selection",
+              error: null,
+            }
+      );
+    const tabId = 124 + index;
+    const fullPageCaptureStart = calls.length;
+    await clickHandler(
+      {
+        menuItemId,
+        frameId: 13,
+        pageUrl: `https://example.com/article/${intent}`,
+      },
+      {
+        id: tabId,
+        windowId: 3,
+        url: `https://example.com/article/${intent}`,
+      }
+    );
+    const fullPageCaptureCalls = calls.slice(fullPageCaptureStart);
+    const fullPageMessages = fullPageCaptureCalls.filter(
+      ([name]) => name === "tabs.sendMessage"
+    );
+    assert.strictEqual(
+      fullPageMessages.length,
+      1,
+      `${intent} should capture the page exactly once`
+    );
+    assert.strictEqual(fullPageMessages[0][1], tabId);
+    assert.strictEqual(fullPageMessages[0][2].type, "capture-page");
+    assert.ok(fullPageMessages[0][2].captureId);
+    assert.strictEqual(fullPageMessages[0][2].selectionText, undefined);
+    assert.strictEqual(fullPageMessages[0][3].frameId, 13);
+    assert.ok(
+      fullPageCaptureCalls.findIndex(
+        ([name]) => name === "sidePanel.open"
+      ) <
+        fullPageCaptureCalls.findIndex(
+          ([name]) => name === "tabs.sendMessage"
+        ),
+      "the full-page capture must not wait for the side panel"
+    );
+
+    const fullPageSeed = fullPageCaptureCalls.find(
+      ([name]) => name === "storage.session.set"
+    )[1][`seed:${tabId}`];
+    assert.strictEqual(fullPageSeed.sourceType, "page");
+    assert.strictEqual(fullPageSeed.captureMode, "full-page");
+    assert.strictEqual(fullPageSeed.frameId, 13);
+    assert.strictEqual(fullPageSeed.intent, intent);
+    assert.strictEqual(fullPageSeed.text, pageText);
+    assert.strictEqual(fullPageSeed.error, null);
+    assert.strictEqual(
+      fullPageSeed.truncated,
+      intent === "simplify"
+    );
+    const fullPageRuntimeCapture = fullPageCaptureCalls.find(
+      ([name, message]) =>
+        name === "runtime.sendMessage" &&
+        message?.type === "selection-captured" &&
+        message?.captureId === fullPageSeed.captureId
+    )?.[1];
+    assert.strictEqual(
+      fullPageRuntimeCapture?.captureMode,
+      "full-page"
+    );
+    assert.strictEqual(fullPageRuntimeCapture?.intent, intent);
+    assert.strictEqual(fullPageRuntimeCapture?.text, pageText);
+  }
+  console.log(
+    "PASS: no-selection HTML actions capture the full originating frame"
+  );
+
+  sendMessageImpl = () =>
+    Promise.resolve({
+      captureMode: "selection",
+      text: "Exact context-menu selection",
+      error: null,
+      truncated: false,
+    });
+  const omittedHintStart = calls.length;
+  await clickHandler(
+    {
+      menuItemId: "tokenpath-tldr",
+      frameId: 5,
+      pageUrl: "https://example.com/omitted-selection-hint",
+    },
+    {
+      id: 130,
+      windowId: 3,
+      url: "https://example.com/omitted-selection-hint",
+    }
+  );
+  const omittedHintSeed = calls
+    .slice(omittedHintStart)
+    .find(([name]) => name === "storage.session.set")[1]["seed:130"];
+  assert.strictEqual(omittedHintSeed.captureMode, "selection");
+  assert.strictEqual(omittedHintSeed.text, "Exact context-menu selection");
+  assert.strictEqual(omittedHintSeed.frameId, 5);
+  console.log(
+    "PASS: an exact contextmenu Range beats an omitted selectionText hint"
+  );
+
+  sendMessageImpl = () => Promise.reject(new Error("Protected PDF frame"));
+  const embeddedPdfStart = calls.length;
+  await clickHandler(
+    {
+      menuItemId: "tokenpath-tldr",
+      frameId: 8,
+      frameUrl:
+        "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html",
+      pageUrl: "https://example.com/article-with-embed",
+      selectionText: "Embedded PDF selection",
+    },
+    {
+      id: 122,
+      windowId: 3,
+      url: "https://example.com/article-with-embed",
+    }
+  );
+  const embeddedPdfCalls = calls.slice(embeddedPdfStart);
+  const embeddedPdfSeed = embeddedPdfCalls.find(
+    ([name]) => name === "storage.session.set"
+  )[1]["seed:122"];
+  assert.strictEqual(embeddedPdfSeed.sourceType, "page");
+  assert.strictEqual(embeddedPdfSeed.text, "");
+  assert.ok(embeddedPdfSeed.error);
+  console.log("PASS: embedded PDFs never navigate their outer HTML tab");
+
+  autoCommitTabUpdates = false;
+  tabUrls.set(120, "https://example.com/reports/dummy.pdf");
+  const pdfHighlightStart = calls.length;
+  const pdfHighlight = dispatchRuntimeMessage({
+    type: "highlight-pdf-source",
+    tabId: 120,
+    url: "https://example.com/reports/dummy.pdf",
+    document: "Dummy PDF file",
+    start: 6,
+    end: 9,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const beforeCommit = calls.slice(pdfHighlightStart);
+  const update = beforeCommit.find(([name]) => name === "tabs.update");
+  assert.strictEqual(
+    update?.[2]?.url,
+    "https://example.com/reports/dummy.pdf#:~:text=Dummy-,PDF,-file"
+  );
+  assert.strictEqual(
+    beforeCommit.some(([name]) => name === "tabs.reload"),
+    false,
+    "PDF reload must wait until the text-fragment URL commits"
+  );
+  assert.ok(pendingTabCommit, "PDF URL commit is being observed");
+  pendingTabCommit();
+  pendingTabCommit = null;
+  const highlightResponse = await pdfHighlight;
+  assert.strictEqual(highlightResponse?.ok, true);
+  const afterCommit = calls.slice(pdfHighlightStart);
+  assert.ok(
+    afterCommit.findIndex(([name]) => name === "tabs.reload") >
+      afterCommit.findIndex(([name]) => name === "tabs.update"),
+    "committed text-fragment navigation reloads the native PDF viewer"
+  );
+  console.log("PASS: PDF attribution builds contextual native text fragments");
+  console.log("PASS: PDF highlight reload waits for URL commit");
+
+  const repeatedHighlightStart = calls.length;
+  const repeatedHighlightResponse = await dispatchRuntimeMessage({
+    type: "highlight-pdf-source",
+    tabId: 120,
+    url: "https://example.com/reports/dummy.pdf",
+    document: "Dummy PDF file",
+    start: 6,
+    end: 9,
+  });
+  assert.strictEqual(repeatedHighlightResponse?.ok, true);
+  assert.strictEqual(
+    calls
+      .slice(repeatedHighlightStart)
+      .some(([name]) => name === "tabs.update" || name === "tabs.reload"),
+    false,
+    "clicking the already-active PDF attribution must not wait or reload again"
+  );
+  console.log("PASS: repeated PDF attribution is an immediate no-op");
+
+  const cancelledHighlightStart = calls.length;
+  const cancelledHighlight = dispatchRuntimeMessage({
+    type: "highlight-pdf-source",
+    tabId: 120,
+    url: "https://example.com/reports/dummy.pdf",
+    document: "Dummy PDF file",
+    start: 0,
+    end: 5,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(pendingTabCommit, "a replacement PDF URL is pending");
+  const cancelResponse = await dispatchRuntimeMessage({
+    type: "cancel-pdf-source-operation",
+    tabId: 120,
+  });
+  assert.strictEqual(cancelResponse?.ok, true);
+  pendingTabCommit();
+  pendingTabCommit = null;
+  const cancelledHighlightResponse = await cancelledHighlight;
+  assert.strictEqual(cancelledHighlightResponse?.ok, false);
+  assert.strictEqual(
+    calls
+      .slice(cancelledHighlightStart)
+      .some(([name]) => name === "tabs.reload"),
+    false,
+    "a cancelled PDF operation must never perform its late reload"
+  );
+  console.log("PASS: cancelled PDF attribution cannot reload late");
+
+  const reservedText = "before A-B, C&D #100% wow! ('yes') *done* after";
+  const reservedStart = reservedText.indexOf("A-B");
+  const reservedEnd = reservedText.indexOf(" after");
+  const reservedDirective = sandbox.buildPdfTextFragment(
+    reservedText,
+    reservedStart,
+    reservedEnd
+  );
+  assert.ok(reservedDirective.includes("before-,"));
+  assert.ok(reservedDirective.includes("%2D"));
+  assert.ok(reservedDirective.includes("%2C"));
+  assert.ok(reservedDirective.includes("%26"));
+  assert.ok(reservedDirective.includes("%23"));
+  assert.ok(reservedDirective.includes("%25"));
+  assert.ok(reservedDirective.includes("%21"));
+  assert.ok(reservedDirective.includes("%28"));
+  assert.ok(reservedDirective.includes("%29"));
+  assert.ok(reservedDirective.includes("%2A"));
+  assert.strictEqual(
+    (reservedDirective.match(/-,/g) || []).length,
+    1,
+    "only the structural prefix separator stays unescaped"
+  );
+  assert.strictEqual(
+    (reservedDirective.match(/,-/g) || []).length,
+    1,
+    "only the structural suffix separator stays unescaped"
+  );
+
+  const unicodeText = "導入 👩‍💻\r\n改善 結論";
+  const unicodeStart = unicodeText.indexOf("👩");
+  const unicodeEnd = unicodeText.indexOf(" 結論");
+  const unicodeDirective = sandbox.buildPdfTextFragment(
+    unicodeText,
+    unicodeStart,
+    unicodeEnd
+  );
+  assert.ok(
+    unicodeDirective.includes("%E2%80%8D"),
+    "meaningful emoji ZWJ must survive PDF fragment normalization"
+  );
+  assert.ok(
+    !unicodeDirective.includes("%0D") && !unicodeDirective.includes("%0A"),
+    "PDF fragment whitespace is normalized"
+  );
+  const splitBoundaryPrefix = `${"x".repeat(9)}👩${"y".repeat(126)}`;
+  const splitBoundaryText = `${splitBoundaryPrefix} target`;
+  assert.ok(
+    sandbox
+      .safePdfSlice(splitBoundaryText, 10, splitBoundaryPrefix.length + 1)
+      .startsWith("👩"),
+    "bounded context must not split an emoji surrogate pair"
+  );
+
+  const longTarget = Array.from(
+    { length: 120 },
+    (_, index) => `word${index}`
+  ).join(" ");
+  const longDirective = sandbox.buildPdfTextFragment(
+    `prefix ${longTarget} suffix`,
+    7,
+    7 + longTarget.length
+  );
+  assert.ok(
+    longDirective.length < 650,
+    "long source spans use bounded start/end fragments"
+  );
+  assert.ok(
+    longDirective.split(",-")[0].split(",").length >= 3,
+    "long source spans include separate start and end text"
+  );
+  assert.strictEqual(
+    sandbox.buildPdfTextFragment("short", -1, 2),
+    null
+  );
+  assert.strictEqual(
+    sandbox.withTextFragment(
+      "https://example.com/report.pdf#page=4&zoom=125:~:text=old",
+      "new"
+    ),
+    "https://example.com/report.pdf#page=4&zoom=125:~:text=new"
+  );
+  console.log("PASS: PDF fragments bound long spans and encode source grammar");
+  console.log("PASS: PDF fragments preserve Unicode shaping and normalize lines");
+
+  autoCommitTabUpdates = true;
+  const pdfClearStart = calls.length;
+  const clearResponse = await dispatchRuntimeMessage({
+    type: "clear-pdf-source-highlight",
+    tabId: 120,
+    url:
+      "https://example.com/reports/dummy.pdf#page=1:~:text=Dummy-,PDF,-file",
+  });
+  assert.strictEqual(clearResponse?.ok, true);
+  const clearCalls = calls.slice(pdfClearStart);
+  assert.strictEqual(
+    clearCalls.find(([name]) => name === "tabs.update")?.[2]?.url,
+    "https://example.com/reports/dummy.pdf#page=1"
+  );
+  assert.strictEqual(
+    clearCalls.filter(([name]) => name === "tabs.reload").length,
+    1
+  );
+  console.log("PASS: clearing a PDF highlight preserves ordinary PDF anchors");
+
+  tabUrls.set(120, "https://example.com/another-page");
+  const stalePdfStart = calls.length;
+  const stalePdfResponse = await dispatchRuntimeMessage({
+    type: "highlight-pdf-source",
+    tabId: 120,
+    url: "https://example.com/reports/dummy.pdf",
+    document: "Dummy PDF file",
+    start: 6,
+    end: 9,
+  });
+  assert.strictEqual(stalePdfResponse?.ok, false);
+  assert.strictEqual(
+    calls
+      .slice(stalePdfStart)
+      .some(([name]) => name === "tabs.update"),
+    false,
+    "a stale PDF panel must never navigate back to its old document"
+  );
+  console.log("PASS: stale PDF attribution cannot restore a departed tab");
+
   console.log("\nAll background assertions passed.");
 })().catch((error) => {
   console.error(error);

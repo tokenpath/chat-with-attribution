@@ -1,6 +1,11 @@
+import { extractPdfText } from "@/pdf-text-extractor";
+
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
 export type SummaryLength = "low" | "medium" | "high";
+export type SourceType = "page" | "chrome-pdf";
+export type CaptureMode = "selection" | "full-page" | "full-pdf";
+export type CaptureIntent = "tldr" | "simplify" | "ask";
 
 export interface SelectionSeed {
   type?: string;
@@ -9,9 +14,13 @@ export interface SelectionSeed {
   tabId?: number | null;
   windowId?: number | null;
   frameId?: number;
+  captureMode?: CaptureMode;
+  intent?: CaptureIntent;
+  sourceType?: SourceType;
   url?: string | null;
   text?: string;
   error?: string;
+  truncated?: boolean;
 }
 
 export interface HighlightSource {
@@ -19,6 +28,8 @@ export interface HighlightSource {
   frameId: number;
   captureId: string | null;
   contextVersion: number;
+  sourceType: SourceType;
+  url: string | null;
 }
 
 interface ActiveHighlight {
@@ -59,6 +70,7 @@ export interface PanelSnapshot {
   authError: string | null;
   busy: boolean;
   connected: boolean;
+  contextLabel: string;
   contextText: string;
   creditsText: string | null;
   hasContext: boolean;
@@ -72,12 +84,21 @@ export interface PanelSnapshot {
 }
 
 type SummaryRequest = TldrSummaryRequest;
+type AutomaticRequest = SummaryRequest & {
+  intent: Exclude<CaptureIntent, "ask">;
+};
 
 const THEME_KEY = "tldr-theme";
 const SUMMARY_LENGTH_KEY = "tldr-summary-length";
 const MAX_GENERATE_INPUT_CHARS = 420_000;
 const MAX_GENERATE_MESSAGES = 50;
 const CHAT_OUTPUT_TOKENS = 512;
+const SIMPLIFY_OUTPUT_TOKENS = 768;
+const SIMPLIFY_PROMPT =
+  "Rewrite and explain the given text in clear, simple language. Keep the " +
+  "explanation concise while preserving all facts, meaning, and " +
+  "qualifications. Do not add any information that is not present in the " +
+  "text. Return only the rewritten explanation.";
 
 function websiteBaseUrl(pageUrl?: string | null) {
   if (!pageUrl || pageUrl.length > 16_384) return "the current webpage";
@@ -89,6 +110,24 @@ function websiteBaseUrl(pageUrl?: string | null) {
       : "the current webpage";
   } catch {
     return "the current webpage";
+  }
+}
+
+function samePdfDocumentUrl(
+  candidateUrl: string,
+  sourceUrl: string | null
+) {
+  if (!sourceUrl) return false;
+  try {
+    const candidate = new URL(candidateUrl);
+    const source = new URL(sourceUrl);
+    // Page/zoom anchors and our :~:text directive only change the native
+    // viewer's viewport. The PDF response itself is still the same source.
+    candidate.hash = "";
+    source.hash = "";
+    return candidate.href === source.href;
+  } catch {
+    return candidateUrl.split("#", 1)[0] === sourceUrl.split("#", 1)[0];
   }
 }
 
@@ -136,6 +175,10 @@ export class PanelController {
   private captureId: string | null = null;
   private capturedAt = 0;
   private sourceBaseUrl = "the current webpage";
+  private sourceType: SourceType = "page";
+  private captureMode: CaptureMode = "selection";
+  private captureIntent: CaptureIntent = "tldr";
+  private sourceUrl: string | null = null;
   private context = "";
   private history: Array<{
     role: "user" | "assistant";
@@ -147,12 +190,15 @@ export class PanelController {
   private creditsEpoch = 0;
   private highlightEpoch = 0;
   private highlightedTarget: ActiveHighlight | null = null;
-  private pendingAutoSummary: SummaryRequest | null = null;
+  private pendingPdfHighlight: ActiveHighlight | null = null;
+  private pendingAutoSummary: AutomaticRequest | null = null;
   private messageSequence = 0;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
   private mediaQuery: MediaQueryList | null = null;
   private activeTurnController: AbortController | null = null;
   private activeTurnCleanup: (() => void) | null = null;
+  private activePdfExtractionController: AbortController | null = null;
   private heatmapControllers = new Map<string, AbortController>();
 
   constructor() {
@@ -164,6 +210,7 @@ export class PanelController {
       authError: null,
       busy: false,
       connected: false,
+      contextLabel: "Selected from page",
       contextText: "Waiting for a selection…",
       creditsText: null,
       hasContext: false,
@@ -317,17 +364,45 @@ export class PanelController {
   };
 
   clearHighlights = () => {
+    if (
+      this.sourceType === "chrome-pdf" &&
+      !this.highlightedTarget &&
+      !this.pendingPdfHighlight
+    ) {
+      return;
+    }
     this.highlightEpoch++;
+    const pendingPdfHighlight = this.pendingPdfHighlight;
+    this.pendingPdfHighlight = null;
     const fallback =
-      this.tabId == null
+      pendingPdfHighlight?.source ||
+      (this.tabId == null
         ? null
         : {
             tabId: this.tabId,
             frameId: this.frameId,
             captureId: this.captureId,
             contextVersion: this.contextVersion,
-          };
+            sourceType: this.sourceType,
+            url: this.sourceUrl,
+          });
     void this.clearActiveHighlight(fallback);
+  };
+
+  dispose = () => {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.toastTimer) {
+      clearTimeout(this.toastTimer);
+      this.toastTimer = null;
+    }
+    this.cancelActiveWork();
+    this.highlightEpoch++;
+    const pendingPdfHighlight = this.pendingPdfHighlight;
+    this.pendingPdfHighlight = null;
+    // Starting the message here is enough: Chrome owns its delivery even
+    // though the side-panel document is being torn down.
+    void this.clearActiveHighlight(pendingPdfHighlight?.source || null);
   };
 
   cycleTheme = () => {
@@ -360,11 +435,14 @@ export class PanelController {
     } catch {
       // The in-memory preference still applies for this panel session.
     }
-    if (this.pendingAutoSummary && this.context) {
-      this.pendingAutoSummary = TldrPanelLogic.buildSummaryRequest(
-        this.context,
-        summaryLength
-      );
+    if (
+      this.pendingAutoSummary?.intent === "tldr" &&
+      this.context
+    ) {
+      this.pendingAutoSummary = {
+        ...TldrPanelLogic.buildSummaryRequest(this.context, summaryLength),
+        intent: "tldr",
+      };
     }
     this.update({ summaryLength });
   };
@@ -423,7 +501,9 @@ export class PanelController {
     source: HighlightSource
   ) => {
     if (this.invalidated) {
-      this.showToast("The page navigated — re-select and choose TLDR again.");
+      this.showToast(
+        "The page navigated — re-select and choose a TokenPath action again."
+      );
       return;
     }
     if (
@@ -440,33 +520,73 @@ export class PanelController {
       source.contextVersion,
       epoch,
     ].join(":");
-    await this.clearActiveHighlight();
+    const replacingPdfHighlight =
+      source.sourceType === "chrome-pdf" &&
+      this.highlightedTarget?.source.sourceType === "chrome-pdf";
+    // A PDF text-fragment navigation replaces the previous fragment itself.
+    // Clearing first would reload the PDF twice for one attribution click.
+    // Keep ownership until the replacement succeeds so Clear still works if
+    // Chrome rejects the new navigation.
+    if (!replacingPdfHighlight) {
+      await this.clearActiveHighlight();
+    }
     if (!this.isCurrentHighlight(source, epoch)) return;
 
+    if (source.sourceType === "chrome-pdf") {
+      this.pendingPdfHighlight = { id: highlightId, source };
+    }
     try {
-      const response = await chrome.tabs.sendMessage(
-        source.tabId,
-        {
-          type: "highlight",
-          start,
-          end,
-          captureId: source.captureId,
-          highlightId,
-        },
-        { frameId: source.frameId }
-      );
+      const response =
+        source.sourceType === "chrome-pdf"
+          ? await chrome.runtime.sendMessage({
+              type: "highlight-pdf-source",
+              tabId: source.tabId,
+              url: source.url,
+              document: this.context,
+              start,
+              end,
+              highlightId,
+            })
+          : await chrome.tabs.sendMessage(
+              source.tabId,
+              {
+                type: "highlight",
+                start,
+                end,
+                captureId: source.captureId,
+                highlightId,
+              },
+              { frameId: source.frameId }
+            );
       if (!this.isCurrentHighlight(source, epoch)) {
-        await this.clearHighlightTarget(source, highlightId);
+        // A late DOM response owns a distinct CSS highlight and can safely
+        // clear itself. PDF text fragments have no ownership identifier; a
+        // late clear could erase a newer PDF highlight.
+        if (source.sourceType !== "chrome-pdf") {
+          await this.clearHighlightTarget(source, highlightId);
+        }
         return;
       }
       if (!(response as { ok?: boolean } | undefined)?.ok) {
-        this.showToast("Couldn't locate that text in the page.");
+        this.showToast(
+          source.sourceType === "chrome-pdf"
+            ? "Couldn't locate that text in the PDF."
+            : "Couldn't locate that text in the page."
+        );
         return;
       }
       this.highlightedTarget = { id: highlightId, source };
     } catch {
       if (this.isCurrentHighlight(source, epoch)) {
-        this.showToast("Page not reachable (it may have navigated).");
+        this.showToast(
+          source.sourceType === "chrome-pdf"
+            ? "PDF not reachable (it may have navigated)."
+            : "Page not reachable (it may have navigated)."
+          );
+      }
+    } finally {
+      if (this.pendingPdfHighlight?.id === highlightId) {
+        this.pendingPdfHighlight = null;
       }
     }
   };
@@ -510,15 +630,39 @@ export class PanelController {
     this.capturedAt = Number(seed.capturedAt) || Date.now();
     this.tabId = seed.tabId ?? this.tabId;
     this.frameId = Number.isInteger(seed.frameId) ? Number(seed.frameId) : 0;
+    this.sourceType =
+      seed.sourceType === "chrome-pdf" ? "chrome-pdf" : "page";
+    this.captureMode =
+      this.sourceType === "chrome-pdf"
+        ? seed.captureMode === "full-pdf"
+          ? "full-pdf"
+          : "selection"
+        : seed.captureMode === "full-page"
+          ? "full-page"
+          : "selection";
+    this.captureIntent =
+      seed.intent === "simplify" || seed.intent === "ask"
+        ? seed.intent
+        : "tldr";
+    this.sourceUrl = seed.url || null;
     this.sourceBaseUrl = websiteBaseUrl(seed.url);
     this.contextVersion++;
     this.history = [];
     this.pendingAutoSummary = null;
+    const contextLabel =
+      this.captureMode === "full-pdf"
+        ? "Entire PDF"
+        : this.captureMode === "full-page"
+          ? "Entire page"
+          : this.sourceType === "chrome-pdf"
+            ? "Selected from PDF"
+            : "Selected from page";
 
     if (seed.error) {
       this.context = "";
       this.update({
         busy: false,
+        contextLabel,
         contextText: seed.error,
         hasContext: false,
         messages: [],
@@ -526,10 +670,15 @@ export class PanelController {
       });
       return true;
     }
+    if (this.captureMode === "full-pdf") {
+      this.beginFullPdfCapture(contextLabel);
+      return true;
+    }
     if (!seed.text) {
       this.context = "";
       this.update({
         busy: false,
+        contextLabel,
         contextText: "No text was captured.",
         hasContext: false,
         messages: [],
@@ -538,31 +687,151 @@ export class PanelController {
       return true;
     }
 
-    this.context = seed.text;
+    this.activateContext(
+      seed.text,
+      contextLabel,
+      seed.truncated === true,
+      this.captureIntent
+    );
+    return true;
+  }
+
+  private beginFullPdfCapture(contextLabel: string) {
+    const sourceUrl = this.sourceUrl;
+    if (!sourceUrl) {
+      this.context = "";
+      this.update({
+        busy: false,
+        contextLabel,
+        contextText: "The PDF URL is no longer available.",
+        hasContext: false,
+        messages: [],
+        notice: null,
+      });
+      return;
+    }
+
+    const extractionController = new AbortController();
+    this.activePdfExtractionController = extractionController;
+    const captureId = this.captureId;
+    const contextVersion = this.contextVersion;
+    const captureIntent = this.captureIntent;
+    this.context = "";
     this.invalidated = false;
     this.update({
-      busy: false,
-      contextText: seed.text,
-      hasContext: true,
+      busy: true,
+      contextLabel,
+      contextText: "Reading the full PDF…",
+      hasContext: false,
       messages: [],
       notice: null,
     });
 
+    void extractPdfText(sourceUrl, {
+      signal: extractionController.signal,
+    })
+      .then(({ text, truncated }) => {
+        if (
+          extractionController.signal.aborted ||
+          this.activePdfExtractionController !== extractionController ||
+          captureId !== this.captureId ||
+          contextVersion !== this.contextVersion
+        ) {
+          return;
+        }
+        this.activePdfExtractionController = null;
+        this.activateContext(
+          text,
+          contextLabel,
+          truncated,
+          captureIntent
+        );
+      })
+      .catch((error: unknown) => {
+        if (
+          extractionController.signal.aborted ||
+          this.activePdfExtractionController !== extractionController ||
+          captureId !== this.captureId ||
+          contextVersion !== this.contextVersion
+        ) {
+          return;
+        }
+        this.activePdfExtractionController = null;
+        this.context = "";
+        this.update({
+          busy: false,
+          contextLabel,
+          contextText:
+            error instanceof Error
+              ? error.message
+              : "Couldn't read the text in this PDF.",
+          hasContext: false,
+          messages: [],
+          notice: null,
+        });
+      });
+  }
+
+  private activateContext(
+    text: string,
+    contextLabel: string,
+    truncated = false,
+    intent: CaptureIntent = this.captureIntent
+  ) {
+    this.context = text;
+    this.invalidated = false;
+    this.update({
+      busy: false,
+      contextLabel,
+      contextText: text,
+      hasContext: true,
+      messages: [],
+      notice: null,
+    });
+    if (truncated) {
+      const sourceName =
+        this.captureMode === "full-pdf" ? "PDF" : "page";
+      const capturedCharacters = Array.from(text).length;
+      this.addMessage({
+        kind: "note",
+        role: "assistant",
+        text:
+          `This ${sourceName} is very long, so TokenPath is using its first ` +
+          `${capturedCharacters.toLocaleString()} characters.`,
+      });
+    }
+
+    if (intent === "ask") return;
+    if (intent === "simplify") {
+      this.pendingAutoSummary = {
+        intent: "simplify",
+        maxOutputTokens: SIMPLIFY_OUTPUT_TOKENS,
+        prompt: SIMPLIFY_PROMPT,
+        skip: false,
+      };
+      this.maybeRunAutoSummary();
+      return;
+    }
+
     const summary = TldrPanelLogic.buildSummaryRequest(
-      seed.text,
+      text,
       this.snapshot.summaryLength
     );
     if (summary.skip) {
       this.addMessage({
         kind: "note",
         role: "assistant",
-        text: "Already concise — ask anything about this selection.",
+        text:
+          this.captureMode === "full-pdf"
+            ? "Already concise — ask anything about this PDF."
+            : this.captureMode === "full-page"
+              ? "Already concise — ask anything about this page."
+              : "Already concise — ask anything about this selection.",
       });
-      return true;
+      return;
     }
-    this.pendingAutoSummary = summary;
+    this.pendingAutoSummary = { ...summary, intent: "tldr" };
     this.maybeRunAutoSummary();
-    return true;
   }
 
   private async initAuth() {
@@ -650,7 +919,7 @@ export class PanelController {
       summary = null,
     }: {
       echoUser: boolean;
-      summary?: SummaryRequest | null;
+      summary?: AutomaticRequest | null;
     }
   ) {
     if (!this.snapshot.connected) {
@@ -694,6 +963,8 @@ export class PanelController {
         frameId: this.frameId,
         captureId: this.captureId,
         contextVersion,
+        sourceType: this.sourceType,
+        url: this.sourceUrl,
       },
       text: "",
     });
@@ -1109,6 +1380,17 @@ export class PanelController {
     highlightId: string | null = null
   ) {
     if (!target || target.tabId == null) return Promise.resolve();
+    if (target.sourceType === "chrome-pdf") {
+      return chrome.runtime
+        .sendMessage({
+          type: "clear-pdf-source-highlight",
+          tabId: target.tabId,
+          url: target.url,
+          highlightId,
+        })
+        .then(() => undefined)
+        .catch(() => undefined);
+    }
     return chrome.tabs
       .sendMessage(
         target.tabId,
@@ -1134,10 +1416,15 @@ export class PanelController {
 
   private cancelHighlightAndClear() {
     this.highlightEpoch++;
-    void this.clearActiveHighlight();
+    const pendingPdfHighlight = this.pendingPdfHighlight;
+    this.pendingPdfHighlight = null;
+    void this.clearActiveHighlight(pendingPdfHighlight?.source || null);
   }
 
   private cancelActiveWork() {
+    const wasExtractingPdf = Boolean(this.activePdfExtractionController);
+    this.activePdfExtractionController?.abort();
+    this.activePdfExtractionController = null;
     const cleanupTurn = this.activeTurnCleanup;
     this.activeTurnController?.abort();
     this.activeTurnController = null;
@@ -1160,24 +1447,55 @@ export class PanelController {
       }
     }
     this.heatmapControllers.clear();
-    if (this.snapshot.busy) this.update({ busy: false });
+    if (this.snapshot.busy) {
+      this.update({
+        busy: false,
+        ...(wasExtractingPdf && !this.context
+          ? { contextText: "PDF reading was cancelled." }
+          : {}),
+      });
+    }
   }
 
   private watchTab() {
     chrome.tabs.onUpdated.addListener((id, changeInfo) => {
       if (id !== this.tabId || !changeInfo.url) return;
+      if (
+        this.sourceType === "chrome-pdf" &&
+        samePdfDocumentUrl(changeInfo.url, this.sourceUrl)
+      ) {
+        return;
+      }
       this.invalidate(
-        "The page navigated. The captured selection no longer maps to the live page — re-select text and choose TLDR again."
+        "The page navigated. The captured selection no longer maps to the live page — re-select text and choose a TokenPath action again.",
+        false
       );
     });
     chrome.tabs.onRemoved.addListener((id) => {
-      if (id === this.tabId) this.invalidate("The tab was closed.");
+      if (id === this.tabId) this.invalidate("The tab was closed.", false);
     });
   }
 
-  private invalidate(reason: string) {
+  private invalidate(reason: string, clearHighlight = true) {
     this.invalidated = true;
-    this.cancelHighlightAndClear();
+    this.highlightEpoch++;
+    const pendingPdfHighlight = this.pendingPdfHighlight;
+    this.pendingPdfHighlight = null;
+    if (clearHighlight) {
+      void this.clearActiveHighlight(pendingPdfHighlight?.source || null);
+    } else {
+      // The source tab has already left the captured document (or no longer
+      // exists). A PDF clear is itself a navigation, so never send it here.
+      this.highlightedTarget = null;
+      if (this.sourceType === "chrome-pdf" && this.tabId != null) {
+        void chrome.runtime
+          .sendMessage({
+            type: "cancel-pdf-source-operation",
+            tabId: this.tabId,
+          })
+          .catch(() => undefined);
+      }
+    }
     this.cancelActiveWork();
     this.update({ notice: reason });
   }

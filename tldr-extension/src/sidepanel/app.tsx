@@ -153,7 +153,7 @@ function AnswerResponse({
       {message.answerStatus === "attributing" && (
         <div className="answer-attribution-status" role="status">
           <Spinner className="size-3" />
-          <span>Mapping this answer to the page…</span>
+          <span>Mapping this answer to the source…</span>
         </div>
       )}
       {message.answerStatus === "ready" && (
@@ -287,7 +287,12 @@ export function App({ controller }: { controller: PanelController }) {
           <span aria-hidden="true" className="brand-divider">
             /
           </span>
-          <span className="product-name">TLDR</span>
+          <span
+            className="product-name"
+            title="TokenPath — Chat with Attribution"
+          >
+            Chat
+          </span>
         </div>
         <div className="flex items-center gap-1.5">
           <span
@@ -313,7 +318,7 @@ export function App({ controller }: { controller: PanelController }) {
             id="clear-hl"
             onClick={controller.clearHighlights}
             size="sm"
-            title="Clear page highlight"
+            title="Clear source highlight"
             variant="outline"
           >
             <EraserIcon className="size-3.5" />
@@ -337,7 +342,7 @@ export function App({ controller }: { controller: PanelController }) {
               Connect TokenPath
             </div>
             <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              One key generates the answer and maps it back to the page.
+              One key generates the answer and maps it back to the source.
             </p>
           </div>
         </div>
@@ -401,8 +406,8 @@ export function App({ controller }: { controller: PanelController }) {
         </div>
         <div className="mt-2.5 text-[11px] leading-4 text-muted-foreground">
           <div>
-            The website origin, selection, questions, and generated answer are
-            sent to TokenPath.
+            TokenPath receives the website origin, captured page or PDF text,
+            your questions, and generated answers.
           </div>
           <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
             <a
@@ -418,7 +423,7 @@ export function App({ controller }: { controller: PanelController }) {
       </section>
 
       <section
-        aria-label="Selected page text"
+        aria-label={snapshot.contextLabel}
         className={cn(
           "source-card shrink-0",
           snapshot.hasContext && !sourceExpanded && "is-collapsed",
@@ -436,8 +441,8 @@ export function App({ controller }: { controller: PanelController }) {
             <button
               aria-label={
                 sourceExpanded
-                  ? "Hide selected page text"
-                  : "Show selected page text"
+                  ? `Hide ${snapshot.contextLabel.toLowerCase()}`
+                  : `Show ${snapshot.contextLabel.toLowerCase()}`
               }
               aria-controls="context-text"
               aria-expanded={sourceExpanded}
@@ -446,20 +451,20 @@ export function App({ controller }: { controller: PanelController }) {
               onClick={() => setSourceExpanded((expanded) => !expanded)}
               title={
                 sourceExpanded
-                  ? "Hide selected page text"
-                  : "Show selected page text"
+                  ? `Hide ${snapshot.contextLabel.toLowerCase()}`
+                  : `Show ${snapshot.contextLabel.toLowerCase()}`
               }
               type="button"
             >
               <ChevronRightIcon aria-hidden="true" />
-              <span className="source-label">Selected from page</span>
+              <span className="source-label">{snapshot.contextLabel}</span>
             </button>
           ) : (
-            <div className="source-label">Selected from page</div>
+            <div className="source-label">{snapshot.contextLabel}</div>
           )}
           <label
             className="summary-length-control"
-            title="Applies to the next TLDR; also updates a summary that is still waiting to start"
+            title="Applies to the next TLDR; also updates one that is still waiting to start"
           >
             <span>Summary</span>
             <select
@@ -473,9 +478,9 @@ export function App({ controller }: { controller: PanelController }) {
               }
               value={snapshot.summaryLength}
             >
-              <option value="low">Low</option>
+              <option value="low">Short</option>
               <option value="medium">Medium</option>
-              <option value="high">High</option>
+              <option value="high">Detailed</option>
             </select>
           </label>
         </div>
@@ -506,7 +511,9 @@ export function App({ controller }: { controller: PanelController }) {
               message={message}
             />
           ))}
-          {snapshot.busy && !hasStreamingAnswer && <ThinkingMessage />}
+          {snapshot.busy && snapshot.hasContext && !hasStreamingAnswer && (
+            <ThinkingMessage />
+          )}
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
@@ -526,8 +533,14 @@ export function App({ controller }: { controller: PanelController }) {
             onChange={(event) => setInput(event.currentTarget.value)}
             placeholder={
               snapshot.hasContext
-                ? "Ask about the selection…"
-                : "Select text on a page to begin"
+                ? snapshot.contextLabel === "Entire PDF"
+                  ? "Ask about the PDF…"
+                  : snapshot.contextLabel === "Entire page"
+                    ? "Ask about the page…"
+                    : "Ask about the selection…"
+                : snapshot.contextText === "Reading the full PDF…"
+                  ? "Reading PDF…"
+                  : "Select text, or right-click for the full page or PDF"
             }
             value={input}
           />

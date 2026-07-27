@@ -1,39 +1,56 @@
-# Spec: TLDR Chrome Extension
+# Spec: TokenPath — Chat with Attribution
 
 ## Goal
 
-TLDR is a Chrome Manifest V3 extension. A user selects text in a page, chooses
-**TLDR** from the context menu, and receives a side-panel chat grounded in that
-selection. TokenPath streams each answer, then returns one answer-to-document
-heatmap. Selecting any part of an answer resolves that range against the cached
-heatmap, highlights its supporting source range, and scrolls there in the live
-page.
+TokenPath — Chat with Attribution is a Chrome Manifest V3 extension. A user
+right-clicks a page or Chrome's native PDF viewer, opens the **TokenPath**
+context-menu submenu, and chooses **TLDR**, **Simplify**, or **Ask a question**.
+A selection uses only that span. Invoking an action without a selection uses
+the rendered text of the originating page/frame or the entire top-level
+searchable PDF. The resulting side-panel chat is grounded in that source text.
+TokenPath streams each answer, then returns one answer-to-document heatmap.
+Selecting any part of an answer resolves that range against the cached heatmap,
+highlights its supporting source range, and scrolls there in the live page or
+PDF.
 
 ## User flow
 
-1. Select text in a page or nested frame and choose **TLDR**.
+1. Right-click a page, nested frame, or searchable PDF, open the **TokenPath**
+   submenu, and choose an action. A selection takes precedence; without one,
+   the originating HTML frame or top-level PDF becomes the source.
 2. The panel confirms capture immediately in a compact source row,
    independently of API-key validation or credit refresh. The full captured
    text is collapsed by default and can be expanded on demand.
-3. For selections longer than 24 words, the panel automatically requests a
-   constrained TL;DR. Shorter selections skip generation and show an
-   “Already concise” note.
-4. Ask follow-up questions in the composer.
+3. The initial action determines what happens next:
+   - **TLDR** immediately requests a length-controlled summary when the source
+     exceeds the concise-source cutoff; shorter sources show an “Already
+     concise” note without generation.
+   - **Simplify** immediately requests a plain-language explanation.
+   - **Ask a question** opens the composer with the source ready but makes no
+     generation or attribution request until the user submits a question.
+4. Continue with follow-up questions in the same composer and attributed chat.
 5. Select any text in a completed answer to highlight and center its supporting
-   source text in the originating page frame.
+   source text in the originating page frame or PDF.
 
 ## Components
 
 - **`manifest.json`** injects `content.js` and `content.css` at
   `document_start` with `all_frames`, `match_about_blank`, and
   `match_origin_as_fallback` enabled.
-- **`background.js`** owns the context menu, starts the side-panel open, captures
-  from `info.frameId`, and stores and broadcasts a versioned selection seed.
+- **`background.js`** owns the TokenPath submenu and its TLDR, Simplify, and Ask
+  a question actions; starts the side-panel open; captures from `info.frameId`;
+  detects native PDFs; stores and broadcasts a versioned selection seed plus
+  action; and owns PDF text-fragment navigation/reload.
 - **`content.js`** snapshots selections, creates the canonical text-to-DOM map,
-  resolves document offsets, repairs mappings after supported DOM rerenders,
-  renders the source highlight, and scrolls nested panes.
+  extracts full rendered pages when requested, resolves document offsets,
+  repairs mappings after supported DOM rerenders, renders the source highlight,
+  and scrolls nested panes.
 - **`src/sidepanel/controller.ts`** manages auth, chat history, summary policy,
-  capture/version epochs, and frame-targeted highlight messages.
+  full-PDF extraction, capture/version epochs, and frame-targeted highlight
+  messages.
+- **`src/sidepanel/pdf-text-extractor.ts`** fetches a verified PDF and uses a
+  hidden Blob-backed instance of Chrome's native viewer to obtain PDFium's
+  searchable text.
 - **`src/sidepanel/app.tsx`** renders the React panel with source-owned Vercel
   AI Elements conversation, message, and prompt-input primitives.
 - **`src/sidepanel/answer-selection.ts`** maps a DOM selection inside rendered
@@ -51,8 +68,10 @@ page.
 ## Selection capture and panel bootstrap
 
 The context-menu callback supplies flattened `selectionText` but not DOM nodes.
-Each frame therefore listens for selection changes, clones the current `Range`,
-and eagerly extracts it during `contextmenu`.
+The parent **TokenPath** item contains three children—**TLDR**, **Simplify**, and
+**Ask a question**—across supported selection, page, and frame contexts. Each
+frame listens for selection changes, clones the current `Range`, and eagerly
+extracts it during `contextmenu`.
 
 `chrome.sidePanel.open()` must begin synchronously in the click gesture, but the
 background worker does not await it. It first starts an idempotent script and CSS
@@ -60,6 +79,15 @@ injection into the originating `frameId`, covering tabs that predate an unpacked
 extension reload, then immediately sends `capture-selection`. Missing receivers
 and content-level capture failures are retried once after injection completes.
 This ordering keeps the panel animation and credit lookup off the capture path.
+
+When `selectionText` is empty on ordinary HTML, the worker instead sends
+`capture-page` to that same `frameId`. The content script walks rendered text
+beneath the frame's `document.body`, including visible `user-select: none`
+content while excluding hidden/script/style nodes. It stores the same private
+text-to-DOM map used by selection capture, returns at most a surrogate-safe
+400,000-character prefix, and marks a truncated seed. Raw text work and map
+entries have independent safety budgets, so pathological DOMs can stop earlier.
+It never reuses a prior stored Range or concatenates descendant frames.
 
 An eagerly extracted DOM `Range` is authoritative. Chrome's flattened
 `selectionText` is only a recovery hint when late injection missed the
@@ -74,11 +102,40 @@ An eagerly extracted DOM `Range` is authoritative. Chrome's flattened
 These rules cover current Substack, WhatsApp, and X selection shapes without
 silently choosing the wrong duplicate.
 
-Every seed carries `captureId`, `capturedAt`, `tabId`, `windowId`, and `frameId`.
-IDs are allocated before extraction, so click order—not async completion
-order—defines freshness. The panel installs its live listener before active-tab
-lookup, seed replay, or credit validation. Duplicate and stale seeds cannot
-replace a newer selection or change its highlight route.
+Every seed carries the chosen action together with `captureId`, `capturedAt`,
+`tabId`, `windowId`, and `frameId`. IDs are allocated before extraction, so
+click order—not async completion order—defines freshness. The panel installs
+its live listener before active-tab lookup, seed replay, or credit validation.
+Duplicate and stale seeds cannot replace a newer selection, start the wrong
+initial turn, or change its highlight route.
+
+Chrome's built-in PDF viewer is a protected component extension, so ordinary
+content scripts cannot read its DOM or receive highlight messages. For every
+PDF context-menu click, the worker probes the top-level document's MIME type and
+marks the seed `sourceType: "chrome-pdf"` while retaining the original PDF URL.
+With a selection, `OnClickData.selectionText` is the canonical document. With
+no selection, the seed uses `captureMode: "full-pdf"` and contains only a small
+descriptor. The side panel fetches that URL using the context-menu click's
+temporary `activeTab` access, verifies and bounds the bytes, then creates an
+offscreen, nonzero-size `<embed>` backed by a same-origin Blob URL. Chrome's
+native PDF scripting bridge selects all inside this hidden duplicate and
+returns PDFium's searchable text. The panel removes the embed and revokes the
+Blob URL immediately, so the visible viewer's selection and viewport do not
+change.
+
+Only a `documentLoaded` message from Chrome's exact built-in PDF-viewer origin
+establishes the hidden viewer's `WindowProxy`; the selected-text reply must come
+from that same source. Extraction jobs are serialized, time-bounded, abort when
+a newer capture or navigation wins, reject non-PDF responses and downloads over
+50 MiB, and return at most 400,000 Unicode code points. Full extracted text stays
+in panel memory rather than `chrome.storage.session`; the small descriptor can
+be replayed if the panel reopens. Empty searchable text produces an explicit
+scan/image-only error.
+
+This keeps normal page capture strict: flattened context-menu text is not
+promoted to an authoritative source unless the tab is verified as a PDF. A
+no-selection HTML click creates a fresh full-page map instead of reusing an old
+page selection.
 
 Successful captures keep the source excerpt collapsed so the answer owns the
 panel's vertical space. The row remains keyboard-expandable for inspection and
@@ -106,15 +163,15 @@ emoji while preserving repeated-string disambiguation.
 
 ## Summary and generation policy
 
-Selections of 24 whitespace-delimited words or fewer skip the automatic model
-call. Whitespace-free CJK selections use an equivalent 48-character cutoff
-instead of being mistaken for a one-word selection.
+For the TLDR action, captured sources of 24 whitespace-delimited words or fewer
+skip the automatic model call. Whitespace-free CJK sources use an equivalent
+48-character cutoff instead of being mistaken for a one-word selection.
 
-Longer selections use a locally persisted Low / Medium / High preference:
+Longer selections use a locally persisted Short / Medium / Detailed preference:
 
-- Low (default): about 2–3 concise sentences, with 512 tokens of headroom.
+- Short (default): about 2–3 concise sentences, with 512 tokens of headroom.
 - Medium: about 4–6 concise sentences, with 768 tokens of headroom.
-- High: about 8–12 concise sentences, with 1024 tokens of headroom.
+- Detailed: about 8–12 concise sentences, with 1024 tokens of headroom.
 
 The prompt allows an equivalently sized list or table when structured formatting
 is clearer, and forbids a title, label, preamble, explanation, or closing
@@ -127,7 +184,11 @@ split surrogate pairs.
 
 ## Streaming generation and just-in-time heatmap attribution
 
-The generator uses one streaming `POST /v1/generate` request per turn. Its body
+TLDR and Simplify start an initial turn after capture; Ask a question
+intentionally does not. Its captured source may be inspected in the panel, but
+no generation or attribution request is made until the user submits the
+composer. Once a turn starts, the generator uses one streaming
+`POST /v1/generate` request. Its body
 contains only messages and an optional `max_output_tokens`:
 
 - a system message containing the website origin, exact canonical document,
@@ -146,7 +207,7 @@ Once generation finishes, the panel sends one
 
 ```js
 {
-  document: "the canonical extracted selection",
+  document: "the canonical extracted source",
   question: "the latest user turn",
   answer: "the exact final displayed answer"
 }
@@ -198,6 +259,11 @@ requests. Streamdown's sanitizer and external-link confirmation remain active,
 remote images are suppressed, and rendered links are limited to HTTP(S) and
 mail links.
 
+The panel owns the currently displayed source highlight. Its `pagehide` and
+`unload` lifecycle handlers clear that exact page or PDF highlight before the
+side-panel document is destroyed; ownership IDs prevent stale cleanup from
+erasing a newer highlight.
+
 ## Mutation and ambiguity policy
 
 Before highlighting, the content script verifies the route, stable source
@@ -237,20 +303,55 @@ extension does not use `window.find` or select the first arbitrary copy.
 | From → To | Type | Important payload |
 |---|---|---|
 | background → content frame | `capture-selection` | `captureId`, `selectionText`, targeted `frameId` |
-| background → panel | `selection-captured` | `captureId`, time, tab/window/frame IDs, `text` or `error` |
+| background → content frame | `capture-page` | `captureId`, targeted `frameId` |
+| background → panel | `selection-captured` | chosen action, `captureId`, time, tab/window/frame IDs, `captureMode`, `sourceType`, URL, and `text` or `error` |
 | panel → content frame | `highlight` | `captureId`, `highlightId`, `start`, `end`, targeted `frameId` |
 | panel → content frame | `clear-highlight` | `captureId`, optional owning `highlightId`, targeted `frameId` |
+| panel → background | `highlight-pdf-source` | PDF tab/URL, canonical document, resolved `start` and `end` |
+| panel → background | `clear-pdf-source-highlight` | PDF tab/URL |
+| panel → background | `cancel-pdf-source-operation` | PDF tab ID whose pending navigation must be invalidated |
+
+## Native PDF attribution
+
+The panel resolves PDF heatmaps with the same just-in-time aggregation used for
+web pages. The worker trims the resolved span, collapses line whitespace, and
+builds a standard PDF text fragment with bounded prefix/suffix context. Long
+spans use separate bounded start and end text, preventing unbounded navigation
+URLs. Fragment grammar punctuation is percent-encoded.
+
+Chrome's PDF viewer recognizes `#:~:text=` only during viewer load. The worker
+therefore updates the existing PDF tab, waits for that navigation to commit,
+then reloads it once. PDFium highlights the matched text and scrolls to it.
+Repeated clicks replace the prior directive without a preliminary clear/reload;
+the Clear action removes only the text directive and preserves normal
+`#page`/`#zoom` state. Text-fragment and viewer-anchor URL changes do not
+invalidate the capture, while a different path or query does. A genuine
+navigation drops highlight ownership without issuing a PDF clear, which would
+otherwise navigate the user back to a document they left.
+
+PDF support is limited to top-level, text-searchable files opened directly in
+Chrome's native viewer. Embedded PDFs are deliberately treated as ordinary
+pages so the extension can never navigate or reload their outer HTML tab.
+Scanned/image-only PDFs require OCR. Full-PDF source text comes from PDFium's
+own selection model, keeping generation/heatmap offsets aligned with the native
+viewer used for attribution. Context around a source span disambiguates most
+repeated phrases, but completely identical repeated passages cannot be
+guaranteed. Each PDF fragment update also creates a session-history entry:
+Chrome exposes tab navigation and reload, but no replace-in-place API for its
+protected viewer.
 
 ## Lifecycle and non-goals
 
-A URL change invalidates source mapping and requires a new capture. Capture IDs,
-context versions, highlight epochs, and per-highlight ownership IDs prevent stale
-generation or click work from overwriting or clearing a newer selection's
-highlight. Balance observations are similarly sequenced so a delayed credits
-read cannot replace a newer post-request balance.
+A source-document URL change invalidates source mapping and requires a new
+capture. PDF viewer fragments are ignored because they do not change the source
+document. Capture IDs, context versions, highlight epochs, and per-highlight
+ownership IDs prevent stale generation or click work from overwriting or
+clearing a newer selection's highlight. Balance observations are similarly
+sequenced so a delayed credits read cannot replace a newer post-request balance.
 
-Out of scope for this version: whole-page or Readability extraction,
-shadow-root traversal, persisted chats, OAuth, user-selectable models, and
-restricted Chrome pages. A selection belongs to one frame; cross-frame
-selections are unsupported. The model behind TokenPath's messages-only
-`/v1/generate` is intentionally not user-selectable.
+Out of scope for this version: Readability/article-only extraction, cross-frame
+page concatenation, shadow-root traversal, unmounted virtualized content,
+persisted chats, OCR, OAuth, user-selectable models, and restricted Chrome
+pages. A capture belongs to one frame; cross-frame selections are unsupported.
+The model behind TokenPath's messages-only `/v1/generate` is intentionally not
+user-selectable.

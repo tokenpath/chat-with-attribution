@@ -1,4 +1,4 @@
-# Generation and TokenPath Integration for TLDR
+# Generation and Attribution in TokenPath — Chat with Attribution
 
 > **Status (2026-07): live single-provider implementation.** TokenPath streams
 > generation from a messages-only `/v1/generate` request, then receives the
@@ -121,7 +121,7 @@ POST /v1/attributions/heatmap
 
 ```json
 {
-  "document": "the exact canonical extracted selection",
+  "document": "the exact canonical extracted source",
   "question": "the latest user turn",
   "answer": "the exact final displayed answer"
 }
@@ -208,12 +208,13 @@ rapid selections cannot let a delayed response clear the newer result.
 
 ## Data and privacy
 
-TokenPath receives the exact extracted selection, latest question, bounded
-conversation text, and generated answer. Generation receives them in messages;
-the heatmap request receives the bare document, question, and canonical answer.
+TokenPath receives the exact extracted selection, rendered full-page text, or
+searchable full-PDF text, plus the latest question, bounded conversation text,
+and generated answer. Generation receives them in messages; the heatmap request
+receives the bare document, question, and canonical answer.
 
-TokenPath does not receive DOM nodes, page structure, unrelated page text, the
-extraction-to-node map, or the user's native browser selection object.
+TokenPath does not receive DOM nodes, page structure, the extraction-to-node
+map, or the user's native browser selection object.
 
 ## Separation of concerns
 

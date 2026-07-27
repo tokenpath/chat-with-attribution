@@ -708,10 +708,13 @@ function recordDeterministic(good) {
         summaryLengthOptions: [
           ...(document.getElementById("summary-length")?.options || []),
         ].map((option) => option.value),
+        summaryLengthOptionLabels: [
+          ...(document.getElementById("summary-length")?.options || []),
+        ].map((option) => option.textContent?.trim() || ""),
         hasTokenPathWordmark:
           document.querySelector(".tokenpath-wordmark")?.textContent ===
             "tokenpath" &&
-          document.querySelector(".product-name")?.textContent === "TLDR",
+          document.querySelector(".product-name")?.textContent === "Chat",
         hasTokenRail:
           document.querySelector(".token-rail")?.getBoundingClientRect()
             .height === 2,
@@ -988,6 +991,8 @@ function recordDeterministic(good) {
       !opaqueOriginGeneration.systemPrompt?.includes("/Users/private") &&
       panelResult.summaryLength === "low" &&
       panelResult.summaryLengthOptions.join(",") === "low,medium,high" &&
+      panelResult.summaryLengthOptionLabels.join(",") ===
+        "Short,Medium,Detailed" &&
       savedSummaryLength === "high" &&
       summaryPrompt?.includes("Aim for 2-3 concise sentences") &&
       opaqueOriginGeneration.userPrompt?.includes(
@@ -1026,6 +1031,1124 @@ function recordDeterministic(good) {
   } catch (error) {
     console.log(
       `\n### Side-panel selection fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
+    );
+    recordDeterministic(false);
+  } finally {
+    await page.close();
+  }
+}
+
+// Chrome's protected PDF viewer cannot receive content-script messages. A PDF
+// seed therefore keeps attribution in the panel, then asks background.js to
+// translate the resolved source range into a native PDF text-fragment
+// navigation. Fragment-only updates belong to the same captured document;
+// leaving that PDF invalidates the capture without navigating back to clear it.
+{
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(() => {
+      const sourceUrl = "https://docs.example/reports/process.pdf#page=3";
+      const source =
+        "Quarterly analysis compares the baseline and revised process across " +
+        "three facilities. After controlled trials and independent checks, " +
+        "the report confirms a durable efficiency gain for every monitored " +
+        "production line. Follow-up measurements remained stable.";
+      const answer = "The report confirms a durable efficiency gain.";
+      const target = "durable efficiency gain";
+      const responseJson = (body, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      const doneStream = () =>
+        new Response(
+          "event: done\n" +
+            "data: " +
+            JSON.stringify({
+              answer,
+              model: "google/gemini-3.1-flash-lite",
+              usage: {
+                input_tokens: 48,
+                output_tokens: 8,
+                billed_tokens: 45,
+              },
+              credits_remaining: 9_955,
+            }) +
+            "\n\n",
+          {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }
+        );
+      const codePointOffset = (text, utf16Offset) =>
+        Array.from(text.slice(0, utf16Offset)).length;
+      const tabUpdatedListeners = [];
+      const localStore = { tokenpathKey: "tpk_pdf" };
+
+      window.__pdfAnswer = answer;
+      window.__pdfSource = source;
+      window.__pdfSourceUrl = sourceUrl;
+      window.__pdfTarget = target;
+      window.__pdfRequests = [];
+      window.__pdfRuntimeMessages = [];
+      window.__pdfTabMessages = [];
+      window.__pdfTabUpdatedListeners = tabUpdatedListeners;
+      window.chrome = {
+        tabs: {
+          async query() {
+            return [{ id: 91, windowId: 12, url: sourceUrl }];
+          },
+          async sendMessage(...args) {
+            window.__pdfTabMessages.push(args);
+            return { ok: true };
+          },
+          onUpdated: {
+            addListener(listener) {
+              tabUpdatedListeners.push(listener);
+            },
+          },
+          onRemoved: { addListener() {} },
+        },
+        runtime: {
+          async sendMessage(message) {
+            window.__pdfRuntimeMessages.push(message);
+            if (
+              message.type === "highlight-pdf-source" &&
+              window.__delayNextPdfHighlight
+            ) {
+              window.__delayNextPdfHighlight = false;
+              return new Promise((resolve) => {
+                window.__resolveDelayedPdfHighlight = resolve;
+              });
+            }
+            return { ok: true };
+          },
+          onMessage: { addListener() {} },
+        },
+        storage: {
+          local: {
+            async get(keys) {
+              const requested = Array.isArray(keys) ? keys : [keys];
+              return Object.fromEntries(
+                requested
+                  .filter((key) => key in localStore)
+                  .map((key) => [key, localStore[key]])
+              );
+            },
+            async set(values) {
+              Object.assign(localStore, values);
+            },
+            async remove(key) {
+              delete localStore[key];
+            },
+          },
+          session: {
+            async get(key) {
+              return {
+                [key]: {
+                  captureId: "pdf-seed-1",
+                  capturedAt: 1,
+                  tabId: 91,
+                  windowId: 12,
+                  frameId: 0,
+                  sourceType: "chrome-pdf",
+                  url: sourceUrl,
+                  text: source,
+                  error: null,
+                },
+              };
+            },
+          },
+        },
+      };
+
+      window.fetch = async (url, options = {}) => {
+        const path = String(url);
+        const request = options.body ? JSON.parse(options.body) : null;
+        if (path.endsWith("/v1/me/credits")) {
+          return responseJson({ available_tokens: 10_000 });
+        }
+        window.__pdfRequests.push({ path, request });
+        if (path.endsWith("/v1/generate")) return doneStream();
+        if (path.endsWith("/v1/attributions/heatmap")) {
+          const answerStart = answer.indexOf(target);
+          const documentStart = source.indexOf(target);
+          return responseJson({
+            row: [0],
+            col: [0],
+            data: [0.97],
+            shape: [1, 1],
+            answer_offsets: [
+              [
+                codePointOffset(answer, answerStart),
+                codePointOffset(answer, answerStart + target.length),
+              ],
+            ],
+            document_offsets: [
+              [
+                codePointOffset(source, documentStart),
+                codePointOffset(source, documentStart + target.length),
+              ],
+            ],
+          });
+        }
+        return responseJson({}, 404);
+      };
+    });
+
+    await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') &&
+        window.__pdfRequests.some((item) =>
+          item.path.endsWith("/v1/generate")
+        ) &&
+        window.__pdfRequests.some((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        )
+    );
+
+    await page.locator("#clear-hl").click();
+    await page.waitForTimeout(0);
+    const clearCountBeforeAttribution = await page.evaluate(
+      () =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length
+    );
+
+    const selectPdfAnswer = async () => {
+      const priorHighlights = await page.evaluate(
+        () =>
+          window.__pdfRuntimeMessages.filter(
+            (message) => message.type === "highlight-pdf-source"
+          ).length
+      );
+      await page.evaluate(() => {
+        const root = document.querySelector("[data-answer-content]");
+        const walker = document.createTreeWalker(
+          root,
+          NodeFilter.SHOW_TEXT
+        );
+        let node;
+        while ((node = walker.nextNode())) {
+          const start = node.data.indexOf(window.__pdfTarget);
+          if (start === -1) continue;
+          const range = document.createRange();
+          range.setStart(node, start);
+          range.setEnd(node, start + window.__pdfTarget.length);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          root.dispatchEvent(
+            new PointerEvent("pointerup", { bubbles: true, button: 0 })
+          );
+          return;
+        }
+        throw new Error("Could not select the PDF answer text");
+      });
+      await page.waitForFunction(
+        (count) =>
+          window.__pdfRuntimeMessages.filter(
+            (message) => message.type === "highlight-pdf-source"
+          ).length > count,
+        priorHighlights
+      );
+    };
+
+    await selectPdfAnswer();
+    const firstHighlight = await page.evaluate(
+      () =>
+        window.__pdfRuntimeMessages.find(
+          (message) => message.type === "highlight-pdf-source"
+        ) || null
+    );
+
+    await page.evaluate(() => {
+      const url =
+        window.__pdfSourceUrl +
+        ":~:text=durable%20efficiency%20gain";
+      for (const listener of window.__pdfTabUpdatedListeners) {
+        listener(91, { url }, { id: 91, url });
+      }
+    });
+    await page.waitForTimeout(0);
+    const samePdfStayedValid = await page.evaluate(
+      () => document.getElementById("notice")?.hidden === true
+    );
+
+    const clearCountBefore = await page.evaluate(
+      () =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length
+    );
+    await page.locator("#clear-hl").click();
+    await page.waitForFunction(
+      (count) =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length > count,
+      clearCountBefore
+    );
+    const clearMessage = await page.evaluate(
+      () =>
+        window.__pdfRuntimeMessages.find(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ) || null
+    );
+
+    // Clear while the background navigation is still pending. The late
+    // highlight response must not leave an unowned PDF fragment behind.
+    await page.evaluate(() => {
+      window.__delayNextPdfHighlight = true;
+    });
+    await selectPdfAnswer();
+    const pendingClearCountBefore = await page.evaluate(
+      () =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length
+    );
+    await page.locator("#clear-hl").click();
+    await page.waitForFunction(
+      (count) =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length > count,
+      pendingClearCountBefore
+    );
+    await page.evaluate(() => {
+      window.__resolveDelayedPdfHighlight?.({ ok: true });
+      window.__resolveDelayedPdfHighlight = null;
+    });
+    await page.waitForTimeout(0);
+
+    // Closing the side panel clears an owned PDF fragment through the
+    // background worker before the panel document disappears.
+    await selectPdfAnswer();
+    const closeClearCountBefore = await page.evaluate(
+      () =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length
+    );
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    await page.waitForFunction(
+      (count) =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length > count,
+      closeClearCountBefore
+    );
+    const closeClearMessage = await page.evaluate(
+      () =>
+        window.__pdfRuntimeMessages
+          .filter(
+            (message) => message.type === "clear-pdf-source-highlight"
+          )
+          .at(-1) || null
+    );
+
+    // Leave another PDF highlight active so navigation proves invalidation
+    // deliberately does not send a clear that would restore the old PDF URL.
+    await selectPdfAnswer();
+    const clearCountAtNavigation = await page.evaluate(
+      () =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length
+    );
+    await page.evaluate(() => {
+      const url = "https://docs.example/reports/another.pdf";
+      for (const listener of window.__pdfTabUpdatedListeners) {
+        listener(91, { url }, { id: 91, url });
+      }
+    });
+    await page.waitForFunction(() =>
+      document
+        .getElementById("notice")
+        ?.textContent?.includes("The page navigated")
+    );
+    await page.waitForTimeout(20);
+
+    const result = await page.evaluate(() => ({
+      clearCount:
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length,
+      cancelCount:
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "cancel-pdf-source-operation"
+        ).length,
+      generationCalls: window.__pdfRequests.filter((item) =>
+        item.path.endsWith("/v1/generate")
+      ).length,
+      heatmapCalls: window.__pdfRequests.filter((item) =>
+        item.path.endsWith("/v1/attributions/heatmap")
+      ).length,
+      notice: document.getElementById("notice")?.textContent || "",
+      tabMessageCount: window.__pdfTabMessages.length,
+    }));
+    const expectedStart = await page.evaluate(() =>
+      window.__pdfSource.indexOf(window.__pdfTarget)
+    );
+    const good =
+      result.generationCalls === 1 &&
+      result.heatmapCalls === 1 &&
+      clearCountBeforeAttribution === 0 &&
+      firstHighlight?.type === "highlight-pdf-source" &&
+      firstHighlight?.tabId === 91 &&
+      firstHighlight?.url ===
+        "https://docs.example/reports/process.pdf#page=3" &&
+      firstHighlight?.document ===
+        "Quarterly analysis compares the baseline and revised process across " +
+          "three facilities. After controlled trials and independent checks, " +
+          "the report confirms a durable efficiency gain for every monitored " +
+          "production line. Follow-up measurements remained stable." &&
+      firstHighlight?.start === expectedStart &&
+      firstHighlight?.end ===
+        expectedStart + "durable efficiency gain".length &&
+      result.tabMessageCount === 0 &&
+      samePdfStayedValid &&
+      clearMessage?.type === "clear-pdf-source-highlight" &&
+      clearMessage?.tabId === 91 &&
+      clearMessage?.url ===
+        "https://docs.example/reports/process.pdf#page=3" &&
+      closeClearMessage?.type === "clear-pdf-source-highlight" &&
+      closeClearMessage?.tabId === 91 &&
+      closeClearMessage?.url ===
+        "https://docs.example/reports/process.pdf#page=3" &&
+      result.clearCount === clearCountAtNavigation &&
+      result.clearCount === 3 &&
+      result.cancelCount === 1 &&
+      result.notice.includes("The page navigated");
+    console.log("\n### Native PDF side-panel fixture");
+    console.log(
+      `  [runtime attribution + fragment lifetime] ${good ? "PASS" : "FAIL"}` +
+        ` — calls=${result.generationCalls}/${result.heatmapCalls}, ` +
+        `range=${firstHighlight?.start}/${firstHighlight?.end}, ` +
+        `samePdf=${samePdfStayedValid}, clears=${result.clearCount}, ` +
+        `preclear=${clearCountBeforeAttribution}, ` +
+        `cancels=${result.cancelCount}, ` +
+        `tabMessages=${result.tabMessageCount}`
+    );
+    recordDeterministic(good);
+  } catch (error) {
+    console.log(
+      `\n### Native PDF side-panel fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
+    );
+    recordDeterministic(false);
+  } finally {
+    await page.close();
+  }
+}
+
+// A full-PDF seed is intentionally textless: the panel downloads the PDF and
+// asks a hidden native viewer for searchable text. Exercise that public seed
+// path without a controller hook, including replacement while the first native
+// extraction is still waiting to reply.
+{
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(() => {
+      const viewerOrigin =
+        "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai";
+      const olderPdfUrl = "https://docs.example/reports/older.pdf#page=2";
+      const newerPdfUrl = "https://docs.example/reports/newer.pdf#page=4";
+      const newerText =
+        "The newer PDF compares the original scheduling process with a " +
+        "revised workflow across several facilities. Independent checks " +
+        "confirm a durable scheduling improvement while preserving safety, " +
+        "quality, and throughput. Follow-up measurements remained stable " +
+        "throughout the evaluation period.";
+      const answer =
+        "The newer PDF confirms a durable scheduling improvement.";
+      const target = "durable scheduling improvement";
+      const runtimeListeners = [];
+      const localStore = { tokenpathKey: "tpk_full_pdf" };
+      const nativeCreateElement = Document.prototype.createElement;
+      const nativeCreateObjectUrl = URL.createObjectURL.bind(URL);
+      const nativeRevokeObjectUrl = URL.revokeObjectURL.bind(URL);
+
+      const codePointOffset = (text, utf16Offset) =>
+        Array.from(text.slice(0, utf16Offset)).length;
+      const responseJson = (body, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      const doneStream = () =>
+        new Response(
+          "event: done\n" +
+            "data: " +
+            JSON.stringify({
+              answer,
+              model: "google/gemini-3.1-flash-lite",
+              usage: {
+                input_tokens: 54,
+                output_tokens: 9,
+                billed_tokens: 50,
+              },
+              credits_remaining: 9_900,
+            }) +
+            "\n\n",
+          {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }
+        );
+      const dispatchViewerMessage = (record, data) => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data,
+            origin: viewerOrigin,
+            source: record.source,
+          })
+        );
+      };
+
+      window.__fullPdfAnswer = answer;
+      window.__fullPdfEmbeds = [];
+      window.__fullPdfFetches = [];
+      window.__fullPdfNewerText = newerText;
+      window.__fullPdfNewerUrl = newerPdfUrl;
+      window.__fullPdfRequests = [];
+      window.__fullPdfRuntimeListeners = runtimeListeners;
+      window.__resolveFullPdfEmbed = (index, text) => {
+        const record = window.__fullPdfEmbeds[index];
+        if (!record) throw new Error(`Missing PDF embed ${index}`);
+        dispatchViewerMessage(record, {
+          type: "getSelectedTextReply",
+          selectedText: text,
+        });
+      };
+
+      Document.prototype.createElement = function createElement(
+        tagName,
+        options
+      ) {
+        const element = nativeCreateElement.call(this, tagName, options);
+        if (String(tagName).toLowerCase() !== "embed") return element;
+
+        const channel = new MessageChannel();
+        const record = {
+          element,
+          loaded: false,
+          requestedText: false,
+          source: channel.port1,
+        };
+        window.__fullPdfEmbeds.push(record);
+        Object.defineProperty(element, "postMessage", {
+          configurable: true,
+          value(message) {
+            if (message?.type === "selectAll" && !record.loaded) {
+              record.loaded = true;
+              queueMicrotask(() => {
+                dispatchViewerMessage(record, {
+                  type: "documentLoaded",
+                  load_state: "success",
+                });
+              });
+              return;
+            }
+            if (message?.type === "getSelectedText") {
+              record.requestedText = true;
+            }
+          },
+        });
+        return element;
+      };
+      URL.createObjectURL = (blob) => nativeCreateObjectUrl(blob);
+      URL.revokeObjectURL = (url) => nativeRevokeObjectUrl(url);
+
+      window.chrome = {
+        tabs: {
+          async query() {
+            return [{ id: 301, windowId: 17, url: olderPdfUrl }];
+          },
+          async sendMessage() {
+            return { ok: true };
+          },
+          onUpdated: { addListener() {} },
+          onRemoved: { addListener() {} },
+        },
+        runtime: {
+          async sendMessage() {
+            return { ok: true };
+          },
+          onMessage: {
+            addListener(listener) {
+              runtimeListeners.push(listener);
+            },
+          },
+        },
+        storage: {
+          local: {
+            async get(keys) {
+              const requested = Array.isArray(keys) ? keys : [keys];
+              return Object.fromEntries(
+                requested
+                  .filter((key) => key in localStore)
+                  .map((key) => [key, localStore[key]])
+              );
+            },
+            async set(values) {
+              Object.assign(localStore, values);
+            },
+            async remove(key) {
+              delete localStore[key];
+            },
+          },
+          session: {
+            async get(key) {
+              return {
+                [key]: {
+                  captureId: "full-pdf-older",
+                  capturedAt: 1,
+                  tabId: 301,
+                  windowId: 17,
+                  frameId: 0,
+                  captureMode: "full-pdf",
+                  sourceType: "chrome-pdf",
+                  url: olderPdfUrl,
+                  text: "",
+                  error: null,
+                },
+              };
+            },
+          },
+        },
+      };
+
+      window.fetch = async (url, options = {}) => {
+        const path = String(url);
+        if (path.startsWith("https://docs.example/reports/")) {
+          window.__fullPdfFetches.push({
+            path,
+            signal: options.signal || null,
+          });
+          const bytes = new TextEncoder().encode("%PDF-1.7\nmock fixture\n");
+          return new Response(bytes, {
+            status: 200,
+            headers: {
+              "Content-Length": String(bytes.byteLength),
+              "Content-Type": "application/pdf",
+            },
+          });
+        }
+
+        const request = options.body ? JSON.parse(options.body) : null;
+        if (path.endsWith("/v1/me/credits")) {
+          return responseJson({ available_tokens: 10_000 });
+        }
+        window.__fullPdfRequests.push({ path, request });
+        if (path.endsWith("/v1/generate")) return doneStream();
+        if (path.endsWith("/v1/attributions/heatmap")) {
+          const answerStart = answer.indexOf(target);
+          const documentStart = newerText.indexOf(target);
+          return responseJson({
+            row: [0],
+            col: [0],
+            data: [0.98],
+            shape: [1, 1],
+            answer_offsets: [
+              [
+                codePointOffset(answer, answerStart),
+                codePointOffset(answer, answerStart + target.length),
+              ],
+            ],
+            document_offsets: [
+              [
+                codePointOffset(newerText, documentStart),
+                codePointOffset(newerText, documentStart + target.length),
+              ],
+            ],
+          });
+        }
+        return responseJson({}, 404);
+      };
+    });
+
+    await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent ===
+          "Reading the full PDF…" &&
+        window.__fullPdfEmbeds[0]?.requestedText === true
+    );
+    const initialReadingState = await page.evaluate(() => ({
+      composerDisabled:
+        document.getElementById("input") instanceof HTMLTextAreaElement &&
+        document.getElementById("input").disabled,
+      context: document.getElementById("context-text")?.textContent || "",
+      label: document.querySelector(".source-label")?.textContent || "",
+      placeholder:
+        document.getElementById("input")?.getAttribute("placeholder") || "",
+      requestCount: window.__fullPdfRequests.length,
+    }));
+
+    await page.evaluate(() => {
+      window.__fullPdfRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "full-pdf-newer",
+        capturedAt: 2,
+        tabId: 301,
+        windowId: 17,
+        frameId: 0,
+        captureMode: "full-pdf",
+        intent: "simplify",
+        sourceType: "chrome-pdf",
+        url: window.__fullPdfNewerUrl,
+        text: "",
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        window.__fullPdfEmbeds.length === 2 &&
+        window.__fullPdfEmbeds[1]?.requestedText === true
+    );
+    const olderSignalWasAborted = await page.evaluate(
+      () => window.__fullPdfFetches[0]?.signal?.aborted === true
+    );
+
+    await page.evaluate(() => {
+      window.__resolveFullPdfEmbed(1, window.__fullPdfNewerText);
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') &&
+        window.__fullPdfRequests.some((item) =>
+          item.path.endsWith("/v1/generate")
+        ) &&
+        window.__fullPdfRequests.some((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        )
+    );
+
+    // A delayed reply from the removed first viewer must not replace the newer
+    // context or trigger another generation.
+    await page.evaluate(() => {
+      window.__resolveFullPdfEmbed(
+        0,
+        "Older PDF text must never become the active panel context."
+      );
+    });
+    await page.waitForTimeout(20);
+
+    const result = await page.evaluate(() => {
+      const generationRequests = window.__fullPdfRequests.filter((item) =>
+        item.path.endsWith("/v1/generate")
+      );
+      const heatmapRequests = window.__fullPdfRequests.filter((item) =>
+        item.path.endsWith("/v1/attributions/heatmap")
+      );
+      const generationMessages =
+        generationRequests[0]?.request?.messages || [];
+      return {
+        answer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        context: document.getElementById("context-text")?.textContent || "",
+        generationCount: generationRequests.length,
+        generationHasNewerText: generationMessages.some(
+          (message) =>
+            message.role === "system" &&
+            message.content.includes(JSON.stringify(window.__fullPdfNewerText))
+        ),
+        generationUserPrompt:
+          [...generationMessages]
+            .reverse()
+            .find((message) => message.role === "user")?.content || "",
+        heatmapCount: heatmapRequests.length,
+        heatmapDocument: heatmapRequests[0]?.request?.document || "",
+        label: document.querySelector(".source-label")?.textContent || "",
+        pdfFetchCount: window.__fullPdfFetches.length,
+      };
+    });
+    const good =
+      initialReadingState.context === "Reading the full PDF…" &&
+      initialReadingState.label === "Entire PDF" &&
+      initialReadingState.composerDisabled &&
+      initialReadingState.placeholder === "Reading PDF…" &&
+      initialReadingState.requestCount === 0 &&
+      olderSignalWasAborted &&
+      result.label === "Entire PDF" &&
+      result.context ===
+        (await page.evaluate(() => window.__fullPdfNewerText)) &&
+      result.answer.includes("durable scheduling improvement") &&
+      result.generationCount === 1 &&
+      result.generationHasNewerText &&
+      result.generationUserPrompt.includes("clear, simple language") &&
+      result.generationUserPrompt.includes(
+        "Do not add any information that is not present"
+      ) &&
+      result.heatmapCount === 1 &&
+      result.heatmapDocument ===
+        (await page.evaluate(() => window.__fullPdfNewerText)) &&
+      result.pdfFetchCount === 2;
+    console.log("\n### Full-PDF side-panel fixture");
+    console.log(
+      `  [reading state + extraction replacement + generation] ${good ? "PASS" : "FAIL"}` +
+        ` — label=${result.label}, fetches=${result.pdfFetchCount}, ` +
+        `aborted=${olderSignalWasAborted}, calls=${result.generationCount}/${result.heatmapCount}`
+    );
+    recordDeterministic(good);
+  } catch (error) {
+    console.log(
+      `\n### Full-PDF side-panel fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
+    );
+    recordDeterministic(false);
+  } finally {
+    await page.close();
+  }
+}
+
+// Capture intent is part of the seed, not a UI-only flag. Simplify should run
+// one automatic attributed rewrite, while Ask should expose the captured
+// context without spending a request until the user submits a question.
+{
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(() => {
+      const simplifySource =
+        "The operations team tested a revised workflow at three facilities " +
+        "during the spring. The workflow reduced scheduling delays while " +
+        "preserving the existing safety checks, quality reviews, staffing " +
+        "levels, and reporting requirements. Independent measurements " +
+        "remained stable for the rest of the evaluation period.";
+      const askSource =
+        "The research group compared the original workflow with a revised " +
+        "workflow over twelve weeks. The revised process shortened review " +
+        "cycles, retained every required safety check, and produced the same " +
+        "quality scores across all participating teams.";
+      const simplifyAnswer =
+        "The team tested a simpler workflow that reduced delays without " +
+        "changing safety, quality, staffing, or reporting requirements.";
+      const askAnswer =
+        "The revised workflow shortened review cycles while keeping every " +
+        "required safety check and the same quality scores.";
+      const runtimeListeners = [];
+      const localStore = { tokenpathKey: "tpk_intents" };
+
+      const codePointOffset = (text, utf16Offset) =>
+        Array.from(text.slice(0, utf16Offset)).length;
+      const responseJson = (body, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      const doneStream = (answer) =>
+        new Response(
+          "event: done\n" +
+            "data: " +
+            JSON.stringify({
+              answer,
+              model: "google/gemini-3.1-flash-lite",
+              usage: {
+                input_tokens: 51,
+                output_tokens: 14,
+                billed_tokens: 47,
+              },
+              credits_remaining: 8_800,
+            }) +
+            "\n\n",
+          {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }
+        );
+
+      window.__intentAskAnswer = askAnswer;
+      window.__intentAskSource = askSource;
+      window.__intentRequests = [];
+      window.__intentRuntimeListeners = runtimeListeners;
+      window.__intentSimplifyAnswer = simplifyAnswer;
+      window.__intentSimplifySource = simplifySource;
+      window.chrome = {
+        tabs: {
+          async query() {
+            return [
+              {
+                id: 411,
+                windowId: 23,
+                url: "https://docs.example/intent-fixture",
+              },
+            ];
+          },
+          async sendMessage() {
+            return { ok: true };
+          },
+          onUpdated: { addListener() {} },
+          onRemoved: { addListener() {} },
+        },
+        runtime: {
+          async sendMessage() {
+            return { ok: true };
+          },
+          onMessage: {
+            addListener(listener) {
+              runtimeListeners.push(listener);
+            },
+          },
+        },
+        storage: {
+          local: {
+            async get(keys) {
+              const requested = Array.isArray(keys) ? keys : [keys];
+              return Object.fromEntries(
+                requested
+                  .filter((key) => key in localStore)
+                  .map((key) => [key, localStore[key]])
+              );
+            },
+            async set(values) {
+              Object.assign(localStore, values);
+            },
+            async remove(key) {
+              delete localStore[key];
+            },
+          },
+          session: {
+            async get() {
+              return {};
+            },
+          },
+        },
+      };
+
+      window.fetch = async (url, options = {}) => {
+        const path = String(url);
+        const request = options.body ? JSON.parse(options.body) : null;
+        if (path.endsWith("/v1/me/credits")) {
+          return responseJson({ available_tokens: 9_000 });
+        }
+        window.__intentRequests.push({ path, request });
+        if (path.endsWith("/v1/generate")) {
+          const question =
+            [...(request.messages || [])]
+              .reverse()
+              .find((message) => message.role === "user")?.content || "";
+          return doneStream(
+            question.includes("clear, simple language")
+              ? simplifyAnswer
+              : askAnswer
+          );
+        }
+        if (path.endsWith("/v1/attributions/heatmap")) {
+          const target = "workflow";
+          const answerStart = request.answer.indexOf(target);
+          const documentStart = request.document.indexOf(target);
+          return responseJson({
+            row: [0],
+            col: [0],
+            data: [0.96],
+            shape: [1, 1],
+            answer_offsets: [
+              [
+                codePointOffset(request.answer, answerStart),
+                codePointOffset(
+                  request.answer,
+                  answerStart + target.length
+                ),
+              ],
+            ],
+            document_offsets: [
+              [
+                codePointOffset(request.document, documentStart),
+                codePointOffset(
+                  request.document,
+                  documentStart + target.length
+                ),
+              ],
+            ],
+          });
+        }
+        return responseJson({}, 404);
+      };
+    });
+
+    await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("context-text")
+          ?.textContent?.includes("Waiting for a selection")
+    );
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "simplify-seed",
+        capturedAt: 10,
+        tabId: 411,
+        windowId: 23,
+        frameId: 18,
+        captureMode: "full-page",
+        intent: "simplify",
+        sourceType: "page",
+        url: "https://docs.example/simplify",
+        text: window.__intentSimplifySource,
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length === 1 &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length === 1
+    );
+    const simplifyResult = await page.evaluate(() => {
+      const generation = window.__intentRequests.find((item) =>
+        item.path.endsWith("/v1/generate")
+      );
+      const heatmap = window.__intentRequests.find((item) =>
+        item.path.endsWith("/v1/attributions/heatmap")
+      );
+      const messages = generation?.request?.messages || [];
+      return {
+        answer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        document: heatmap?.request?.document || "",
+        maxOutputTokens: generation?.request?.max_output_tokens,
+        label: document.querySelector(".source-label")?.textContent || "",
+        prompt:
+          [...messages]
+            .reverse()
+            .find((message) => message.role === "user")?.content || "",
+        systemIncludesContext: messages.some(
+          (message) =>
+            message.role === "system" &&
+            message.content.includes(
+              JSON.stringify(window.__intentSimplifySource)
+            )
+        ),
+      };
+    });
+
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "ask-seed",
+        capturedAt: 11,
+        tabId: 411,
+        windowId: 23,
+        frameId: 19,
+        captureMode: "full-page",
+        intent: "ask",
+        sourceType: "page",
+        url: "https://docs.example/ask",
+        text: window.__intentAskSource,
+        error: null,
+        truncated: true,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent ===
+          window.__intentAskSource &&
+        document.getElementById("input") instanceof HTMLTextAreaElement &&
+        document.getElementById("input").disabled === false
+    );
+    await page.waitForTimeout(30);
+    const askReadyState = await page.evaluate(() => ({
+      answerCount: document.querySelectorAll("[data-answer-content]").length,
+      generateCount: window.__intentRequests.filter((item) =>
+        item.path.endsWith("/v1/generate")
+      ).length,
+      heatmapCount: window.__intentRequests.filter((item) =>
+        item.path.endsWith("/v1/attributions/heatmap")
+      ).length,
+      inputDisabled: document.getElementById("input")?.disabled,
+      label: document.querySelector(".source-label")?.textContent || "",
+      placeholder:
+        document.getElementById("input")?.getAttribute("placeholder") || "",
+      truncationNote:
+        document.getElementById("messages")?.textContent?.includes(
+          "This page is very long"
+        ) === true,
+    }));
+
+    const explicitQuestion = "What changed in the revised workflow?";
+    await page.locator("#input").fill(explicitQuestion);
+    await page.locator("#send").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length === 2 &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length === 2
+    );
+    const askResult = await page.evaluate(() => {
+      const generations = window.__intentRequests.filter((item) =>
+        item.path.endsWith("/v1/generate")
+      );
+      const heatmaps = window.__intentRequests.filter((item) =>
+        item.path.endsWith("/v1/attributions/heatmap")
+      );
+      const generation = generations[1];
+      const messages = generation?.request?.messages || [];
+      return {
+        answer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        document: heatmaps[1]?.request?.document || "",
+        maxOutputTokens: generation?.request?.max_output_tokens,
+        question:
+          [...messages]
+            .reverse()
+            .find((message) => message.role === "user")?.content || "",
+        systemIncludesContext: messages.some(
+          (message) =>
+            message.role === "system" &&
+            message.content.includes(JSON.stringify(window.__intentAskSource))
+        ),
+      };
+    });
+
+    const good =
+      simplifyResult.prompt.includes("clear, simple language") &&
+      simplifyResult.prompt.includes("preserving all facts") &&
+      simplifyResult.prompt.includes(
+        "Do not add any information that is not present"
+      ) &&
+      simplifyResult.maxOutputTokens === 768 &&
+      simplifyResult.label === "Entire page" &&
+      simplifyResult.systemIncludesContext &&
+      simplifyResult.document ===
+        (await page.evaluate(() => window.__intentSimplifySource)) &&
+      simplifyResult.answer.includes("simpler workflow") &&
+      askReadyState.generateCount === 1 &&
+      askReadyState.heatmapCount === 1 &&
+      askReadyState.answerCount === 0 &&
+      askReadyState.inputDisabled === false &&
+      askReadyState.label === "Entire page" &&
+      askReadyState.placeholder === "Ask about the page…" &&
+      askReadyState.truncationNote &&
+      askResult.question === explicitQuestion &&
+      askResult.maxOutputTokens === 512 &&
+      askResult.systemIncludesContext &&
+      askResult.document ===
+        (await page.evaluate(() => window.__intentAskSource)) &&
+      askResult.answer.includes("shortened review cycles");
+    console.log("\n### Capture-intent side-panel fixture");
+    console.log(
+      `  [simplify auto + ask on submit] ${good ? "PASS" : "FAIL"}` +
+        ` — simplify=${simplifyResult.maxOutputTokens}, ` +
+        `askIdle=${askReadyState.generateCount}/${askReadyState.heatmapCount}, ` +
+        `ask=${askResult.maxOutputTokens}`
+    );
+    recordDeterministic(good);
+  } catch (error) {
+    console.log(
+      `\n### Capture-intent side-panel fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
     );
     recordDeterministic(false);
   } finally {
@@ -1410,10 +2533,31 @@ function recordDeterministic(good) {
       );
       return {
         activeHighlightId: window.__activeHighlightId,
+        clearCount: clears.length,
         creditText: document.getElementById("credits")?.textContent || "",
         firstHighlightId: highlights[0]?.highlightId || null,
         secondHighlightId: highlights[1]?.highlightId || null,
         staleClearId: clears.at(-1)?.highlightId || null,
+      };
+    });
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    await page.waitForFunction(
+      (count) =>
+        window.__highlightMessages.filter(
+          (message) => message.type === "clear-highlight"
+        ).length > count,
+      result.clearCount
+    );
+    const closeResult = await page.evaluate(() => {
+      const clears = window.__highlightMessages.filter(
+        (message) => message.type === "clear-highlight"
+      );
+      return {
+        activeHighlightId: window.__activeHighlightId,
+        clearCount: clears.length,
+        lastClearId: clears.at(-1)?.highlightId || null,
       };
     });
     const good =
@@ -1422,16 +2566,258 @@ function recordDeterministic(good) {
       result.secondHighlightId &&
       result.firstHighlightId !== result.secondHighlightId &&
       result.staleClearId === result.firstHighlightId &&
-      result.activeHighlightId === result.secondHighlightId;
+      result.activeHighlightId === result.secondHighlightId &&
+      closeResult.activeHighlightId === null &&
+      closeResult.clearCount === result.clearCount + 1 &&
+      closeResult.lastClearId === result.secondHighlightId;
     console.log("\n### Side-panel stale response sequencing fixture");
     console.log(
       `  [credit epoch + highlight ownership] ${good ? "PASS" : "FAIL"}` +
-        ` — credits=${result.creditText}, active=${result.activeHighlightId}, staleClear=${result.staleClearId}`
+        ` — credits=${result.creditText}, active=${result.activeHighlightId}, ` +
+        `staleClear=${result.staleClearId}, closeClear=${closeResult.lastClearId}`
     );
     recordDeterministic(good);
   } catch (error) {
     console.log(
       `\n### Side-panel stale response sequencing fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
+    );
+    recordDeterministic(false);
+  } finally {
+    await page.close();
+  }
+}
+
+// Full-page capture must replace any stale selection snapshot with one
+// rendered-document map in the originating frame. That map must retain exact
+// repeated-phrase attribution after a rerender and stay bounded on huge pages.
+{
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`
+      <style>
+        body { font: 16px sans-serif; }
+        .not-selectable { user-select: none; }
+        .hidden { display: none; }
+      </style>
+      <h1 id="page-heading">Whole page fixture</h1>
+      <p id="prior-selection">A stale prior selection remains ordinary page text.</p>
+      <p data-case="alpha">Alpha lead — shared source phrase — alpha tail.</p>
+      <p class="not-selectable" data-case="beta">Beta lead — shared source phrase — beta tail.</p>
+      <p class="hidden">Hidden sentinel must never be captured.</p>
+      <script type="application/json">"Script sentinel must never be captured."</script>
+    `);
+    await setupPage(page);
+
+    const captureResult = await page.evaluate(() => {
+      const prior = document.getElementById("prior-selection").firstChild;
+      const range = document.createRange();
+      range.selectNodeContents(prior);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true })
+      );
+
+      // Even if Chrome omits OnClickData.selectionText, the exact
+      // contextmenu snapshot still takes precedence over full-page mode.
+      let omittedSelection;
+      window.__tldrMsg(
+        { type: "capture-page", captureId: "omitted-selection-hint" },
+        null,
+        (value) => {
+          omittedSelection = value;
+        }
+      );
+
+      // A later contextmenu with no live selection must clear that eager
+      // candidate and capture the rendered page instead.
+      document.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true })
+      );
+      let fullPage;
+      window.__tldrMsg(
+        { type: "capture-page", captureId: "full-page-1" },
+        null,
+        (value) => {
+          fullPage = value;
+        }
+      );
+      return { fullPage, omittedSelection };
+    });
+    const captured = captureResult.fullPage;
+
+    const target = "shared source phrase";
+    const targetStart = captured?.text?.lastIndexOf(target) ?? -1;
+    const targetEnd = targetStart + target.length;
+    const firstHighlight = await page.evaluate(
+      ({ start, end }) => {
+        document.getElementById("page-heading").textContent =
+          "Whole page fixture updated outside the source";
+        const beta = document.querySelector('[data-case="beta"]');
+        beta.replaceWith(beta.cloneNode(true));
+
+        let response;
+        window.__tldrMsg(
+          {
+            type: "highlight",
+            captureId: "full-page-1",
+            highlightId: "full-page-highlight-1",
+            start,
+            end,
+          },
+          null,
+          (value) => {
+            response = value;
+          }
+        );
+        const range = CSS.highlights
+          ? [...(CSS.highlights.get("tldr-attrib") || [])][0]
+          : null;
+        return {
+          ok: response?.ok === true,
+          owner:
+            range?.startContainer?.parentElement
+              ?.closest("[data-case]")
+              ?.getAttribute("data-case") || null,
+          text: range?.toString() || "",
+        };
+      },
+      { start: targetStart, end: targetEnd }
+    );
+
+    const ownership = await page.evaluate(
+      ({ start, end }) => {
+        let recaptured;
+        window.__tldrMsg(
+          { type: "capture-page", captureId: "full-page-2" },
+          null,
+          (value) => {
+            recaptured = value;
+          }
+        );
+        let stale;
+        window.__tldrMsg(
+          {
+            type: "highlight",
+            captureId: "full-page-1",
+            start,
+            end,
+          },
+          null,
+          (value) => {
+            stale = value;
+          }
+        );
+        const staleRangeCount = CSS.highlights
+          ? [...(CSS.highlights.get("tldr-attrib") || [])].length
+          : 0;
+        const currentStart = recaptured.text.lastIndexOf(
+          "shared source phrase"
+        );
+        let current;
+        window.__tldrMsg(
+          {
+            type: "highlight",
+            captureId: "full-page-2",
+            start: currentStart,
+            end: currentStart + "shared source phrase".length,
+          },
+          null,
+          (value) => {
+            current = value;
+          }
+        );
+        return {
+          currentOk: current?.ok === true,
+          recapturedText: recaptured?.text || "",
+          staleRangeCount,
+          staleOk: stale?.ok === true,
+        };
+      },
+      { start: targetStart, end: targetEnd }
+    );
+
+    const truncation = await page.evaluate(() => {
+      document.body.replaceChildren();
+      const huge = document.createElement("main");
+      huge.textContent = "A".repeat(399_999) + "😀" + "tail";
+      document.body.append(huge);
+      let response;
+      window.__tldrMsg(
+        { type: "capture-page", captureId: "full-page-huge" },
+        null,
+        (value) => {
+          response = value;
+        }
+      );
+      const end = response?.text?.length || 0;
+      let highlight;
+      window.__tldrMsg(
+        {
+          type: "highlight",
+          captureId: "full-page-huge",
+          start: Math.max(0, end - 1),
+          end,
+        },
+        null,
+        (value) => {
+          highlight = value;
+        }
+      );
+      const range = CSS.highlights
+        ? [...(CSS.highlights.get("tldr-attrib") || [])][0]
+        : null;
+      return {
+        endsWithHighSurrogate: /[\uD800-\uDBFF]$/.test(response?.text || ""),
+        first: response?.text?.[0] || "",
+        highlightOk: highlight?.ok === true,
+        highlightedText: range?.toString() || "",
+        last: response?.text?.at(-1) || "",
+        length: response?.text?.length || 0,
+        truncated: response?.truncated === true,
+      };
+    });
+
+    const good =
+      captured?.error == null &&
+      captureResult.omittedSelection?.captureMode === "selection" &&
+      captureResult.omittedSelection?.text ===
+        "A stale prior selection remains ordinary page text." &&
+      captured?.captureMode === "full-page" &&
+      captured?.truncated === false &&
+      captured.text.includes("Whole page fixture") &&
+      captured.text.includes("A stale prior selection") &&
+      captured.text.includes("Alpha lead") &&
+      captured.text.includes("Beta lead") &&
+      !captured.text.includes("Hidden sentinel") &&
+      !captured.text.includes("Script sentinel") &&
+      targetStart >= 0 &&
+      firstHighlight.ok &&
+      firstHighlight.owner === "beta" &&
+      firstHighlight.text === target &&
+      !ownership.staleOk &&
+      ownership.staleRangeCount === 0 &&
+      ownership.currentOk &&
+      ownership.recapturedText.includes("Whole page fixture updated") &&
+      truncation.truncated &&
+      truncation.length === 399_999 &&
+      truncation.first === "A" &&
+      truncation.last === "A" &&
+      !truncation.endsWithHighSurrogate &&
+      truncation.highlightOk &&
+      truncation.highlightedText === "A";
+    console.log("\n### Full-page content fixture");
+    console.log(
+      `  [rendered capture + rerender attribution + safe cap] ${good ? "PASS" : "FAIL"}` +
+        ` — target=${firstHighlight.owner}/${JSON.stringify(firstHighlight.text)}, ` +
+        `ownership=${ownership.staleOk}/${ownership.currentOk}, ` +
+        `cap=${truncation.length}/${truncation.truncated}`
+    );
+    recordDeterministic(good);
+  } catch (error) {
+    console.log(
+      `\n### Full-page content fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
     );
     recordDeterministic(false);
   } finally {
