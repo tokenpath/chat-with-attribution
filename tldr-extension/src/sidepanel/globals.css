@@ -462,12 +462,115 @@
   color: var(--tp-accent);
 }
 
-[data-answer-status="ready"] .answer-attribution-status {
-  color: var(--positive);
-}
-
 .answer-attribution-error {
   color: var(--destructive);
+}
+
+.answer-selection-demo {
+  display: flex;
+  align-items: center;
+  gap: 0.24rem;
+  min-height: 1.35rem;
+  margin-top: 0.45rem;
+  color: var(--positive);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  line-height: 1rem;
+  user-select: none;
+}
+
+.answer-selection-demo > svg {
+  width: 0.72rem;
+  height: 0.72rem;
+  flex: none;
+}
+
+.selection-demo-phrase {
+  position: relative;
+  display: inline-block;
+  isolation: isolate;
+  padding-inline: 0.08rem;
+  color: var(--foreground);
+}
+
+.selection-demo-highlight {
+  position: absolute;
+  inset: 0 -0.04rem;
+  z-index: -1;
+  border-radius: 0.1rem;
+  background: color-mix(in srgb, var(--positive) 27%, transparent);
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+
+.selection-demo-words {
+  position: relative;
+}
+
+.selection-demo-cursor {
+  position: absolute;
+  z-index: 2;
+  top: 0.72rem;
+  left: -0.42rem;
+  width: 0.7rem !important;
+  height: 0.7rem !important;
+  fill: var(--background);
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 22%));
+  opacity: 0;
+  pointer-events: none;
+}
+
+.answer-selection-demo.is-animated .selection-demo-highlight {
+  animation: selection-drag-highlight 3.2s ease-in-out 1;
+}
+
+.answer-selection-demo.is-animated .selection-demo-cursor {
+  animation: selection-drag-cursor 3.2s ease-in-out 1;
+}
+
+@keyframes selection-drag-highlight {
+  0%,
+  18% {
+    transform: scaleX(0);
+  }
+  60%,
+  82% {
+    transform: scaleX(1);
+  }
+  100% {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes selection-drag-cursor {
+  0% {
+    left: -0.42rem;
+    opacity: 0;
+  }
+  12%,
+  18% {
+    left: -0.42rem;
+    opacity: 1;
+  }
+  60%,
+  82% {
+    left: calc(100% - 0.18rem);
+    opacity: 1;
+  }
+  100% {
+    left: calc(100% - 0.18rem);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .answer-selection-demo.is-animated .selection-demo-highlight {
+    transform: scaleX(1);
+  }
+
+  .selection-demo-cursor {
+    display: none;
+  }
 }
 
 [data-streamdown="root"] {

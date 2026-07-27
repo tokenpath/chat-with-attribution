@@ -751,8 +751,28 @@ function recordDeterministic(good) {
         hasFixedSpans: !!document.querySelector(".attrib"),
         hasSelectionHint:
           document
-            .querySelector('[data-answer-status="ready"]')
-            ?.textContent.includes("Select any text to find its source") || false,
+            .querySelector(".answer-selection-demo")
+            ?.getAttribute("aria-label") ===
+            "Select any text in this answer to find its source",
+        selectionDemo:
+          document.querySelectorAll(
+            ".answer-selection-demo.is-animated"
+          ).length === 1 &&
+          getComputedStyle(
+            document.querySelector(
+              ".answer-selection-demo.is-animated .selection-demo-highlight"
+            )
+          ).animationName === "selection-drag-highlight" &&
+          Boolean(
+            document.querySelector(
+              ".answer-selection-demo.is-animated .selection-demo-highlight"
+            )
+          ) &&
+          Boolean(
+            document.querySelector(
+              ".answer-selection-demo.is-animated .selection-demo-cursor"
+            )
+          ),
         themeLabels,
         fitsNarrowPanel:
           document.documentElement.scrollWidth <=
@@ -1008,6 +1028,7 @@ function recordDeterministic(good) {
       firstMessage?.start === expectedFable &&
       firstMessage?.end === expectedFable + 7 &&
       firstMessage?.captureId === "seed-1" &&
+      panelResult.selectionDemo &&
       secondMessage?.start === expectedWorldwide &&
       secondMessage?.end === expectedWorldwide + "worldwide".length &&
       realLinkSent?.[1]?.start === expectedWorldwide &&
@@ -1025,6 +1046,7 @@ function recordDeterministic(good) {
         `sourceCard=${collapsedSourceState.cardHeight.toFixed(0)}px/${expandedSourceState.contextVisible}/${replacementSourceCollapsed}/${sourceErrorState.visible}, ` +
         `brand=${panelResult.hasTokenPathWordmark}/${panelResult.hasTokenRail}, ` +
         `cta=${panelResult.cta?.text}/${panelResult.ctaDoesNotOverlapDisconnect}, ` +
+        `selectionDemo=${panelResult.selectionDemo}, ` +
         `boundaries=${boundaryCases.map((item) => `${item.question}:${item.good}`).join(",")}`
     );
     recordDeterministic(good);

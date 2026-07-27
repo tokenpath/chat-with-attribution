@@ -5,6 +5,7 @@ import {
   ExternalLinkIcon,
   KeyRoundIcon,
   MonitorIcon,
+  MousePointer2Icon,
   MoonIcon,
   SunIcon,
   TextSelectIcon,
@@ -98,9 +99,11 @@ const ANSWER_COMPONENTS = {
 function AnswerResponse({
   message,
   controller,
+  animateSelectionHint,
 }: {
   message: PanelMessage;
   controller: PanelController;
+  animateSelectionHint: boolean;
 }) {
   const answerRoot = useRef<HTMLDivElement>(null);
   const locateSelection = useCallback(() => {
@@ -157,9 +160,23 @@ function AnswerResponse({
         </div>
       )}
       {message.answerStatus === "ready" && (
-        <div className="answer-attribution-status">
-          <TextSelectIcon className="size-3" />
-          <span>Select any text to find its source</span>
+        <div
+          aria-label="Select any text in this answer to find its source"
+          className={cn(
+            "answer-selection-demo",
+            animateSelectionHint && "is-animated"
+          )}
+        >
+          <TextSelectIcon aria-hidden="true" />
+          <span aria-hidden="true">Select</span>
+          <span aria-hidden="true" className="selection-demo-phrase">
+            <span className="selection-demo-highlight" />
+            <span className="selection-demo-words">any text</span>
+            {animateSelectionHint && (
+              <MousePointer2Icon className="selection-demo-cursor" />
+            )}
+          </span>
+          <span aria-hidden="true">to reveal its source</span>
         </div>
       )}
       {message.answerStatus === "unavailable" && (
@@ -178,9 +195,11 @@ function AnswerResponse({
 function ChatMessage({
   message,
   controller,
+  animateSelectionHint,
 }: {
   message: PanelMessage;
   controller: PanelController;
+  animateSelectionHint: boolean;
 }) {
   const isNote = message.kind === "note";
   const isError = message.kind === "error";
@@ -199,7 +218,11 @@ function ChatMessage({
         )}
       >
         {message.kind === "answer" ? (
-          <AnswerResponse controller={controller} message={message} />
+          <AnswerResponse
+            animateSelectionHint={animateSelectionHint}
+            controller={controller}
+            message={message}
+          />
         ) : (
           <div className="whitespace-pre-wrap break-words">
             {message.text}
@@ -270,6 +293,14 @@ export function App({ controller }: { controller: PanelController }) {
   useEffect(() => {
     setSourceExpanded(false);
   }, [snapshot.contextText, snapshot.hasContext]);
+
+  const latestReadyAnswerId =
+    [...snapshot.messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.kind === "answer" && message.answerStatus === "ready"
+      )?.id || null;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
@@ -506,6 +537,7 @@ export function App({ controller }: { controller: PanelController }) {
         <ConversationContent className="gap-5 px-3.5 py-4">
           {snapshot.messages.map((message) => (
             <ChatMessage
+              animateSelectionHint={message.id === latestReadyAnswerId}
               controller={controller}
               key={message.id}
               message={message}
