@@ -315,17 +315,12 @@ const TldrPanelLogic = (() => {
   }
 
   /**
-   * Discover clickable answer spans directly from heatmap topology.
+   * Detect answer spans as line segments in the sparse heatmap.
    *
-   * Each answer-token row keeps only its strongest document-token candidates.
-   * Consecutive rows join when those candidates form a locally continuous,
-   * roughly forward-moving path through the document columns. One missing
-   * answer-token row may be bridged so a weak punctuation/subword token does
-   * not split an otherwise continuous path.
-   *
-   * This deliberately does not inspect answer text, split words, resolve a
-   * source span, or verbatim-snap. Source-span resolution remains a separate
-   * operation performed only after the user clicks the discovered answer span.
+   * This is a small weighted Hough transform: every above-threshold heatmap
+   * cell votes for a set of plausible slopes, nearby votes form finite line
+   * segments, and weighted interval scheduling chooses the best non-overlapping
+   * answer spans. There is no per-row filtering and no answer-text logic.
    */
   function visibleAnswerTokenBounds(answer, start, end) {
     const tokenText = answer.slice(start, end);
@@ -340,10 +335,32 @@ const TldrPanelLogic = (() => {
       : null;
   }
 
+  // A model token can begin partway through a word, and its first subtoken can
+  // occasionally be the only row without attribution. Repair that display-only
+  // edge by restoring the missing Unicode letter/number prefix. Do not cross
+  // punctuation or whitespace, since those boundaries may separate phrases.
+  function expandAnswerSpanStart(answer, start) {
+    if (
+      start <= 0 ||
+      start >= answer.length ||
+      !isAlphaNumeric(String.fromCodePoint(answer.codePointAt(start)))
+    ) {
+      return start;
+    }
+
+    let expanded = start;
+    while (expanded > 0) {
+      const previous = codePointBefore(answer, expanded);
+      if (!isAlphaNumeric(previous)) break;
+      expanded -= previous.length;
+    }
+    return expanded;
+  }
+
   function buildAnswerAttributionPhrases(
     heatmap,
     answer,
-    minimumMass = 0.01
+    minimumMass = 0.1
   ) {
     if (
       !heatmap ||
@@ -355,7 +372,17 @@ const TldrPanelLogic = (() => {
 
     const answerOffsets = heatmap.answerOffsets || [];
     const documentTokenCount = (heatmap.documentOffsets || []).length;
-    const rows = new Map();
+    const visibleBounds = answerOffsets.map((offset) =>
+      Array.isArray(offset) &&
+      Number.isInteger(offset[0]) &&
+      Number.isInteger(offset[1]) &&
+      offset[0] >= 0 &&
+      offset[1] > offset[0] &&
+      offset[1] <= answer.length
+        ? visibleAnswerTokenBounds(answer, offset[0], offset[1])
+        : null
+    );
+    const points = [];
     const entryCount = Math.min(
       heatmap.row?.length || 0,
       heatmap.col?.length || 0,
@@ -365,6 +392,7 @@ const TldrPanelLogic = (() => {
       const answerIndex = heatmap.row[entry];
       const documentIndex = heatmap.col[entry];
       const mass = heatmap.data[entry];
+      const bounds = visibleBounds[answerIndex];
       if (
         !Number.isInteger(answerIndex) ||
         answerIndex < 0 ||
@@ -373,239 +401,136 @@ const TldrPanelLogic = (() => {
         documentIndex < 0 ||
         documentIndex >= documentTokenCount ||
         !Number.isFinite(mass) ||
-        mass < minimumMass
+        mass < minimumMass ||
+        !bounds
       ) {
         continue;
       }
-      if (!rows.has(answerIndex)) rows.set(answerIndex, []);
-      rows.get(answerIndex).push({ column: documentIndex, mass });
-    }
-
-    const profiles = [];
-    for (let answerIndex = 0; answerIndex < answerOffsets.length; answerIndex++) {
-      const offset = answerOffsets[answerIndex];
-      const cells = rows.get(answerIndex);
-      if (
-        !Array.isArray(offset) ||
-        !Number.isInteger(offset[0]) ||
-        !Number.isInteger(offset[1]) ||
-        offset[0] < 0 ||
-        offset[1] <= offset[0] ||
-        offset[1] > answer.length ||
-        !cells?.length
-      ) {
-        continue;
-      }
-      const visibleBounds = visibleAnswerTokenBounds(
-        answer,
-        offset[0],
-        offset[1]
-      );
-      if (!visibleBounds) continue;
-
-      cells.sort((first, second) => second.mass - first.mass);
-      const peak = cells[0].mass;
-      const totalMass = cells.reduce((sum, cell) => sum + cell.mass, 0);
-      const candidateFloor = peak * 0.5;
-      profiles.push({
+      points.push({
         answerIndex,
-        start: visibleBounds.start,
-        end: visibleBounds.end,
-        confidence: peak,
-        // Diffuse rows are poor boundary evidence even when one noisy cell
-        // happens to win. Concentration discounts those rows before anchors
-        // are chosen, while keeping the raw peak as the displayed confidence.
-        anchorScore: totalMass > 0 ? (peak * peak) / totalMass : 0,
-        candidates: cells
-          .filter((cell) => cell.mass >= candidateFloor)
-          .slice(0, 4),
+        column: documentIndex,
+        mass,
+        start: bounds.start,
+        end: bounds.end,
       });
     }
-    if (profiles.length === 0) return [];
+    if (points.length < 2) return [];
 
-    const sortedAnchorScores = profiles
-      .map((profile) => profile.anchorScore)
-      .sort((first, second) => first - second);
-    const medianAnchorScore =
-      sortedAnchorScores[Math.floor(sortedAnchorScores.length / 2)] || 0;
-    const strongestAnchorScore =
-      sortedAnchorScores[sortedAnchorScores.length - 1] || 0;
-    const anchorFloor = Math.max(
-      0.02,
-      medianAnchorScore * 0.75,
-      strongestAnchorScore * 0.08
+    const slopes = Array.from(
+      { length: 19 },
+      (_, index) => (index - 2) / 4
     );
-    const anchors = profiles.filter(
-      (profile) => profile.anchorScore >= anchorFloor
-    );
-    if (anchors.length === 0) return [];
-
-    function continuePath(
-      previousColumn,
-      candidates,
-      answerTokenGap,
-      direction = 1
-    ) {
-      let best = null;
-      let bestCost = Infinity;
-      for (const candidate of candidates) {
-        const step = (candidate.column - previousColumn) * direction;
-        if (
-          step < -2 ||
-          step > 4 + 2 * Math.max(1, answerTokenGap)
-        ) {
-          continue;
-        }
-        // A true diagonal usually advances by one source token. Staying on the
-        // same token is equally plausible for answer subwords and paraphrases.
-        const movementCost = Math.min(
-          Math.abs(step),
-          Math.abs(step - answerTokenGap)
+    const bins = new Map();
+    points.forEach((point, pointIndex) => {
+      slopes.forEach((slope, slopeIndex) => {
+        const interceptBin = Math.round(
+          (point.column - slope * point.answerIndex) / 2
         );
-        const cost = movementCost - candidate.mass * 0.01;
-        if (cost < bestCost) {
-          best = candidate;
-          bestCost = cost;
+        const key = `${slopeIndex}:${interceptBin}`;
+        if (!bins.has(key)) bins.set(key, []);
+        bins.get(key).push(pointIndex);
+      });
+    });
+
+    const candidatesByRange = new Map();
+    const addSegment = (pointIndices) => {
+      const strongestByRow = new Map();
+      for (const pointIndex of pointIndices) {
+        const point = points[pointIndex];
+        const current = strongestByRow.get(point.answerIndex);
+        if (!current || point.mass > current.mass) {
+          strongestByRow.set(point.answerIndex, point);
         }
       }
-      return best;
-    }
-
-    function connection(group, target, direction = 1) {
-      const tokenGap =
-        direction === 1
-          ? target.answerIndex - group.lastAnswerIndex
-          : group.firstAnswerIndex - target.answerIndex;
-      const characterGap =
-        direction === 1
-          ? target.start - group.end
-          : group.start - target.end;
-      if (
-        tokenGap < 1 ||
-        tokenGap > 8 ||
-        characterGap < 0 ||
-        characterGap > 4 + 6 * (tokenGap - 1)
-      ) {
-        return null;
-      }
-      return continuePath(
-        direction === 1 ? group.lastSourceColumn : group.firstSourceColumn,
-        target.candidates,
-        tokenGap,
-        direction
+      const segment = [...strongestByRow.values()].sort(
+        (first, second) => first.answerIndex - second.answerIndex
       );
-    }
+      if (segment.length < 2) return;
 
-    function startGroup(anchor) {
-      const sourceColumn = anchor.candidates[0].column;
-      return {
-        start: anchor.start,
-        end: anchor.end,
-        firstAnswerIndex: anchor.answerIndex,
-        lastAnswerIndex: anchor.answerIndex,
-        firstSourceColumn: sourceColumn,
-        lastSourceColumn: sourceColumn,
-        confidence: anchor.confidence,
-        strongestAnchor: anchor.anchorScore,
-        anchorCount: 1,
+      const start = segment[0].start;
+      const end = segment[segment.length - 1].end;
+      const mass = segment.reduce((sum, point) => sum + point.mass, 0);
+      const candidate = {
+        start,
+        end,
+        confidence: Math.max(...segment.map((point) => point.mass)),
+        score: segment.length * segment.length + mass,
       };
-    }
+      const key = `${start}:${end}`;
+      if (
+        !candidatesByRange.has(key) ||
+        candidatesByRange.get(key).score < candidate.score
+      ) {
+        candidatesByRange.set(key, candidate);
+      }
+    };
 
-    function appendAnchor(group, anchor, sourceCandidate) {
-      group.end = anchor.end;
-      group.lastAnswerIndex = anchor.answerIndex;
-      group.lastSourceColumn = sourceCandidate.column;
-      group.confidence = Math.max(group.confidence, anchor.confidence);
-      group.strongestAnchor = Math.max(
-        group.strongestAnchor,
-        anchor.anchorScore
+    for (const pointIndices of bins.values()) {
+      const ordered = [...pointIndices].sort(
+        (first, second) =>
+          points[first].answerIndex - points[second].answerIndex
       );
-      group.anchorCount++;
-    }
-
-    // Strong rows define the topology. If one anchor disagrees but the anchor
-    // immediately after it reconnects to the current path, treat the middle
-    // row as an outlier and absorb it rather than creating two false phrases.
-    const groups = [];
-    let current = startGroup(anchors[0]);
-    for (let index = 1; index < anchors.length; index++) {
-      const anchor = anchors[index];
-      const direct = connection(current, anchor);
-      if (direct) {
-        appendAnchor(current, anchor, direct);
-        continue;
-      }
-
-      const afterOutlier = anchors[index + 1];
-      const recovered = afterOutlier
-        ? connection(current, afterOutlier)
-        : null;
-      if (recovered) {
-        appendAnchor(current, afterOutlier, recovered);
-        index++;
-        continue;
-      }
-
-      groups.push(current);
-      current = startGroup(anchor);
-    }
-    groups.push(current);
-
-    const profileByIndex = new Map(
-      profiles.map((profile) => [profile.answerIndex, profile])
-    );
-    const singleAnchorFloor = Math.max(0.06, anchorFloor * 1.1);
-    const credibleGroups = groups.filter(
-      (group) =>
-        group.anchorCount > 1 ||
-        group.strongestAnchor >= singleAnchorFloor
-    );
-
-    // Expand at most two token rows beyond each anchor group when those weaker
-    // rows continue the same source path. Low-confidence rows between anchors
-    // were already absorbed automatically by the group's [start, end] bounds.
-    for (let groupIndex = 0; groupIndex < credibleGroups.length; groupIndex++) {
-      const group = credibleGroups[groupIndex];
-      const previousGroup = credibleGroups[groupIndex - 1];
-      const nextGroup = credibleGroups[groupIndex + 1];
-
-      for (let step = 0; step < 2; step++) {
-        const profile = profileByIndex.get(group.firstAnswerIndex - 1);
-        if (
-          !profile ||
-          (previousGroup &&
-            profile.answerIndex <= previousGroup.lastAnswerIndex)
-        ) {
-          break;
+      let segment = [];
+      let lastRow = null;
+      for (const pointIndex of ordered) {
+        const row = points[pointIndex].answerIndex;
+        if (lastRow != null && row - lastRow > 2) {
+          addSegment(segment);
+          segment = [];
         }
-        const candidate = connection(group, profile, -1);
-        if (!candidate) break;
-        group.start = profile.start;
-        group.firstAnswerIndex = profile.answerIndex;
-        group.firstSourceColumn = candidate.column;
+        segment.push(pointIndex);
+        lastRow = row;
       }
-
-      for (let step = 0; step < 2; step++) {
-        const profile = profileByIndex.get(group.lastAnswerIndex + 1);
-        if (
-          !profile ||
-          (nextGroup && profile.answerIndex >= nextGroup.firstAnswerIndex)
-        ) {
-          break;
-        }
-        const candidate = connection(group, profile);
-        if (!candidate) break;
-        group.end = profile.end;
-        group.lastAnswerIndex = profile.answerIndex;
-        group.lastSourceColumn = candidate.column;
-      }
+      addSegment(segment);
     }
 
-    return credibleGroups.map(({ start, end, confidence }) => ({
-      start,
-      end,
-      confidence,
-    }));
+    const candidates = [...candidatesByRange.values()].sort(
+      (first, second) =>
+        first.end - second.end || first.start - second.start
+    );
+    const best = [{ score: 0, spans: [] }];
+    for (let index = 0; index < candidates.length; index++) {
+      const candidate = candidates[index];
+      let previous = index - 1;
+      while (
+        previous >= 0 &&
+        candidates[previous].end > candidate.start
+      ) {
+        previous--;
+      }
+      const included = {
+        score: best[previous + 1].score + candidate.score,
+        spans: [...best[previous + 1].spans, candidate],
+      };
+      const excluded = best[index];
+      best.push(
+        included.score > excluded.score ||
+        (included.score === excluded.score &&
+          included.spans.length < excluded.spans.length)
+          ? included
+          : excluded
+      );
+    }
+
+    const selected = best[best.length - 1].spans
+      .map(({ start, end, confidence }) => ({
+        start,
+        end,
+        confidence,
+      }))
+      .sort((first, second) => first.start - second.start);
+
+    return selected.map((span, index) => {
+      const expandedStart = expandAnswerSpanStart(answer, span.start);
+      const previous = selected[index - 1];
+      return {
+        ...span,
+        start:
+          previous && expandedStart < previous.end
+            ? span.start
+            : expandedStart,
+      };
+    });
   }
 
   return {

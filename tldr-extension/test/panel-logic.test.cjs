@@ -119,7 +119,7 @@ const answerToken = (text, from = 0) => {
 };
 const phraseHeatmap = {
   // Row 3 (".2") has no surviving mass. The topology may bridge that one
-  // weak answer token, but rows 6-7 ("was a") remain below the 0.01 floor.
+  // weak answer token, but rows 6-7 ("was a") remain below the 0.1 floor.
   row: [0, 1, 2, 4, 5, 6, 7, 8],
   col: [0, 10, 11, 13, 14, 15, 16, 30],
   data: [0.009, 0.91, 0.88, 0.86, 0.82, 0.009, 0.008, 0.93],
@@ -147,7 +147,7 @@ const clickablePhrases = Logic.buildAnswerAttributionPhrases(
 );
 assert.deepStrictEqual(
   clickablePhrases.map(({ start, end }) => phraseAnswer.slice(start, end)),
-  ["LLaDA2.2-flash model", "breakthrough"]
+  ["LLaDA2.2-flash model"]
 );
 assert.ok(
   clickablePhrases.every(
@@ -179,11 +179,7 @@ const jumpPhrases = Logic.buildAnswerAttributionPhrases(
 );
 assert.deepStrictEqual(
   jumpPhrases.map(({ start, end }) => jumpAnswer.slice(start, end)),
-  ["alpha beta", "gamma"]
-);
-assert.strictEqual(
-  jumpAnswer.slice(jumpPhrases[0].end, jumpPhrases[1].start),
-  " "
+  ["alpha beta"]
 );
 assert.ok(
   jumpPhrases.every(
@@ -191,7 +187,7 @@ assert.ok(
       !/^\s|\s$/u.test(jumpAnswer.slice(start, end))
   )
 );
-console.log("PASS: discontinuous paths retain visible gaps between phrases");
+console.log("PASS: a Hough segment ignores an isolated source jump");
 
 const decimalAnswer = "703.82 TPS on function calling and";
 const decimalPieces = ["703", ".", "82", " TPS", " on", " function", " calling", " and"];
@@ -220,9 +216,140 @@ const decimalPhrases = Logic.buildAnswerAttributionPhrases(
 );
 assert.deepStrictEqual(
   decimalPhrases.map(({ start, end }) => decimalAnswer.slice(start, end)),
-  [decimalAnswer]
+  ["703.82 TPS on function calling"]
 );
-console.log("PASS: anchor recovery absorbs a spurious decimal-point attribution");
+console.log("PASS: a Hough segment spans over spurious decimal-point attribution");
+
+const nestedAnswer = "an AI Deployment Engineer";
+const nestedPieces = ["an", " AI", " Deployment", " Engineer"];
+let nestedOffset = 0;
+const nestedOffsets = nestedPieces.map((piece) => {
+  const start = nestedOffset;
+  nestedOffset += piece.length;
+  return [start, nestedOffset];
+});
+const nestedPhrases = Logic.buildAnswerAttributionPhrases(
+  {
+    // The main diagonal covers the full title. "Engineer" also has a second,
+    // separate source attribution; its nested one-row component must not split
+    // the answer-side phrase.
+    row: [0, 1, 2, 3, 3],
+    col: [10, 11, 12, 13, 30],
+    data: [0.3, 0.82, 0.78, 0.76, 0.7],
+    shape: [4, 40],
+    documentOffsets: Array.from({ length: 40 }, (_, index) => [
+      index,
+      index + 1,
+    ]),
+    answerOffsets: nestedOffsets,
+  },
+  nestedAnswer
+);
+assert.deepStrictEqual(
+  nestedPhrases.map(({ start, end }) => nestedAnswer.slice(start, end)),
+  [nestedAnswer]
+);
+console.log("PASS: global interval selection keeps the full-title line");
+
+const absoluteThresholdAnswer = "low signal";
+const absoluteThresholdPhrases = Logic.buildAnswerAttributionPhrases(
+  {
+    // The 0.2 cell in row 0 is far below that row's 0.9 peak, but it belongs
+    // to the real 30 -> 31 line and must not be removed by row-relative logic.
+    row: [0, 0, 1],
+    col: [5, 30, 31],
+    data: [0.9, 0.2, 0.2],
+    shape: [2, 40],
+    documentOffsets: Array.from({ length: 40 }, (_, index) => [
+      index,
+      index + 1,
+    ]),
+    answerOffsets: [[0, 3], [3, 10]],
+  },
+  absoluteThresholdAnswer
+);
+assert.deepStrictEqual(
+  absoluteThresholdPhrases.map(({ start, end }) =>
+    absoluteThresholdAnswer.slice(start, end)
+  ),
+  [absoluteThresholdAnswer]
+);
+console.log("PASS: Hough voting uses every cell above the absolute threshold");
+
+const bentAnswer = "aa bb cc dd ee";
+const bentPhrases = Logic.buildAnswerAttributionPhrases(
+  {
+    // Two lines touch at answer row 2 but have incompatible slopes. A local
+    // connected-component walk would merge all five rows; global interval
+    // selection must choose a line rather than manufacture one bent span.
+    row: [0, 1, 2, 3, 4],
+    col: [0, 1, 2, 6, 10],
+    data: [0.8, 0.8, 0.8, 0.8, 0.8],
+    shape: [5, 12],
+    documentOffsets: Array.from({ length: 12 }, (_, index) => [
+      index,
+      index + 1,
+    ]),
+    answerOffsets: [[0, 2], [2, 5], [5, 8], [8, 11], [11, 14]],
+  },
+  bentAnswer
+);
+assert.ok(
+  bentPhrases.length === 2 &&
+    !bentPhrases.some(
+      ({ start, end }) => start === 0 && end === bentAnswer.length
+    )
+);
+console.log("PASS: touching lines do not merge into one bent answer span");
+
+const missingPrefixAnswer = "The Deployment Engineer";
+const missingPrefixPhrases = Logic.buildAnswerAttributionPhrases(
+  {
+    // The first subtoken ("De") has no surviving attribution. The detected
+    // line starts at "ployment", so the display span should restore only the
+    // missing beginning of that same word.
+    row: [1, 2],
+    col: [10, 11],
+    data: [0.8, 0.78],
+    shape: [3, 16],
+    documentOffsets: Array.from({ length: 16 }, (_, index) => [
+      index,
+      index + 1,
+    ]),
+    answerOffsets: [[4, 6], [6, 14], [14, 23]],
+  },
+  missingPrefixAnswer
+);
+assert.deepStrictEqual(
+  missingPrefixPhrases.map(({ start, end }) =>
+    missingPrefixAnswer.slice(start, end)
+  ),
+  ["Deployment Engineer"]
+);
+console.log("PASS: a missing first subtoken restores its same-word prefix");
+
+const punctuationBoundaryAnswer = "prefix.result value";
+const punctuationBoundaryPhrases = Logic.buildAnswerAttributionPhrases(
+  {
+    row: [0, 1],
+    col: [10, 11],
+    data: [0.8, 0.78],
+    shape: [2, 16],
+    documentOffsets: Array.from({ length: 16 }, (_, index) => [
+      index,
+      index + 1,
+    ]),
+    answerOffsets: [[7, 13], [13, 19]],
+  },
+  punctuationBoundaryAnswer
+);
+assert.deepStrictEqual(
+  punctuationBoundaryPhrases.map(({ start, end }) =>
+    punctuationBoundaryAnswer.slice(start, end)
+  ),
+  ["result value"]
+);
+console.log("PASS: prefix repair never crosses punctuation");
 
 const bridged = Logic.resolveHeatmapSpan(
   {

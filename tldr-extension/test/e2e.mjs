@@ -411,13 +411,46 @@ function recordDeterministic(good) {
               ),
             ];
           });
+          const splitRange = ([start, end]) => {
+            if (end - start < 2) return [[start, end]];
+            const middle = start + Math.floor((end - start) / 2);
+            return [[start, middle], [middle, end]];
+          };
+          const answerTokenRanges = [];
+          const sparseRows = [];
+          const sparseColumns = [];
+          const sparseData = [];
+          const documentTokenRanges = [];
+          answerRanges.forEach((answerRange, termIndex) => {
+            const answerParts = splitRange(answerRange);
+            const documentParts = splitRange(documentRanges[termIndex]);
+            const documentBase = termIndex * 10;
+            while (
+              documentTokenRanges.length <
+              documentBase + documentParts.length
+            ) {
+              documentTokenRanges.push([0, 1]);
+            }
+            documentParts.forEach((part, partIndex) => {
+              documentTokenRanges[documentBase + partIndex] = part;
+            });
+            answerParts.forEach((part, partIndex) => {
+              sparseRows.push(answerTokenRanges.length);
+              sparseColumns.push(
+                documentBase +
+                  Math.min(partIndex, documentParts.length - 1)
+              );
+              sparseData.push(0.94 - termIndex * 0.06 - partIndex * 0.01);
+              answerTokenRanges.push(part);
+            });
+          });
           return responseJson({
-            row: answerRanges.map((_, index) => index),
-            col: documentRanges.map((_, index) => index),
-            data: answerRanges.map((_, index) => 0.94 - index * 0.06),
-            shape: [answerRanges.length, documentRanges.length],
-            answer_offsets: answerRanges,
-            document_offsets: documentRanges,
+            row: sparseRows,
+            col: sparseColumns,
+            data: sparseData,
+            shape: [answerTokenRanges.length, documentTokenRanges.length],
+            answer_offsets: answerTokenRanges,
+            document_offsets: documentTokenRanges,
           });
         }
         return responseJson({}, 404);
@@ -606,6 +639,30 @@ function recordDeterministic(good) {
       beforeClick
     );
     const clickedSent = await page.evaluate(() => window.__panelSent.at(-1));
+    const beforePanelHide = await page.evaluate(
+      () => window.__panelSent.length
+    );
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "hidden",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.waitForFunction(
+      (count) => window.__panelSent.length > count,
+      beforePanelHide
+    );
+    const panelHideClear = await page.evaluate(
+      () => window.__panelSent.at(-1)
+    );
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
     const firstSent = await selectAnswerText("Fable 5");
     const secondSent = await selectAnswerText("worldwide");
     const realLinkBefore = await page.evaluate(
@@ -1051,7 +1108,9 @@ function recordDeterministic(good) {
       clickedSent?.[1]?.type === "highlight" &&
       clickedSent?.[1]?.start === expectedFable &&
       clickedSent?.[1]?.end === expectedFable + 7 &&
-      panelResult.heatmapThreshold === 0.01 &&
+      panelHideClear?.[1]?.type === "clear-highlight" &&
+      panelHideClear?.[1]?.captureId === "seed-1" &&
+      panelResult.heatmapThreshold === 0.1 &&
       panelResult.clickGuide &&
       panelResult.clickablePhraseText.includes("Fable 5") &&
       panelResult.clickablePhraseText.includes("worldwide") &&
