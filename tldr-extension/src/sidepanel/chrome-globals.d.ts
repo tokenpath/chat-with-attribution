@@ -15,7 +15,18 @@ interface TldrSummaryRequest {
 
 type TldrSummaryLength = "low" | "medium" | "high";
 
+interface TldrAnswerAttributionPhrase {
+  start: number;
+  end: number;
+  confidence: number;
+}
+
 interface TldrPanelLogicApi {
+  buildAnswerAttributionPhrases(
+    heatmap: TldrHeatmap,
+    answer: string,
+    minimumMass?: number
+  ): TldrAnswerAttributionPhrase[];
   buildSummaryRequest(
     text: string,
     length?: TldrSummaryLength

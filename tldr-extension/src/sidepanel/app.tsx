@@ -8,11 +8,11 @@ import {
   MousePointer2Icon,
   MoonIcon,
   SunIcon,
-  TextSelectIcon,
 } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -43,11 +43,50 @@ import {
   type PanelSnapshot,
   type SummaryLength,
 } from "@/controller";
-import { answerRangeFromSelection } from "@/answer-selection";
+import {
+  answerRangeFromSelection,
+  createAnswerDomMapper,
+  type AnswerDomMapper,
+} from "@/answer-selection";
 import { cn } from "@/lib/utils";
 
 const TOKENPATH_DEVELOPER_URL =
   "https://tokenpath.ai/?utm_source=tldr-extension&utm_medium=product&utm_campaign=developer_cta";
+const AVAILABLE_ANSWER_HIGHLIGHT = "tokenpath-answer-attributable";
+const HOVERED_ANSWER_HIGHLIGHT = "tokenpath-answer-hover";
+const availableAnswerRanges = new Map<string, Range[]>();
+const hoveredAnswerRanges = new Map<string, Range[]>();
+
+function syncAnswerHighlight(
+  name: string,
+  groups: Map<string, Range[]>
+) {
+  if (!CSS.highlights || typeof Highlight !== "function") return;
+  const ranges = [...groups.values()].flat();
+  if (ranges.length === 0) {
+    CSS.highlights.delete(name);
+    return;
+  }
+  CSS.highlights.set(name, new Highlight(...ranges));
+}
+
+function setAnswerHighlightRanges(
+  name: string,
+  groups: Map<string, Range[]>,
+  messageId: string,
+  ranges: Range[]
+) {
+  if (ranges.length > 0) groups.set(messageId, ranges);
+  else groups.delete(messageId);
+  syncAnswerHighlight(name, groups);
+}
+
+function samePhrase(
+  first: TldrAnswerAttributionPhrase | null,
+  second: TldrAnswerAttributionPhrase | null
+) {
+  return first?.start === second?.start && first?.end === second?.end;
+}
 
 function TokenPathWordmark() {
   return (
@@ -99,13 +138,96 @@ const ANSWER_COMPONENTS = {
 function AnswerResponse({
   message,
   controller,
-  animateSelectionHint,
+  animateClickHint,
 }: {
   message: PanelMessage;
   controller: PanelController;
-  animateSelectionHint: boolean;
+  animateClickHint: boolean;
 }) {
   const answerRoot = useRef<HTMLDivElement>(null);
+  const mapper = useRef<AnswerDomMapper | null>(null);
+  const phraseRanges = useRef(new Map<string, Range>());
+  const [hoveredPhrase, setHoveredPhrase] =
+    useState<TldrAnswerAttributionPhrase | null>(null);
+  const phrases = useMemo(() => {
+    const attribution = message.attribution;
+    if (
+      message.answerStatus !== "ready" ||
+      attribution?.status !== "ready" ||
+      !attribution.heatmap ||
+      !message.text
+    ) {
+      return [];
+    }
+    return TldrPanelLogic.buildAnswerAttributionPhrases(
+      attribution.heatmap,
+      message.text
+    );
+  }, [message.answerStatus, message.attribution, message.text]);
+
+  useEffect(() => {
+    const root = answerRoot.current;
+    if (!root || phrases.length === 0) {
+      mapper.current = null;
+      phraseRanges.current = new Map();
+      setHoveredPhrase(null);
+      setAnswerHighlightRanges(
+        AVAILABLE_ANSWER_HIGHLIGHT,
+        availableAnswerRanges,
+        message.id,
+        []
+      );
+      setAnswerHighlightRanges(
+        HOVERED_ANSWER_HIGHLIGHT,
+        hoveredAnswerRanges,
+        message.id,
+        []
+      );
+      return;
+    }
+
+    const nextMapper = createAnswerDomMapper(root, message.text);
+    mapper.current = nextMapper;
+    const ranges = new Map<string, Range>();
+    for (const phrase of phrases) {
+      const range = nextMapper?.rangeForSpan(phrase);
+      if (range) ranges.set(`${phrase.start}:${phrase.end}`, range);
+    }
+    phraseRanges.current = ranges;
+    setAnswerHighlightRanges(
+      AVAILABLE_ANSWER_HIGHLIGHT,
+      availableAnswerRanges,
+      message.id,
+      [...ranges.values()]
+    );
+
+    return () => {
+      mapper.current = null;
+      phraseRanges.current = new Map();
+      availableAnswerRanges.delete(message.id);
+      hoveredAnswerRanges.delete(message.id);
+      syncAnswerHighlight(
+        AVAILABLE_ANSWER_HIGHLIGHT,
+        availableAnswerRanges
+      );
+      syncAnswerHighlight(HOVERED_ANSWER_HIGHLIGHT, hoveredAnswerRanges);
+    };
+  }, [message.id, message.text, phrases]);
+
+  useEffect(() => {
+    const range = hoveredPhrase
+      ? phraseRanges.current.get(
+          `${hoveredPhrase.start}:${hoveredPhrase.end}`
+        )
+      : null;
+    setAnswerHighlightRanges(
+      HOVERED_ANSWER_HIGHLIGHT,
+      hoveredAnswerRanges,
+      message.id,
+      range ? [range] : []
+    );
+  }, [hoveredPhrase, message.id]);
+
   const locateSelection = useCallback(() => {
     if (
       !answerRoot.current ||
@@ -118,20 +240,75 @@ function AnswerResponse({
     if (!range) return;
     void controller.onAnswerSelection(message.id, range.start, range.end);
   }, [controller, message.answerStatus, message.id, message.text]);
-  const selectionTitle =
+  const phraseAtPoint = useCallback(
+    (clientX: number, clientY: number) => {
+      const offset = mapper.current?.offsetAtPoint(clientX, clientY);
+      if (offset == null) return null;
+      return (
+        phrases.find(
+          (phrase) => offset >= phrase.start && offset < phrase.end
+        ) || null
+      );
+    },
+    [phrases]
+  );
+  const updateHoveredPhrase = useCallback(
+    (next: TldrAnswerAttributionPhrase | null) => {
+      setHoveredPhrase((current) =>
+        samePhrase(current, next) ? current : next
+      );
+    },
+    []
+  );
+  const interactionTitle =
     message.answerStatus === "ready"
-      ? "Select any text in this answer to find its source"
+      ? "Click an underlined phrase to reveal its source"
       : undefined;
 
   return (
     <div
-      className="selectable-answer"
+      className={cn(
+        "selectable-answer",
+        animateClickHint && phrases.length > 0 && "is-click-intro",
+        hoveredPhrase && "has-attribution-hover"
+      )}
       data-answer-status={message.answerStatus}
-      title={selectionTitle}
+      data-has-click-targets={phrases.length > 0}
+      title={interactionTitle}
     >
       <div
         data-answer-content=""
+        onClick={(event) => {
+          if (
+            message.answerStatus !== "ready" ||
+            !window.getSelection()?.isCollapsed ||
+            (event.target instanceof Element &&
+              event.target.closest(".answer-link"))
+          ) {
+            return;
+          }
+          const phrase = phraseAtPoint(event.clientX, event.clientY);
+          if (!phrase) return;
+          void controller.onAnswerSelection(
+            message.id,
+            phrase.start,
+            phrase.end
+          );
+        }}
         onKeyUp={locateSelection}
+        onPointerLeave={() => updateHoveredPhrase(null)}
+        onPointerMove={(event) => {
+          if (
+            message.answerStatus !== "ready" ||
+            !window.getSelection()?.isCollapsed ||
+            (event.target instanceof Element &&
+              event.target.closest(".answer-link"))
+          ) {
+            updateHoveredPhrase(null);
+            return;
+          }
+          updateHoveredPhrase(phraseAtPoint(event.clientX, event.clientY));
+        }}
         onPointerUp={(event) => {
           if (event.button !== 0) return;
           requestAnimationFrame(locateSelection);
@@ -159,24 +336,22 @@ function AnswerResponse({
           <span>Mapping this answer to the source…</span>
         </div>
       )}
-      {message.answerStatus === "ready" && (
+      {message.answerStatus === "ready" && phrases.length > 0 && (
         <div
-          aria-label="Select any text in this answer to find its source"
+          aria-label="Click an underlined phrase in this answer to reveal its source"
           className={cn(
-            "answer-selection-demo",
-            animateSelectionHint && "is-animated"
+            "answer-attribution-guide",
+            animateClickHint && "is-animated"
           )}
         >
-          <TextSelectIcon aria-hidden="true" />
-          <span aria-hidden="true">Select</span>
-          <span aria-hidden="true" className="selection-demo-phrase">
-            <span className="selection-demo-highlight" />
-            <span className="selection-demo-words">any text</span>
-            {animateSelectionHint && (
-              <MousePointer2Icon className="selection-demo-cursor" />
-            )}
+          <MousePointer2Icon aria-hidden="true" />
+          <span>
+            Click an underlined phrase
+            <span aria-hidden="true" className="answer-attribution-detail">
+              {" "}
+              to reveal its source
+            </span>
           </span>
-          <span aria-hidden="true">to reveal its source</span>
         </div>
       )}
       {message.answerStatus === "unavailable" && (
@@ -195,11 +370,11 @@ function AnswerResponse({
 function ChatMessage({
   message,
   controller,
-  animateSelectionHint,
+  animateClickHint,
 }: {
   message: PanelMessage;
   controller: PanelController;
-  animateSelectionHint: boolean;
+  animateClickHint: boolean;
 }) {
   const isNote = message.kind === "note";
   const isError = message.kind === "error";
@@ -219,7 +394,7 @@ function ChatMessage({
       >
         {message.kind === "answer" ? (
           <AnswerResponse
-            animateSelectionHint={animateSelectionHint}
+            animateClickHint={animateClickHint}
             controller={controller}
             message={message}
           />
@@ -537,7 +712,7 @@ export function App({ controller }: { controller: PanelController }) {
         <ConversationContent className="gap-5 px-3.5 py-4">
           {snapshot.messages.map((message) => (
             <ChatMessage
-              animateSelectionHint={message.id === latestReadyAnswerId}
+              animateClickHint={message.id === latestReadyAnswerId}
               controller={controller}
               key={message.id}
               message={message}

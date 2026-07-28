@@ -314,8 +314,303 @@ const TldrPanelLogic = (() => {
     };
   }
 
+  /**
+   * Discover clickable answer spans directly from heatmap topology.
+   *
+   * Each answer-token row keeps only its strongest document-token candidates.
+   * Consecutive rows join when those candidates form a locally continuous,
+   * roughly forward-moving path through the document columns. One missing
+   * answer-token row may be bridged so a weak punctuation/subword token does
+   * not split an otherwise continuous path.
+   *
+   * This deliberately does not inspect answer text, split words, resolve a
+   * source span, or verbatim-snap. Source-span resolution remains a separate
+   * operation performed only after the user clicks the discovered answer span.
+   */
+  function visibleAnswerTokenBounds(answer, start, end) {
+    const tokenText = answer.slice(start, end);
+    const withoutLeadingWhitespace = tokenText.trimStart();
+    const withoutTrailingWhitespace = tokenText.trimEnd();
+    const visibleStart =
+      start + tokenText.length - withoutLeadingWhitespace.length;
+    const visibleEnd =
+      end - (tokenText.length - withoutTrailingWhitespace.length);
+    return visibleEnd > visibleStart
+      ? { start: visibleStart, end: visibleEnd }
+      : null;
+  }
+
+  function buildAnswerAttributionPhrases(
+    heatmap,
+    answer,
+    minimumMass = 0.01
+  ) {
+    if (
+      !heatmap ||
+      typeof answer !== "string" ||
+      !answer
+    ) {
+      return [];
+    }
+
+    const answerOffsets = heatmap.answerOffsets || [];
+    const documentTokenCount = (heatmap.documentOffsets || []).length;
+    const rows = new Map();
+    const entryCount = Math.min(
+      heatmap.row?.length || 0,
+      heatmap.col?.length || 0,
+      heatmap.data?.length || 0
+    );
+    for (let entry = 0; entry < entryCount; entry++) {
+      const answerIndex = heatmap.row[entry];
+      const documentIndex = heatmap.col[entry];
+      const mass = heatmap.data[entry];
+      if (
+        !Number.isInteger(answerIndex) ||
+        answerIndex < 0 ||
+        answerIndex >= answerOffsets.length ||
+        !Number.isInteger(documentIndex) ||
+        documentIndex < 0 ||
+        documentIndex >= documentTokenCount ||
+        !Number.isFinite(mass) ||
+        mass < minimumMass
+      ) {
+        continue;
+      }
+      if (!rows.has(answerIndex)) rows.set(answerIndex, []);
+      rows.get(answerIndex).push({ column: documentIndex, mass });
+    }
+
+    const profiles = [];
+    for (let answerIndex = 0; answerIndex < answerOffsets.length; answerIndex++) {
+      const offset = answerOffsets[answerIndex];
+      const cells = rows.get(answerIndex);
+      if (
+        !Array.isArray(offset) ||
+        !Number.isInteger(offset[0]) ||
+        !Number.isInteger(offset[1]) ||
+        offset[0] < 0 ||
+        offset[1] <= offset[0] ||
+        offset[1] > answer.length ||
+        !cells?.length
+      ) {
+        continue;
+      }
+      const visibleBounds = visibleAnswerTokenBounds(
+        answer,
+        offset[0],
+        offset[1]
+      );
+      if (!visibleBounds) continue;
+
+      cells.sort((first, second) => second.mass - first.mass);
+      const peak = cells[0].mass;
+      const totalMass = cells.reduce((sum, cell) => sum + cell.mass, 0);
+      const candidateFloor = peak * 0.5;
+      profiles.push({
+        answerIndex,
+        start: visibleBounds.start,
+        end: visibleBounds.end,
+        confidence: peak,
+        // Diffuse rows are poor boundary evidence even when one noisy cell
+        // happens to win. Concentration discounts those rows before anchors
+        // are chosen, while keeping the raw peak as the displayed confidence.
+        anchorScore: totalMass > 0 ? (peak * peak) / totalMass : 0,
+        candidates: cells
+          .filter((cell) => cell.mass >= candidateFloor)
+          .slice(0, 4),
+      });
+    }
+    if (profiles.length === 0) return [];
+
+    const sortedAnchorScores = profiles
+      .map((profile) => profile.anchorScore)
+      .sort((first, second) => first - second);
+    const medianAnchorScore =
+      sortedAnchorScores[Math.floor(sortedAnchorScores.length / 2)] || 0;
+    const strongestAnchorScore =
+      sortedAnchorScores[sortedAnchorScores.length - 1] || 0;
+    const anchorFloor = Math.max(
+      0.02,
+      medianAnchorScore * 0.75,
+      strongestAnchorScore * 0.08
+    );
+    const anchors = profiles.filter(
+      (profile) => profile.anchorScore >= anchorFloor
+    );
+    if (anchors.length === 0) return [];
+
+    function continuePath(
+      previousColumn,
+      candidates,
+      answerTokenGap,
+      direction = 1
+    ) {
+      let best = null;
+      let bestCost = Infinity;
+      for (const candidate of candidates) {
+        const step = (candidate.column - previousColumn) * direction;
+        if (
+          step < -2 ||
+          step > 4 + 2 * Math.max(1, answerTokenGap)
+        ) {
+          continue;
+        }
+        // A true diagonal usually advances by one source token. Staying on the
+        // same token is equally plausible for answer subwords and paraphrases.
+        const movementCost = Math.min(
+          Math.abs(step),
+          Math.abs(step - answerTokenGap)
+        );
+        const cost = movementCost - candidate.mass * 0.01;
+        if (cost < bestCost) {
+          best = candidate;
+          bestCost = cost;
+        }
+      }
+      return best;
+    }
+
+    function connection(group, target, direction = 1) {
+      const tokenGap =
+        direction === 1
+          ? target.answerIndex - group.lastAnswerIndex
+          : group.firstAnswerIndex - target.answerIndex;
+      const characterGap =
+        direction === 1
+          ? target.start - group.end
+          : group.start - target.end;
+      if (
+        tokenGap < 1 ||
+        tokenGap > 8 ||
+        characterGap < 0 ||
+        characterGap > 4 + 6 * (tokenGap - 1)
+      ) {
+        return null;
+      }
+      return continuePath(
+        direction === 1 ? group.lastSourceColumn : group.firstSourceColumn,
+        target.candidates,
+        tokenGap,
+        direction
+      );
+    }
+
+    function startGroup(anchor) {
+      const sourceColumn = anchor.candidates[0].column;
+      return {
+        start: anchor.start,
+        end: anchor.end,
+        firstAnswerIndex: anchor.answerIndex,
+        lastAnswerIndex: anchor.answerIndex,
+        firstSourceColumn: sourceColumn,
+        lastSourceColumn: sourceColumn,
+        confidence: anchor.confidence,
+        strongestAnchor: anchor.anchorScore,
+        anchorCount: 1,
+      };
+    }
+
+    function appendAnchor(group, anchor, sourceCandidate) {
+      group.end = anchor.end;
+      group.lastAnswerIndex = anchor.answerIndex;
+      group.lastSourceColumn = sourceCandidate.column;
+      group.confidence = Math.max(group.confidence, anchor.confidence);
+      group.strongestAnchor = Math.max(
+        group.strongestAnchor,
+        anchor.anchorScore
+      );
+      group.anchorCount++;
+    }
+
+    // Strong rows define the topology. If one anchor disagrees but the anchor
+    // immediately after it reconnects to the current path, treat the middle
+    // row as an outlier and absorb it rather than creating two false phrases.
+    const groups = [];
+    let current = startGroup(anchors[0]);
+    for (let index = 1; index < anchors.length; index++) {
+      const anchor = anchors[index];
+      const direct = connection(current, anchor);
+      if (direct) {
+        appendAnchor(current, anchor, direct);
+        continue;
+      }
+
+      const afterOutlier = anchors[index + 1];
+      const recovered = afterOutlier
+        ? connection(current, afterOutlier)
+        : null;
+      if (recovered) {
+        appendAnchor(current, afterOutlier, recovered);
+        index++;
+        continue;
+      }
+
+      groups.push(current);
+      current = startGroup(anchor);
+    }
+    groups.push(current);
+
+    const profileByIndex = new Map(
+      profiles.map((profile) => [profile.answerIndex, profile])
+    );
+    const singleAnchorFloor = Math.max(0.06, anchorFloor * 1.1);
+    const credibleGroups = groups.filter(
+      (group) =>
+        group.anchorCount > 1 ||
+        group.strongestAnchor >= singleAnchorFloor
+    );
+
+    // Expand at most two token rows beyond each anchor group when those weaker
+    // rows continue the same source path. Low-confidence rows between anchors
+    // were already absorbed automatically by the group's [start, end] bounds.
+    for (let groupIndex = 0; groupIndex < credibleGroups.length; groupIndex++) {
+      const group = credibleGroups[groupIndex];
+      const previousGroup = credibleGroups[groupIndex - 1];
+      const nextGroup = credibleGroups[groupIndex + 1];
+
+      for (let step = 0; step < 2; step++) {
+        const profile = profileByIndex.get(group.firstAnswerIndex - 1);
+        if (
+          !profile ||
+          (previousGroup &&
+            profile.answerIndex <= previousGroup.lastAnswerIndex)
+        ) {
+          break;
+        }
+        const candidate = connection(group, profile, -1);
+        if (!candidate) break;
+        group.start = profile.start;
+        group.firstAnswerIndex = profile.answerIndex;
+        group.firstSourceColumn = candidate.column;
+      }
+
+      for (let step = 0; step < 2; step++) {
+        const profile = profileByIndex.get(group.lastAnswerIndex + 1);
+        if (
+          !profile ||
+          (nextGroup && profile.answerIndex >= nextGroup.firstAnswerIndex)
+        ) {
+          break;
+        }
+        const candidate = connection(group, profile);
+        if (!candidate) break;
+        group.end = profile.end;
+        group.lastAnswerIndex = profile.answerIndex;
+        group.lastSourceColumn = candidate.column;
+      }
+    }
+
+    return credibleGroups.map(({ start, end, confidence }) => ({
+      start,
+      end,
+      confidence,
+    }));
+  }
+
   return {
     SHORT_SELECTION_WORDS,
+    buildAnswerAttributionPhrases,
     buildSummaryRequest,
     truncateCodePoints,
     codePointToUtf16Map,

@@ -112,6 +112,118 @@ assert.strictEqual(
 );
 console.log("PASS: arbitrary answer spans aggregate cached heatmap rows");
 
+const phraseAnswer = "The LLaDA2.2-flash model was a breakthrough.";
+const answerToken = (text, from = 0) => {
+  const start = phraseAnswer.indexOf(text, from);
+  return [start, start + text.length];
+};
+const phraseHeatmap = {
+  // Row 3 (".2") has no surviving mass. The topology may bridge that one
+  // weak answer token, but rows 6-7 ("was a") remain below the 0.01 floor.
+  row: [0, 1, 2, 4, 5, 6, 7, 8],
+  col: [0, 10, 11, 13, 14, 15, 16, 30],
+  data: [0.009, 0.91, 0.88, 0.86, 0.82, 0.009, 0.008, 0.93],
+  shape: [10, 40],
+  documentOffsets: Array.from({ length: 40 }, (_, index) => [
+    index * 2,
+    index * 2 + 1,
+  ]),
+  answerOffsets: [
+    answerToken("The"),
+    answerToken("LLaDA"),
+    answerToken("2", phraseAnswer.indexOf("LLaDA") + 5),
+    answerToken(".2"),
+    answerToken("-flash"),
+    answerToken("model"),
+    answerToken("was"),
+    answerToken("a", phraseAnswer.indexOf("was") + 3),
+    answerToken("breakthrough"),
+    answerToken("."),
+  ],
+};
+const clickablePhrases = Logic.buildAnswerAttributionPhrases(
+  phraseHeatmap,
+  phraseAnswer
+);
+assert.deepStrictEqual(
+  clickablePhrases.map(({ start, end }) => phraseAnswer.slice(start, end)),
+  ["LLaDA2.2-flash model", "breakthrough"]
+);
+assert.ok(
+  clickablePhrases.every(
+    (phrase) => Number.isFinite(phrase.confidence)
+  )
+);
+assert.ok(
+  !clickablePhrases.some(({ start, end }) =>
+    phraseAnswer.slice(start, end).includes("was a")
+  )
+);
+console.log("PASS: answer-token diagonals preserve identifiers and ignore weak rows");
+
+const jumpAnswer = "alpha beta gamma";
+const jumpPhrases = Logic.buildAnswerAttributionPhrases(
+  {
+    row: [0, 1, 2],
+    col: [2, 3, 20],
+    data: [0.8, 0.75, 0.9],
+    shape: [3, 24],
+    documentOffsets: Array.from({ length: 24 }, (_, index) => [
+      index,
+      index + 1,
+    ]),
+    // Model token offsets commonly own the whitespace before their text.
+    answerOffsets: [[0, 5], [5, 10], [10, 16]],
+  },
+  jumpAnswer
+);
+assert.deepStrictEqual(
+  jumpPhrases.map(({ start, end }) => jumpAnswer.slice(start, end)),
+  ["alpha beta", "gamma"]
+);
+assert.strictEqual(
+  jumpAnswer.slice(jumpPhrases[0].end, jumpPhrases[1].start),
+  " "
+);
+assert.ok(
+  jumpPhrases.every(
+    ({ start, end }) =>
+      !/^\s|\s$/u.test(jumpAnswer.slice(start, end))
+  )
+);
+console.log("PASS: discontinuous paths retain visible gaps between phrases");
+
+const decimalAnswer = "703.82 TPS on function calling and";
+const decimalPieces = ["703", ".", "82", " TPS", " on", " function", " calling", " and"];
+let decimalOffset = 0;
+const decimalOffsets = decimalPieces.map((piece) => {
+  const start = decimalOffset;
+  decimalOffset += piece.length;
+  return [start, decimalOffset];
+});
+const decimalPhrases = Logic.buildAnswerAttributionPhrases(
+  {
+    // The decimal point is deliberately a strong but wrong anchor at column
+    // 50. The anchors immediately around it continue 10 -> 11, so it must be
+    // treated as an outlier and absorbed into one coherent answer span.
+    row: [0, 1, 2, 3, 4, 5, 6, 7],
+    col: [10, 50, 11, 12, 13, 14, 15, 16],
+    data: [0.9, 0.8, 0.85, 0.7, 0.05, 0.75, 0.72, 0.04],
+    shape: [8, 64],
+    documentOffsets: Array.from({ length: 64 }, (_, index) => [
+      index,
+      index + 1,
+    ]),
+    answerOffsets: decimalOffsets,
+  },
+  decimalAnswer
+);
+assert.deepStrictEqual(
+  decimalPhrases.map(({ start, end }) => decimalAnswer.slice(start, end)),
+  [decimalAnswer]
+);
+console.log("PASS: anchor recovery absorbs a spurious decimal-point attribution");
+
 const bridged = Logic.resolveHeatmapSpan(
   {
     row: [0, 0, 0, 0],

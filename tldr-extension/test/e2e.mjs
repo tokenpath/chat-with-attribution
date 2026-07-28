@@ -580,6 +580,32 @@ function recordDeterministic(good) {
           item.path.endsWith("/v1/attributions/heatmap")
         ).length
     );
+    const clickTarget = page.locator(
+      '[data-answer-content] [data-streamdown="strong"]'
+    );
+    await clickTarget.scrollIntoViewIfNeeded();
+    const clickTargetBox = await clickTarget.boundingBox();
+    if (!clickTargetBox) throw new Error("Clickable answer phrase was not rendered");
+    const beforeClick = await page.evaluate(() => window.__panelSent.length);
+    await page.mouse.move(
+      clickTargetBox.x + clickTargetBox.width / 2,
+      clickTargetBox.y + clickTargetBox.height / 2
+    );
+    await page.waitForFunction(
+      () =>
+        [...(CSS.highlights.get("tokenpath-answer-hover") || [])].some(
+          (range) => range.toString() === "Fable 5"
+        )
+    );
+    await page.mouse.click(
+      clickTargetBox.x + clickTargetBox.width / 2,
+      clickTargetBox.y + clickTargetBox.height / 2
+    );
+    await page.waitForFunction(
+      (count) => window.__panelSent.length > count,
+      beforeClick
+    );
+    const clickedSent = await page.evaluate(() => window.__panelSent.at(-1));
     const firstSent = await selectAnswerText("Fable 5");
     const secondSent = await selectAnswerText("worldwide");
     const realLinkBefore = await page.evaluate(
@@ -693,6 +719,7 @@ function recordDeterministic(good) {
       );
       return {
         autoHeatmapAnswer: heatmapRequests[0]?.request?.answer,
+        heatmapThreshold: heatmapRequests[0]?.request?.threshold,
         canonicalSummary: window.__panelCanonicalSummary,
         context: document.getElementById("context-text").textContent,
         displayedSummary:
@@ -749,30 +776,23 @@ function recordDeterministic(good) {
           'img[src*="tracker.invalid"]'
         ),
         hasFixedSpans: !!document.querySelector(".attrib"),
-        hasSelectionHint:
+        hasClickGuide:
           document
-            .querySelector(".answer-selection-demo")
+            .querySelector(".answer-attribution-guide")
             ?.getAttribute("aria-label") ===
-            "Select any text in this answer to find its source",
-        selectionDemo:
+            "Click an underlined phrase in this answer to reveal its source",
+        clickGuide:
           document.querySelectorAll(
-            ".answer-selection-demo.is-animated"
+            ".answer-attribution-guide.is-animated"
           ).length === 1 &&
           getComputedStyle(
             document.querySelector(
-              ".answer-selection-demo.is-animated .selection-demo-highlight"
+              ".answer-attribution-guide.is-animated > svg"
             )
-          ).animationName === "selection-drag-highlight" &&
-          Boolean(
-            document.querySelector(
-              ".answer-selection-demo.is-animated .selection-demo-highlight"
-            )
-          ) &&
-          Boolean(
-            document.querySelector(
-              ".answer-selection-demo.is-animated .selection-demo-cursor"
-            )
-          ),
+          ).animationName === "answer-click-cue",
+        clickablePhraseText: [
+          ...(CSS.highlights.get("tokenpath-answer-attributable") || []),
+        ].map((range) => range.toString()),
         themeLabels,
         fitsNarrowPanel:
           document.documentElement.scrollWidth <=
@@ -948,7 +968,7 @@ function recordDeterministic(good) {
       firstHeatmapCount === 1 &&
       cachedHeatmapCount === 1 &&
       !panelResult.hasFixedSpans &&
-      panelResult.hasSelectionHint &&
+      panelResult.hasClickGuide &&
       panelResult.hasMarkdownHeading &&
       panelResult.hasMarkdownStrong &&
       panelResult.displayedSummary.includes(
@@ -1028,7 +1048,13 @@ function recordDeterministic(good) {
       firstMessage?.start === expectedFable &&
       firstMessage?.end === expectedFable + 7 &&
       firstMessage?.captureId === "seed-1" &&
-      panelResult.selectionDemo &&
+      clickedSent?.[1]?.type === "highlight" &&
+      clickedSent?.[1]?.start === expectedFable &&
+      clickedSent?.[1]?.end === expectedFable + 7 &&
+      panelResult.heatmapThreshold === 0.01 &&
+      panelResult.clickGuide &&
+      panelResult.clickablePhraseText.includes("Fable 5") &&
+      panelResult.clickablePhraseText.includes("worldwide") &&
       secondMessage?.start === expectedWorldwide &&
       secondMessage?.end === expectedWorldwide + "worldwide".length &&
       realLinkSent?.[1]?.start === expectedWorldwide &&
@@ -1046,7 +1072,7 @@ function recordDeterministic(good) {
         `sourceCard=${collapsedSourceState.cardHeight.toFixed(0)}px/${expandedSourceState.contextVisible}/${replacementSourceCollapsed}/${sourceErrorState.visible}, ` +
         `brand=${panelResult.hasTokenPathWordmark}/${panelResult.hasTokenRail}, ` +
         `cta=${panelResult.cta?.text}/${panelResult.ctaDoesNotOverlapDisconnect}, ` +
-        `selectionDemo=${panelResult.selectionDemo}, ` +
+        `clickGuide=${panelResult.clickGuide}, click=${clickedSent?.[1]?.start}, ` +
         `boundaries=${boundaryCases.map((item) => `${item.question}:${item.good}`).join(",")}`
     );
     recordDeterministic(good);

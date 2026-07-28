@@ -1255,6 +1255,7 @@ export class PanelController {
         document: attribution.document,
         question: attribution.question,
         answer: message.text,
+        threshold: 0.01,
         signal: controller.signal,
       });
       if (

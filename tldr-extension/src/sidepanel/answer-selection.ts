@@ -7,6 +7,11 @@ export interface AnswerSelectionRange {
   end: number;
 }
 
+export interface AnswerDomMapper {
+  offsetAtPoint(clientX: number, clientY: number): number | null;
+  rangeForSpan(span: AnswerSelectionRange): Range | null;
+}
+
 type MarkdownNode = {
   type: string;
   value?: string;
@@ -502,6 +507,95 @@ function boundaryOffset(
   }
   const fallback = firstMappedText(container, mappingByNode);
   return fallback ? mappingBoundary(fallback, 0, "end") : null;
+}
+
+function caretBoundaryAtPoint(clientX: number, clientY: number) {
+  const modern = document.caretPositionFromPoint?.(clientX, clientY);
+  if (modern) {
+    return { container: modern.offsetNode, offset: modern.offset };
+  }
+
+  const legacyDocument = document as Document & {
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  const legacy = legacyDocument.caretRangeFromPoint?.(clientX, clientY);
+  return legacy
+    ? { container: legacy.startContainer, offset: legacy.startOffset }
+    : null;
+}
+
+function domRangeForSpan(
+  mappings: TextNodeMapping[],
+  span: AnswerSelectionRange
+) {
+  let startBoundary: { node: Text; offset: number } | null = null;
+  let endBoundary: { node: Text; offset: number } | null = null;
+
+  for (const mapping of mappings) {
+    for (let offset = 0; offset < mapping.node.data.length; offset++) {
+      const rawStart = mapping.startOffsets[offset];
+      const rawEnd = mapping.endOffsets[offset + 1];
+      if (
+        rawStart === undefined ||
+        rawEnd === undefined ||
+        rawEnd <= span.start ||
+        rawStart >= span.end
+      ) {
+        continue;
+      }
+      startBoundary ||= { node: mapping.node, offset };
+      endBoundary = { node: mapping.node, offset: offset + 1 };
+    }
+  }
+
+  if (!startBoundary || !endBoundary) return null;
+  const range = document.createRange();
+  range.setStart(startBoundary.node, startBoundary.offset);
+  range.setEnd(endBoundary.node, endBoundary.offset);
+  return range.toString().trim() ? range : null;
+}
+
+/**
+ * Build the rendered-Markdown ↔ raw-answer mapping once for pointer hover and
+ * click attribution. The ready answer is static, so reusing this map avoids
+ * reparsing Markdown on every pointer movement.
+ */
+export function createAnswerDomMapper(
+  root: HTMLElement,
+  answer: string
+): AnswerDomMapper | null {
+  const mappings = mapTextNodes(root, answer);
+  if (mappings.length === 0) return null;
+  const mappingByNode = new Map(
+    mappings.map((mapping) => [mapping.node, mapping])
+  );
+
+  return {
+    offsetAtPoint(clientX, clientY) {
+      const boundary = caretBoundaryAtPoint(clientX, clientY);
+      if (!boundary || !isDescendantOrSelf(root, boundary.container)) {
+        return null;
+      }
+      return boundaryOffset(
+        boundary.container,
+        boundary.offset,
+        "start",
+        mappingByNode
+      );
+    },
+    rangeForSpan(span) {
+      if (
+        !Number.isInteger(span.start) ||
+        !Number.isInteger(span.end) ||
+        span.start < 0 ||
+        span.end <= span.start ||
+        span.end > answer.length
+      ) {
+        return null;
+      }
+      return domRangeForSpan(mappings, span);
+    },
+  };
 }
 
 /**
