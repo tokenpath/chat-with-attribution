@@ -30,6 +30,31 @@ On first use, paste a TokenPath API key from
 [platform.tokenpath.ai](https://platform.tokenpath.ai). The same key covers
 streaming generation and attribution; no separate model-provider key is needed.
 
+## Build the Chrome Web Store package
+
+From `tldr-extension/`, run:
+
+```sh
+npm run package:store
+```
+
+This validates and rebuilds the side panel, then creates
+`dist/tokenpath-chat-with-attribution-<version>.zip` with `manifest.json` at the
+archive root. The store package contains only runtime files and requests access
+only to `https://api.tokenpath.ai`; staging and localhost permissions remain
+available only when the repository is loaded unpacked.
+
+Before uploading an update, increment `version` in `manifest.json`. Chrome Web
+Store package versions must always increase.
+
+Pushes and pull requests also run the complete suite in GitHub Actions and
+publish the store ZIP as a downloadable workflow artifact. A matching
+`v<manifest-version>` tag creates a GitHub Release with that ZIP attached. Use
+`npm run version:set -- 0.1.1` to update `manifest.json`, `package.json`, and the
+lockfile together. Prepared listing copy, permission explanations, privacy
+checks, and reviewer instructions are in
+[`docs/chrome-web-store.md`](./docs/chrome-web-store.md).
+
 The three actions share the same attributed chat:
 
 - **TLDR** starts a summary immediately. Sources of 24 words or fewer are

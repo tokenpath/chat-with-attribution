@@ -1,0 +1,87 @@
+name: Extension package
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: extension-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: tldr-extension
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tldr-extension/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify release tag matches manifest
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          MANIFEST_VERSION="$(node -p "require('./manifest.json').version")"
+          test "$RELEASE_TAG" = "v$MANIFEST_VERSION"
+
+      - name: Run complete test suite
+        run: npm test
+
+      - name: Build Chrome Web Store package
+        run: npm run package:store
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: tokenpath-extension-${{ github.run_id }}
+          path: tldr-extension/dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: test-and-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download tested package
+        uses: actions/download-artifact@v8
+        with:
+          name: tokenpath-extension-${{ github.run_id }}
+          path: dist
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$RELEASE_TAG" dist/*.zip
+          --repo "$GITHUB_REPOSITORY"
+          --title "TokenPath — Chat with Attribution $RELEASE_TAG"
+          --generate-notes

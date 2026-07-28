@@ -6,6 +6,8 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run build",
+    "package:store": "npm run check && node scripts/package-extension.mjs",
+    "version:set": "node scripts/set-version.mjs",
     "setup:test": "playwright install chromium && bash test/setup-libs.sh",
     "test:unit": "node test/roundtrip.test.cjs && node test/panel-logic.test.cjs && node test/api-clients.test.cjs && node test/pdf-text-extractor.test.cjs && node test/background.test.cjs",
     "test:e2e": "node test/e2e.mjs",

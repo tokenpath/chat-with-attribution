@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="32" height="64" fill="#2f2650"/>
+  <rect x="32" width="32" height="64" fill="#456643"/>
+  <text
+    x="17"
+    y="46"
+    fill="#ffffff"
+    font-family="Menlo, Consolas, 'DejaVu Sans Mono', monospace"
+    font-size="38"
+    text-anchor="middle"
+  >t</text>
+  <text
+    x="47"
+    y="46"
+    fill="#ffffff"
+    font-family="Menlo, Consolas, 'DejaVu Sans Mono', monospace"
+    font-size="38"
+    text-anchor="middle"
+  >p</text>
+</svg>
