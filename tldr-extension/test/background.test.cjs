@@ -293,6 +293,30 @@ assert.ok(installedHandler, "context-menu installer registered");
   );
   console.log("PASS: toolbar click captures the full page without generating");
 
+  tabUrls.set(40, "https://example.com/activated-tab");
+  const silentCaptureStart = calls.length;
+  const silentCaptureResponse = await dispatchRuntimeMessage({
+    type: "capture-tab-for-chat",
+    tabId: 40,
+  });
+  const silentCaptureCalls = calls.slice(silentCaptureStart);
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(silentCaptureResponse)),
+    { ok: true }
+  );
+  assert.strictEqual(
+    silentCaptureCalls.some(([name]) => name === "sidePanel.open"),
+    false,
+    "an already-open panel must not be opened again during tab activation"
+  );
+  assert.strictEqual(
+    silentCaptureCalls.find(
+      ([name]) => name === "tabs.sendMessage"
+    )[2].forceFullPage,
+    true
+  );
+  console.log("PASS: activating an uncached tab silently captures its full page");
+
   const parentClickStart = calls.length;
   await clickHandler(
     { menuItemId: "TokenPath", frameId: 0, selectionText: "ignored" },

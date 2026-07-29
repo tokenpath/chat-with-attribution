@@ -108,7 +108,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   return captureAndOpen(intent, info, tab);
 });
 
-async function captureAndOpen(intent, info, tab) {
+async function captureAndOpen(intent, info, tab, openPanel = true) {
   if (!tab || tab.id == null) return;
   const tabId = tab.id;
   const frameId = Number.isInteger(info.frameId) ? info.frameId : 0;
@@ -133,9 +133,11 @@ async function captureAndOpen(intent, info, tab) {
   // otherwise chrome.sidePanel.open throws. Do not await it before capture:
   // opening the panel can take seconds and dynamic pages (notably Gmail) may
   // replace the selected DOM nodes in that time.
-  chrome.sidePanel.open({ tabId }).catch((e) => {
-    console.error("[TokenPath] sidePanel.open failed:", e);
-  });
+  if (openPanel) {
+    chrome.sidePanel.open({ tabId }).catch((e) => {
+      console.error("[TokenPath] sidePanel.open failed:", e);
+    });
+  }
 
   const isChromePdf = await pdfDetection;
   if (latestCaptureByTab.get(tabId) !== captureId) return;
@@ -201,6 +203,27 @@ async function captureAndOpen(intent, info, tab) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "capture-tab-for-chat") {
+    chrome.tabs
+      .get(message.tabId)
+      .then((tab) =>
+        captureAndOpen(
+          "ask",
+          { frameId: 0, forceFullPage: true },
+          tab,
+          false
+        )
+      )
+      .then(() => sendResponse({ ok: true }))
+      .catch(() =>
+        sendResponse({
+          ok: false,
+          error: "Couldn't read this page.",
+        })
+      );
+    return true;
+  }
+
   if (
     message?.type !== "highlight-pdf-source" &&
     message?.type !== "clear-pdf-source-highlight" &&

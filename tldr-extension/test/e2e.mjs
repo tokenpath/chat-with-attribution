@@ -2255,7 +2255,7 @@ function recordDeterministic(good) {
       () =>
         document
           .getElementById("context-text")
-          ?.textContent?.includes("This tab has no saved chat yet") &&
+          ?.textContent?.includes("Reading this page") &&
         document.querySelectorAll("[data-answer-content]").length === 0
     );
     await page.evaluate(() => {

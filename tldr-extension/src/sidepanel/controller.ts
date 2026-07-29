@@ -1664,8 +1664,7 @@ export class PanelController {
     this.update({
       busy: false,
       contextLabel: "Current page",
-      contextText:
-        "This tab has no saved chat yet. Open TokenPath on the page to start one.",
+      contextText: "Reading this page…",
       hasContext: false,
       messages: [],
       notice: null,
@@ -1681,7 +1680,30 @@ export class PanelController {
     }
     this.sourceUrl = tab.url || null;
     this.sourceBaseUrl = websiteBaseUrl(this.sourceUrl);
-    await this.restorePageChat(null, this.contextVersion, false);
+    const restored = await this.restorePageChat(
+      null,
+      this.contextVersion,
+      false
+    );
+    if (
+      !restored &&
+      navigationEpoch === this.navigationEpoch &&
+      tabId === this.tabId
+    ) {
+      const result = await chrome.runtime
+        .sendMessage({ type: "capture-tab-for-chat", tabId })
+        .catch(() => ({ ok: false }));
+      if (
+        result?.ok === false &&
+        navigationEpoch === this.navigationEpoch &&
+        tabId === this.tabId
+      ) {
+        this.update({
+          contextText:
+            "TokenPath couldn't read this page. Try the extension icon again.",
+        });
+      }
+    }
   }
 
   private async handlePageNavigation(url: string) {
