@@ -284,22 +284,16 @@ assert.ok(installedHandler, "context-menu installer registered");
     url: "https://example.com/toolbar-article",
   });
   const toolbarCalls = calls.slice(toolbarStart);
-  const toolbarSeed = toolbarCalls.find(
-    ([name]) => name === "storage.session.set"
-  )[1]["seed:40"];
-  const toolbarCapture = toolbarCalls.find(
-    ([name]) => name === "tabs.sendMessage"
-  );
-  assert.strictEqual(toolbarCapture[2].type, "capture-page");
-  assert.strictEqual(toolbarCapture[2].forceFullPage, true);
-  assert.strictEqual(toolbarSeed.captureMode, "full-page");
-  assert.strictEqual(toolbarSeed.intent, "ask");
-  assert.strictEqual(toolbarSeed.text, "Toolbar article");
   assert.ok(
     toolbarCalls.some(([name]) => name === "sidePanel.open"),
     "toolbar click opens the side panel"
   );
-  console.log("PASS: toolbar click captures the full page without generating");
+  assert.strictEqual(
+    toolbarCalls.some(([name]) => name === "tabs.sendMessage"),
+    false,
+    "toolbar click must not read the page before the user asks"
+  );
+  console.log("PASS: toolbar click opens chat without capturing the page");
 
   tabUrls.set(40, "https://example.com/activated-tab");
   const silentCaptureStart = calls.length;
@@ -323,7 +317,7 @@ assert.ok(installedHandler, "context-menu installer registered");
     )[2].forceFullPage,
     true
   );
-  console.log("PASS: activating an uncached tab silently captures its full page");
+  console.log("PASS: an explicit chat action captures the full page");
 
   const parentClickStart = calls.length;
   await clickHandler(

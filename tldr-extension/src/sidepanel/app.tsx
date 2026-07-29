@@ -652,6 +652,7 @@ export function App({ controller }: { controller: PanelController }) {
           snapshot.hasContext && !sourceExpanded && "is-collapsed",
           sourceExpanded && "is-expanded"
         )}
+        hidden={!snapshot.hasContext && !snapshot.contextText}
         id="context"
       >
         <div
@@ -706,8 +707,7 @@ export function App({ controller }: { controller: PanelController }) {
 
       <Conversation className="min-h-0" id="messages">
         <ConversationContent className="gap-5 px-3.5 py-4">
-          {snapshot.hasContext &&
-            snapshot.messages.every((message) => message.kind === "note") &&
+          {snapshot.messages.every((message) => message.kind === "note") &&
             !snapshot.busy && (
               <div className="chat-starter">
                 <p>What would you like to know?</p>
@@ -717,7 +717,9 @@ export function App({ controller }: { controller: PanelController }) {
                   id="summarize-starter"
                   onClick={() =>
                     controller.submit(
-                      snapshot.contextLabel === "Entire PDF"
+                      !snapshot.hasContext
+                        ? "Summarize this page."
+                        : snapshot.contextLabel === "Entire PDF"
                         ? "Summarize this PDF."
                         : snapshot.contextLabel === "Entire page"
                           ? "Summarize this page."
@@ -739,7 +741,7 @@ export function App({ controller }: { controller: PanelController }) {
               message={message}
             />
           ))}
-          {snapshot.busy && snapshot.hasContext && !hasStreamingAnswer && (
+          {snapshot.busy && !hasStreamingAnswer && (
             <ThinkingMessage />
           )}
         </ConversationContent>
@@ -756,7 +758,7 @@ export function App({ controller }: { controller: PanelController }) {
         >
           <PromptInputTextarea
             autoComplete="off"
-            disabled={!snapshot.hasContext || snapshot.busy}
+            disabled={snapshot.busy}
             id="input"
             onChange={(event) => setInput(event.currentTarget.value)}
             placeholder={
@@ -768,14 +770,13 @@ export function App({ controller }: { controller: PanelController }) {
                     : "Ask about the selection…"
                 : snapshot.contextText === "Reading the full PDF…"
                   ? "Reading PDF…"
-                  : "Select text, or right-click for the full page or PDF"
+                  : "Ask about this page…"
             }
             value={input}
           />
           <PromptInputFooter className="justify-end">
             <PromptInputSubmit
               disabled={
-                !snapshot.hasContext ||
                 !snapshot.connected ||
                 snapshot.busy ||
                 !input.trim()

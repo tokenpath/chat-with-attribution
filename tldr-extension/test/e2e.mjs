@@ -459,15 +459,16 @@ function recordDeterministic(good) {
     await page.goto(PANEL_URL);
     await page.waitForFunction(
       () =>
-        document
-          .getElementById("context-text")
-          ?.textContent?.includes("Waiting for a selection")
+        document.getElementById("context")?.hidden === true &&
+        document.getElementById("summarize-starter") &&
+        document.getElementById("input")?.disabled === false
     );
     const pendingSourceState = await page.evaluate(() => {
+      const card = document.getElementById("context");
       const context = document.getElementById("context-text");
       return {
         hasToggle: !!document.getElementById("context-toggle"),
-        hidden: context?.hidden,
+        hidden: card?.hidden,
         visible: context?.getClientRects().length === 1,
       };
     });
@@ -959,15 +960,16 @@ function recordDeterministic(good) {
       });
     }, sourceError);
     await page.waitForFunction(
-      (error) =>
-        document.getElementById("context-text")?.textContent === error,
-      sourceError
+      () =>
+        document.getElementById("context")?.hidden === true &&
+        document.getElementById("summarize-starter")
     );
     const sourceErrorState = await page.evaluate(() => {
+      const card = document.getElementById("context");
       const context = document.getElementById("context-text");
       return {
         context: context?.textContent || "",
-        hidden: context?.hidden,
+        hidden: card?.hidden,
         hasToggle: !!document.getElementById("context-toggle"),
         summaryVisible:
           document.getElementById("summary-length")?.getClientRects().length ===
@@ -989,8 +991,8 @@ function recordDeterministic(good) {
     const summaryPrompt = generationMessages.at(-1)?.content;
     const good =
       pendingSourceState.hasToggle === false &&
-      pendingSourceState.hidden === false &&
-      pendingSourceState.visible &&
+      pendingSourceState.hidden === true &&
+      !pendingSourceState.visible &&
       collapsedSourceState.hasButton &&
       collapsedSourceState.ariaControls === "context-text" &&
       collapsedSourceState.ariaExpanded === "false" &&
@@ -1006,11 +1008,11 @@ function recordDeterministic(good) {
       sourceRecollapsed &&
       sourceExpandedBeforeReplacement &&
       replacementSourceCollapsed &&
-      sourceErrorState.context === sourceError &&
-      sourceErrorState.hidden === false &&
+      sourceErrorState.context === "" &&
+      sourceErrorState.hidden === true &&
       sourceErrorState.hasToggle === false &&
       sourceErrorState.summaryVisible === false &&
-      sourceErrorState.visible &&
+      !sourceErrorState.visible &&
       firstHeatmapCount === 1 &&
       cachedHeatmapCount === 1 &&
       !panelResult.hasFixedSpans &&
@@ -1468,10 +1470,9 @@ function recordDeterministic(good) {
     });
     await page.waitForFunction(
       () =>
-        document
-          .getElementById("context-text")
-          ?.textContent?.includes("no saved chat yet") &&
-        document.getElementById("input")?.disabled === true &&
+        document.getElementById("context")?.hidden === true &&
+        document.getElementById("summarize-starter") &&
+        document.getElementById("input")?.disabled === false &&
         document.querySelectorAll("[data-answer-content]").length === 0
     );
     await page.waitForTimeout(20);
@@ -1530,8 +1531,8 @@ function recordDeterministic(good) {
       result.clearCount === clearCountAtNavigation &&
       result.clearCount === 3 &&
       result.cancelCount === 1 &&
-      result.contextText.includes("no saved chat yet") &&
-      result.inputDisabled === true &&
+      result.contextText === "" &&
+      result.inputDisabled === false &&
       result.messageCount === 0;
     console.log("\n### Native PDF side-panel fixture");
     console.log(
@@ -2101,9 +2102,9 @@ function recordDeterministic(good) {
     await page.goto(PANEL_URL);
     await page.waitForFunction(
       () =>
-        document
-          .getElementById("context-text")
-          ?.textContent?.includes("Waiting for a selection")
+        document.getElementById("context")?.hidden === true &&
+        document.getElementById("summarize-starter") &&
+        document.getElementById("input")?.disabled === false
     );
     await page.evaluate(() => {
       window.__intentRuntimeListeners[0]?.({
@@ -2253,10 +2254,42 @@ function recordDeterministic(good) {
     });
     await page.waitForFunction(
       () =>
+        document.getElementById("context")?.hidden === true &&
+        document.getElementById("summarize-starter") &&
+        document.getElementById("input")?.disabled === false &&
+        document.querySelectorAll("[data-answer-content]").length === 0
+    );
+    await page.locator("#summarize-starter").click();
+    await page.waitForFunction(
+      () =>
         document
           .getElementById("context-text")
           ?.textContent?.includes("Reading this page") &&
-        document.querySelectorAll("[data-answer-content]").length === 0
+        document.getElementById("input")?.disabled === true
+    );
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "tab-b-empty-seed",
+        capturedAt: 19,
+        tabId: 412,
+        windowId: 23,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "ask",
+        sourceType: "page",
+        url: "https://docs.example/tab-b",
+        text: "",
+        error: "No readable text was found on this page.",
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("messages")
+          ?.textContent?.includes("no readable text on this page yet") &&
+        document.getElementById("summarize-starter") &&
+        document.getElementById("input")?.disabled === false
     );
     await page.evaluate(() => {
       window.__intentRuntimeListeners[0]?.({
@@ -2339,9 +2372,7 @@ function recordDeterministic(good) {
       }
     });
     await page.waitForFunction(() =>
-      document
-        .getElementById("context-text")
-        ?.textContent?.includes("no saved chat yet")
+      document.getElementById("context")?.hidden === true
     );
     await page.evaluate(() => {
       const returnUrl = "https://docs.example/ask";
@@ -2378,9 +2409,7 @@ function recordDeterministic(good) {
       }
     });
     await page.waitForFunction(() =>
-      document
-        .getElementById("context-text")
-        ?.textContent?.includes("no saved chat yet")
+      document.getElementById("context")?.hidden === true
     );
     await page.evaluate(() => {
       const returnUrl = "https://docs.example/ask";

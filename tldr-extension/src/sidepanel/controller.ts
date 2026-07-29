@@ -209,6 +209,7 @@ export class PanelController {
   private highlightedTarget: ActiveHighlight | null = null;
   private pendingPdfHighlight: ActiveHighlight | null = null;
   private pendingAutoSummary: AutomaticRequest | null = null;
+  private pendingSubmission: string | null = null;
   private messageSequence = 0;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
@@ -228,8 +229,8 @@ export class PanelController {
       authError: null,
       busy: false,
       connected: false,
-      contextLabel: "Selected from page",
-      contextText: "Waiting for a selection…",
+      contextLabel: "Current page",
+      contextText: "",
       creditsText: null,
       hasContext: false,
       messages: [],
@@ -279,13 +280,26 @@ export class PanelController {
           (Number(left.capturedAt) || 0)
       )[0];
     this.earlyCaptures = [];
-    if (earlyCapture) this.applySeed(earlyCapture);
-
-    if (this.tabId != null) {
+    let seeded = earlyCapture ? this.applySeed(earlyCapture) : false;
+    if (this.tabId != null && !seeded) {
       const key = this.seedKey(this.tabId);
       const stored = await chrome.storage.session.get(key);
       const seed = stored[key] as SelectionSeed | undefined;
-      if (seed) this.applySeed(seed);
+      if (seed) {
+        seeded = this.applySeed(seed);
+        void chrome.storage.session.remove?.(key);
+      }
+    }
+
+    if (!seeded && this.tabId != null) {
+      this.sourceUrl = tab?.url || null;
+      this.sourceBaseUrl = websiteBaseUrl(this.sourceUrl);
+      const restored = await this.restorePageChat(
+        null,
+        this.contextVersion,
+        false
+      );
+      if (!restored) this.prepareUncapturedPage();
     }
 
     await authReady;
@@ -366,20 +380,42 @@ export class PanelController {
 
   submit = (text: string) => {
     const clean = text.trim();
-    if (
-      !clean ||
-      this.snapshot.busy ||
-      !this.context ||
-      !this.snapshot.connected
-    ) {
+    if (!clean || this.snapshot.busy || !this.snapshot.connected) {
       if (!this.snapshot.connected) {
         this.showToast("Connect TokenPath to start chatting.");
       }
       return false;
     }
+    if (!this.context || this.invalidated) {
+      void this.captureForSubmission(clean);
+      return true;
+    }
     void this.runTurn(clean, { echoUser: true });
     return true;
   };
+
+  private async captureForSubmission(text: string) {
+    if (this.tabId == null) return;
+    this.pendingSubmission = text;
+    this.update({
+      busy: true,
+      contextLabel: "Current page",
+      contextText: "Reading this page…",
+      notice: null,
+    });
+    const result = await chrome.runtime
+      .sendMessage({ type: "capture-tab-for-chat", tabId: this.tabId })
+      .catch(() => ({ ok: false }));
+    if (result?.ok === false && this.pendingSubmission === text) {
+      this.pendingSubmission = null;
+      this.update({ busy: false, contextText: "" });
+      this.addMessage({
+        kind: "error",
+        role: "assistant",
+        text: "TokenPath couldn't access this page.",
+      });
+    }
+  }
 
   clearHighlights = () => {
     if (
@@ -642,7 +678,10 @@ export class PanelController {
     ) {
       return;
     }
-    this.applySeed(message);
+    if (message.tabId != null && message.tabId !== this.tabId) return;
+    if (this.applySeed(message) && message.tabId != null) {
+      void chrome.storage.session.remove?.(this.seedKey(message.tabId));
+    }
   };
 
   private seedKey(tabId: number) {
@@ -693,13 +732,27 @@ export class PanelController {
             : "Selected from page";
 
     if (seed.error) {
+      const pendingSubmission = this.pendingSubmission;
+      this.pendingSubmission = null;
       this.context = "";
       this.update({
         busy: false,
         contextLabel,
-        contextText: seed.error,
+        contextText: "",
         hasContext: false,
-        messages: [],
+        messages: pendingSubmission
+          ? [
+              ...this.snapshot.messages,
+              {
+                id: `message-${++this.messageSequence}`,
+                kind: "note",
+                role: "assistant",
+                text:
+                  "There’s no readable text on this page yet. If it’s still " +
+                  "loading, wait a moment and try again.",
+              },
+            ]
+          : [],
         notice: null,
       });
       return true;
@@ -822,10 +875,15 @@ export class PanelController {
       messages: [],
       notice: null,
     });
+    const pendingSubmission = this.pendingSubmission;
+    this.pendingSubmission = null;
     if (intent === "ask") {
       void this.restorePageChat(text, this.contextVersion, true).then(
         (restored) => {
           if (!restored) void this.persistCurrentPageChat();
+          if (pendingSubmission) {
+            void this.runTurn(pendingSubmission, { echoUser: true });
+          }
         }
       );
     }
@@ -1426,7 +1484,7 @@ export class PanelController {
     this.history = cached.history.map((message) => ({ ...message }));
     this.captureMode = cached.captureMode;
     this.sourceType = cached.sourceType;
-    this.invalidated = false;
+    this.invalidated = !hasFreshCapture;
     this.messageSequence = Math.max(
       this.messageSequence,
       ...cached.messages.map((message) => {
@@ -1664,7 +1722,7 @@ export class PanelController {
     this.update({
       busy: false,
       contextLabel: "Current page",
-      contextText: "Reading this page…",
+      contextText: "",
       hasContext: false,
       messages: [],
       notice: null,
@@ -1685,24 +1743,8 @@ export class PanelController {
       this.contextVersion,
       false
     );
-    if (
-      !restored &&
-      navigationEpoch === this.navigationEpoch &&
-      tabId === this.tabId
-    ) {
-      const result = await chrome.runtime
-        .sendMessage({ type: "capture-tab-for-chat", tabId })
-        .catch(() => ({ ok: false }));
-      if (
-        result?.ok === false &&
-        navigationEpoch === this.navigationEpoch &&
-        tabId === this.tabId
-      ) {
-        this.update({
-          contextText:
-            "TokenPath couldn't read this page. Try the extension icon again.",
-        });
-      }
+    if (!restored && navigationEpoch === this.navigationEpoch) {
+      this.prepareUncapturedPage();
     }
   }
 
@@ -1710,15 +1752,35 @@ export class PanelController {
     const navigationEpoch = ++this.navigationEpoch;
     await this.persistCurrentPageChat();
     if (navigationEpoch !== this.navigationEpoch) return;
-    this.invalidate(
-      "This page has no saved chat yet. Open TokenPath on the page to start one.",
-      false
-    );
+    this.invalidate("", false);
     this.sourceUrl = url;
     this.sourceBaseUrl = websiteBaseUrl(url);
     this.captureId = null;
     this.contextVersion++;
-    await this.restorePageChat(null, this.contextVersion, false);
+    const restored = await this.restorePageChat(
+      null,
+      this.contextVersion,
+      false
+    );
+    if (!restored && navigationEpoch === this.navigationEpoch) {
+      this.prepareUncapturedPage();
+    }
+  }
+
+  private prepareUncapturedPage() {
+    this.invalidated = true;
+    this.context = "";
+    this.history = [];
+    this.pendingAutoSummary = null;
+    this.pendingSubmission = null;
+    this.update({
+      busy: false,
+      contextLabel: "Current page",
+      contextText: "",
+      hasContext: false,
+      messages: [],
+      notice: null,
+    });
   }
 
   private invalidate(reason: string, clearHighlight = true) {
