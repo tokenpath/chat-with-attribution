@@ -21,10 +21,10 @@ it.
 2. Open `chrome://extensions`.
 3. Enable **Developer mode**.
 4. Choose **Load unpacked** and select `tldr-extension/`.
-5. Right-click a normal web page and open the **TokenPath** submenu. Choose
-   **TLDR**, **Simplify**, or **Ask a question**. Select a passage first to use
-   only that text; invoke an action without a selection to use the full rendered
-   page or searchable PDF.
+5. Click the TokenPath toolbar icon to capture the entire active page and open
+   an empty attributed chat. Use the visible **Summarize** starter or ask any
+   question in the composer. To chat about only one passage, select it first,
+   right-click, and choose **Chat with TokenPath**.
 
 On first use, paste a TokenPath API key from
 [platform.tokenpath.ai](https://platform.tokenpath.ai). The same key covers
@@ -169,6 +169,12 @@ remain inside the source frame.
 The panel follows the operating-system theme by default. Its header control can
 switch among system, light, and dark modes; the preference stays local to the
 extension.
+
+Chats are cached locally per normalized page URL in IndexedDB. Navigating back
+to a page restores its saved conversation without making an API request. If a
+fresh capture shows that the page content has changed significantly, TokenPath
+starts a new chat and explains why instead of applying old answers to new
+content. **Clear chat** removes only the current page's saved conversation.
 
 ## API and local development
 

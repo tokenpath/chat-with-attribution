@@ -4,10 +4,12 @@ import {
   EraserIcon,
   ExternalLinkIcon,
   KeyRoundIcon,
+  ListCollapseIcon,
   MonitorIcon,
   MousePointer2Icon,
   MoonIcon,
   SunIcon,
+  Trash2Icon,
 } from "lucide-react";
 import {
   useCallback,
@@ -41,7 +43,6 @@ import {
   type PanelController,
   type PanelMessage,
   type PanelSnapshot,
-  type SummaryLength,
 } from "@/controller";
 import {
   answerRangeFromSelection,
@@ -530,6 +531,22 @@ export function App({ controller }: { controller: PanelController }) {
             <EraserIcon className="size-3.5" />
             <span className="hidden min-[390px]:inline">Clear</span>
           </Button>
+          <Button
+            aria-label="Clear chat for this page"
+            className="gap-1.5 px-2"
+            disabled={
+              snapshot.busy ||
+              snapshot.messages.every((message) => message.kind === "note")
+            }
+            id="clear-chat"
+            onClick={() => void controller.clearConversation()}
+            size="sm"
+            title="Clear chat for this page"
+            variant="outline"
+          >
+            <Trash2Icon className="size-3.5" />
+            <span className="hidden min-[430px]:inline">Clear chat</span>
+          </Button>
         </div>
       </header>
       <div aria-hidden="true" className="token-rail" />
@@ -668,27 +685,6 @@ export function App({ controller }: { controller: PanelController }) {
           ) : (
             <div className="source-label">{snapshot.contextLabel}</div>
           )}
-          <label
-            className="summary-length-control"
-            title="Applies to the next TLDR; also updates one that is still waiting to start"
-          >
-            <span>Summary</span>
-            <select
-              aria-label="Automatic summary length"
-              className="summary-length-select"
-              id="summary-length"
-              onChange={(event) =>
-                controller.setSummaryLength(
-                  event.currentTarget.value as SummaryLength
-                )
-              }
-              value={snapshot.summaryLength}
-            >
-              <option value="low">Short</option>
-              <option value="medium">Medium</option>
-              <option value="high">Detailed</option>
-            </select>
-          </label>
         </div>
         <div
           className="context-text"
@@ -710,6 +706,31 @@ export function App({ controller }: { controller: PanelController }) {
 
       <Conversation className="min-h-0" id="messages">
         <ConversationContent className="gap-5 px-3.5 py-4">
+          {snapshot.hasContext &&
+            snapshot.messages.every((message) => message.kind === "note") &&
+            !snapshot.busy && (
+              <div className="chat-starter">
+                <p>What would you like to know?</p>
+                <button
+                  className="starter-action"
+                  disabled={!snapshot.connected}
+                  id="summarize-starter"
+                  onClick={() =>
+                    controller.submit(
+                      snapshot.contextLabel === "Entire PDF"
+                        ? "Summarize this PDF."
+                        : snapshot.contextLabel === "Entire page"
+                          ? "Summarize this page."
+                          : "Summarize this selection."
+                    )
+                  }
+                  type="button"
+                >
+                  <ListCollapseIcon aria-hidden="true" />
+                  <span>Summarize</span>
+                </button>
+              </div>
+            )}
           {snapshot.messages.map((message) => (
             <ChatMessage
               animateClickHint={message.id === latestReadyAnswerId}
