@@ -5,6 +5,7 @@ const vm = require("vm");
 
 const calls = [];
 let clickHandler;
+let actionClickHandler;
 let installedHandler;
 let runtimeMessageHandler;
 let autoCommitTabUpdates = true;
@@ -65,6 +66,13 @@ const chrome = {
     sendMessage(message) {
       calls.push(["runtime.sendMessage", message]);
       return Promise.resolve();
+    },
+  },
+  action: {
+    onClicked: {
+      addListener(handler) {
+        actionClickHandler = handler;
+      },
     },
   },
   contextMenus: {
@@ -180,6 +188,7 @@ const sandbox = {
 vm.runInNewContext(source, sandbox);
 
 assert.ok(clickHandler, "context-menu listener registered");
+assert.ok(actionClickHandler, "toolbar-action listener registered");
 assert.ok(runtimeMessageHandler, "runtime PDF listener registered");
 assert.ok(installedHandler, "context-menu installer registered");
 
@@ -204,10 +213,7 @@ assert.ok(installedHandler, "context-menu installer registered");
   );
 
   const expectedMenus = [
-    ["TokenPath", "TokenPath", undefined],
-    ["tokenpath-tldr", "TLDR", "TokenPath"],
-    ["tokenpath-simplify", "Simplify", "TokenPath"],
-    ["tokenpath-ask", "Ask a question", "TokenPath"],
+    ["tokenpath-chat", "Chat with TokenPath", undefined],
   ];
   for (const [id, title, parentId] of expectedMenus) {
     const item = contextMenuItems.get(id);
@@ -219,6 +225,19 @@ assert.ok(installedHandler, "context-menu installer registered");
       "page",
       "frame",
     ]);
+  }
+  for (const legacyId of [
+    "tldr-capture",
+    "TokenPath",
+    "tokenpath-tldr",
+    "tokenpath-simplify",
+    "tokenpath-ask",
+  ]) {
+    assert.strictEqual(
+      contextMenuItems.has(legacyId),
+      false,
+      `${legacyId} is removed from the visible context menu`
+    );
   }
 
   const reinstallStart = calls.length;
@@ -244,6 +263,36 @@ assert.ok(installedHandler, "context-menu installer registered");
   );
   console.log("PASS: startup migrates and idempotently upserts the TokenPath menu tree");
 
+  sendMessageImpl = (_tabId, message) =>
+    Promise.resolve(
+      message.type === "capture-page"
+        ? { text: "Toolbar article", error: null }
+        : { text: "", error: "unexpected capture mode" }
+  );
+  const toolbarStart = calls.length;
+  await actionClickHandler({
+    id: 40,
+    windowId: 3,
+    url: "https://example.com/toolbar-article",
+  });
+  const toolbarCalls = calls.slice(toolbarStart);
+  const toolbarSeed = toolbarCalls.find(
+    ([name]) => name === "storage.session.set"
+  )[1]["seed:40"];
+  const toolbarCapture = toolbarCalls.find(
+    ([name]) => name === "tabs.sendMessage"
+  );
+  assert.strictEqual(toolbarCapture[2].type, "capture-page");
+  assert.strictEqual(toolbarCapture[2].forceFullPage, true);
+  assert.strictEqual(toolbarSeed.captureMode, "full-page");
+  assert.strictEqual(toolbarSeed.intent, "ask");
+  assert.strictEqual(toolbarSeed.text, "Toolbar article");
+  assert.ok(
+    toolbarCalls.some(([name]) => name === "sidePanel.open"),
+    "toolbar click opens the side panel"
+  );
+  console.log("PASS: toolbar click captures the full page without generating");
+
   const parentClickStart = calls.length;
   await clickHandler(
     { menuItemId: "TokenPath", frameId: 0, selectionText: "ignored" },
@@ -264,12 +313,20 @@ assert.ok(installedHandler, "context-menu installer registered");
     { id: 42, windowId: 3, url: "https://mail.google.com/mail/u/0/" }
   );
 
-  const openIndex = calls.findIndex(([name]) => name === "sidePanel.open");
-  const injectionIndex = calls.findIndex(
-    ([name]) => name === "scripting.executeScript"
+  const openIndex = calls.findIndex(
+    ([name, options]) =>
+      name === "sidePanel.open" && options?.tabId === 42
   );
-  const captureIndex = calls.findIndex(([name]) => name === "tabs.sendMessage");
-  const storeIndex = calls.findIndex(([name]) => name === "storage.session.set");
+  const injectionIndex = calls.findIndex(
+    ([name, options]) =>
+      name === "scripting.executeScript" && options?.target?.tabId === 42
+  );
+  const captureIndex = calls.findIndex(
+    ([name, tabId]) => name === "tabs.sendMessage" && tabId === 42
+  );
+  const storeIndex = calls.findIndex(
+    ([name, value]) => name === "storage.session.set" && value?.["seed:42"]
+  );
   assert.ok(
     injectionIndex >= 0 && injectionIndex < openIndex,
     "exact-frame injection begins before opening the panel"
@@ -628,6 +685,7 @@ assert.ok(installedHandler, "context-menu installer registered");
     );
     assert.strictEqual(fullPageMessages[0][1], tabId);
     assert.strictEqual(fullPageMessages[0][2].type, "capture-page");
+    assert.strictEqual(fullPageMessages[0][2].forceFullPage, false);
     assert.ok(fullPageMessages[0][2].captureId);
     assert.strictEqual(fullPageMessages[0][2].selectionText, undefined);
     assert.strictEqual(fullPageMessages[0][3].frameId, 13);

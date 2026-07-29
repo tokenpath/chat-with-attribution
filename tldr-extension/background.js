@@ -1,6 +1,6 @@
 // TokenPath — background service worker (MV3).
 // Responsibilities:
-//  - create the TokenPath context-menu actions for selections and page/frame clicks
+//  - create one TokenPath chat action for selections and page/frame clicks
 //  - on click: open the side panel in the click's user-gesture context, then
 //    capture from the page content script, Chrome's native PDF selection, or
 //    ask the side panel to read an entire searchable PDF.
@@ -8,17 +8,20 @@
 //    an already-open panel.
 //  - translate PDF source ranges into native text-fragment navigation.
 
-const LEGACY_MENU_ID = "tldr-capture";
-const MENU_PARENT_ID = "TokenPath";
+const MENU_ID = "tokenpath-chat";
 const MENU_CONTEXTS = ["selection", "page", "frame"];
-const MENU_ACTIONS = [
-  { id: "tokenpath-tldr", title: "TLDR", intent: "tldr" },
-  { id: "tokenpath-simplify", title: "Simplify", intent: "simplify" },
-  { id: "tokenpath-ask", title: "Ask a question", intent: "ask" },
+const LEGACY_MENU_IDS = [
+  "tldr-capture",
+  "TokenPath",
+  "tokenpath-tldr",
+  "tokenpath-simplify",
+  "tokenpath-ask",
 ];
-const MENU_INTENT_BY_ID = new Map(
-  MENU_ACTIONS.map(({ id, intent }) => [id, intent])
-);
+const LEGACY_MENU_INTENTS = new Map([
+  ["tokenpath-tldr", "tldr"],
+  ["tokenpath-simplify", "simplify"],
+  ["tokenpath-ask", "ask"],
+]);
 const CHROME_PDF_VIEWER_ORIGIN =
   "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/";
 const PDF_SOURCE_TYPE = "chrome-pdf";
@@ -54,9 +57,11 @@ async function upsertContextMenuItem(id, properties) {
 
 function migrateLegacyContextMenu() {
   if (!legacyMenuMigrationPromise) {
-    legacyMenuMigrationPromise = runContextMenuOperation("remove", [
-      LEGACY_MENU_ID,
-    ]).then(() => undefined);
+    legacyMenuMigrationPromise = Promise.all(
+      LEGACY_MENU_IDS.map((id) =>
+        runContextMenuOperation("remove", [id])
+      )
+    ).then(() => undefined);
   }
   return legacyMenuMigrationPromise;
 }
@@ -66,17 +71,10 @@ function ensureContextMenus() {
 
   contextMenuEnsurePromise = (async () => {
     await migrateLegacyContextMenu();
-    await upsertContextMenuItem(MENU_PARENT_ID, {
-      title: "TokenPath",
+    await upsertContextMenuItem(MENU_ID, {
+      title: "Chat with TokenPath",
       contexts: MENU_CONTEXTS,
     });
-    for (const action of MENU_ACTIONS) {
-      await upsertContextMenuItem(action.id, {
-        parentId: MENU_PARENT_ID,
-        title: action.title,
-        contexts: MENU_CONTEXTS,
-      });
-    }
   })().finally(() => {
     contextMenuEnsurePromise = null;
   });
@@ -91,14 +89,27 @@ chrome.runtime.onInstalled.addListener(() => {
 // service-worker startup also migrates the legacy standalone TLDR item.
 void ensureContextMenus();
 
-// Let clicking the toolbar icon toggle the panel too (harmless convenience).
+// The toolbar icon is a primary entry point: capture the active page and open
+// an empty attributed chat. Generation starts only after the user submits.
 chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
+  .setPanelBehavior({ openPanelOnActionClick: false })
   .catch(() => {});
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  const intent = MENU_INTENT_BY_ID.get(info.menuItemId);
+chrome.action.onClicked.addListener((tab) => {
+  return captureAndOpen("ask", { frameId: 0, forceFullPage: true }, tab);
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  const intent =
+    info.menuItemId === MENU_ID
+      ? "ask"
+      : LEGACY_MENU_INTENTS.get(info.menuItemId);
   if (!intent || !tab || tab.id == null) return;
+  return captureAndOpen(intent, info, tab);
+});
+
+async function captureAndOpen(intent, info, tab) {
+  if (!tab || tab.id == null) return;
   const tabId = tab.id;
   const frameId = Number.isInteger(info.frameId) ? info.frameId : 0;
   const hasLegacyPdfFrame = isChromePdfViewerFrame(info.frameUrl);
@@ -151,7 +162,13 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
               captureId,
               contentReady
             )
-          : await capturePage(tabId, frameId, captureId, contentReady);
+          : await capturePage(
+              tabId,
+              frameId,
+              captureId,
+              contentReady,
+              info.forceFullPage === true
+            );
   if (latestCaptureByTab.get(tabId) !== captureId) return;
   const effectiveCaptureMode =
     !isChromePdf &&
@@ -181,7 +198,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   chrome.runtime
     .sendMessage({ type: "selection-captured", ...payload })
     .catch(() => {});
-});
+}
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (
@@ -277,11 +294,17 @@ async function captureSelection(
   );
 }
 
-async function capturePage(tabId, frameId, captureId, contentReady) {
+async function capturePage(
+  tabId,
+  frameId,
+  captureId,
+  contentReady,
+  forceFullPage = false
+) {
   return captureFromPageFrame(
     tabId,
     frameId,
-    { type: "capture-page", captureId },
+    { type: "capture-page", captureId, forceFullPage },
     contentReady,
     "page"
   );

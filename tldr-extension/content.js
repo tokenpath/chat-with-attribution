@@ -139,8 +139,9 @@
         break;
       }
       case "capture-page": {
-        const exactContextSelection =
-          pendingExtraction && !pendingExtraction.error
+        const exactContextSelection = msg.forceFullPage
+          ? { error: "Full-page capture requested." }
+          : pendingExtraction && !pendingExtraction.error
             ? pendingExtraction
             : extractFromRange(liveSelectionRange());
         pendingExtraction = null;
