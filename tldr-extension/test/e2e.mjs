@@ -501,7 +501,6 @@ function recordDeterministic(good) {
     const collapsedSourceState = await page.evaluate(() => {
       const card = document.getElementById("context");
       const context = document.getElementById("context-text");
-      const summaryLength = document.getElementById("summary-length");
       const toggle = document.getElementById("context-toggle");
       return {
         ariaControls: toggle?.getAttribute("aria-controls"),
@@ -511,11 +510,10 @@ function recordDeterministic(good) {
         contextVisible: context?.getClientRects().length === 1,
         hasButton:
           toggle instanceof HTMLButtonElement && toggle.type === "button",
-        summaryVisible: summaryLength?.getClientRects().length === 1,
+        hasSummaryControl: !!document.getElementById("summary-length"),
       };
     });
-    await page.locator("#summary-length").focus();
-    const sourceStaysCollapsedOnSummaryFocus = await page.evaluate(
+    const sourceStaysCollapsedWithoutLegacyControls = await page.evaluate(
       () =>
         document.getElementById("context-text")?.hidden === true &&
         document
@@ -787,14 +785,7 @@ function recordDeterministic(good) {
           (message) => message.role === "assistant"
         )?.content,
         generation,
-        summaryLength:
-          document.getElementById("summary-length")?.value || null,
-        summaryLengthOptions: [
-          ...(document.getElementById("summary-length")?.options || []),
-        ].map((option) => option.value),
-        summaryLengthOptionLabels: [
-          ...(document.getElementById("summary-length")?.options || []),
-        ].map((option) => option.textContent?.trim() || ""),
+        hasSummaryControl: !!document.getElementById("summary-length"),
         hasTokenPathWordmark:
           document.querySelector(".tokenpath-wordmark")?.textContent ===
             "tokenpath" &&
@@ -860,7 +851,6 @@ function recordDeterministic(good) {
             document.getElementById("context")?.clientWidth,
       };
     });
-    await page.locator("#summary-length").selectOption("high");
     const savedSummaryLength = await page.evaluate(() =>
       localStorage.getItem("tldr-summary-length")
     );
@@ -929,7 +919,6 @@ function recordDeterministic(good) {
         userPrompt: messages.at(-1)?.content,
       };
     });
-    await page.locator("#summary-length").selectOption("low");
     await page.evaluate(() => {
       window.__delayTokenPathRemoval = true;
       document.getElementById("disconnect")?.click();
@@ -1007,9 +996,9 @@ function recordDeterministic(good) {
       collapsedSourceState.ariaExpanded === "false" &&
       collapsedSourceState.contextHidden === true &&
       collapsedSourceState.contextVisible === false &&
-      collapsedSourceState.summaryVisible &&
+      collapsedSourceState.hasSummaryControl === false &&
       collapsedSourceState.cardHeight <= 52 &&
-      sourceStaysCollapsedOnSummaryFocus &&
+      sourceStaysCollapsedWithoutLegacyControls &&
       expandedSourceState.ariaExpanded === "true" &&
       expandedSourceState.context === panelResult.context &&
       expandedSourceState.contextHidden === false &&
@@ -1020,7 +1009,7 @@ function recordDeterministic(good) {
       sourceErrorState.context === sourceError &&
       sourceErrorState.hidden === false &&
       sourceErrorState.hasToggle === false &&
-      sourceErrorState.summaryVisible &&
+      sourceErrorState.summaryVisible === false &&
       sourceErrorState.visible &&
       firstHeatmapCount === 1 &&
       cachedHeatmapCount === 1 &&
@@ -1067,7 +1056,13 @@ function recordDeterministic(good) {
       Array.isArray(generationBody.messages) &&
       systemPrompt?.startsWith(
         "You are given some text from https://news.example. " +
-          "Answer the user's question."
+          "Answer the user's question using the given text as the source of truth."
+      ) &&
+      systemPrompt?.includes(
+        "- Start with the source's central thesis or purpose in concrete terms."
+      ) &&
+      systemPrompt?.includes(
+        "- For list or how-to content, retain the distinct takeaways"
       ) &&
       systemPrompt?.includes(
         "- Prefer bullet points when they make the answer easier to scan."
@@ -1082,25 +1077,22 @@ function recordDeterministic(good) {
       !systemPrompt?.includes("[[...]]") &&
       opaqueOriginGeneration.systemPrompt?.startsWith(
         "You are given some text from the current webpage. " +
-          "Answer the user's question."
+          "Answer the user's question using the given text as the source of truth."
       ) &&
       !opaqueOriginGeneration.systemPrompt?.includes("news.example") &&
       !opaqueOriginGeneration.systemPrompt?.includes("/Users/private") &&
-      panelResult.summaryLength === "low" &&
-      panelResult.summaryLengthOptions.join(",") === "low,medium,high" &&
-      panelResult.summaryLengthOptionLabels.join(",") ===
-        "Short,Medium,Detailed" &&
-      savedSummaryLength === "high" &&
+      panelResult.hasSummaryControl === false &&
+      savedSummaryLength === null &&
       summaryPrompt?.includes("Aim for 2-3 concise sentences") &&
       opaqueOriginGeneration.userPrompt?.includes(
-        "Aim for 8-12 concise sentences"
+        "Aim for 2-3 concise sentences"
       ) &&
       !("document" in generationBody) &&
       !("question" in generationBody) &&
       !("model" in generationBody) &&
       !("stream" in generationBody) &&
       generationBody.max_output_tokens === 512 &&
-      opaqueOriginGeneration.maxOutputTokens === 1024 &&
+      opaqueOriginGeneration.maxOutputTokens === 512 &&
       firstMessage?.type === "highlight" &&
       firstMessage?.start === expectedFable &&
       firstMessage?.end === expectedFable + 7 &&
@@ -1474,10 +1466,13 @@ function recordDeterministic(good) {
         listener(91, { url }, { id: 91, url });
       }
     });
-    await page.waitForFunction(() =>
-      document
-        .getElementById("notice")
-        ?.textContent?.includes("The page navigated")
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("context-text")
+          ?.textContent?.includes("no saved chat yet") &&
+        document.getElementById("input")?.disabled === true &&
+        document.querySelectorAll("[data-answer-content]").length === 0
     );
     await page.waitForTimeout(20);
 
@@ -1496,7 +1491,11 @@ function recordDeterministic(good) {
       heatmapCalls: window.__pdfRequests.filter((item) =>
         item.path.endsWith("/v1/attributions/heatmap")
       ).length,
-      notice: document.getElementById("notice")?.textContent || "",
+      contextText:
+        document.getElementById("context-text")?.textContent || "",
+      inputDisabled: document.getElementById("input")?.disabled,
+      messageCount:
+        document.querySelectorAll("[data-answer-content]").length,
       tabMessageCount: window.__pdfTabMessages.length,
     }));
     const expectedStart = await page.evaluate(() =>
@@ -1531,7 +1530,9 @@ function recordDeterministic(good) {
       result.clearCount === clearCountAtNavigation &&
       result.clearCount === 3 &&
       result.cancelCount === 1 &&
-      result.notice.includes("The page navigated");
+      result.contextText.includes("no saved chat yet") &&
+      result.inputDisabled === true &&
+      result.messageCount === 0;
     console.log("\n### Native PDF side-panel fixture");
     console.log(
       `  [runtime attribution + fragment lifetime] ${good ? "PASS" : "FAIL"}` +
@@ -1938,6 +1939,8 @@ function recordDeterministic(good) {
         "The revised workflow shortened review cycles while keeping every " +
         "required safety check and the same quality scores.";
       const runtimeListeners = [];
+      const tabUpdatedListeners = [];
+      const tabActivatedListeners = [];
       const localStore = { tokenpathKey: "tpk_intents" };
 
       const codePointOffset = (text, utf16Offset) =>
@@ -1972,6 +1975,12 @@ function recordDeterministic(good) {
       window.__intentAskSource = askSource;
       window.__intentRequests = [];
       window.__intentRuntimeListeners = runtimeListeners;
+      window.__intentTabUpdatedListeners = tabUpdatedListeners;
+      window.__intentTabActivatedListeners = tabActivatedListeners;
+      window.__intentTabUrls = {
+        411: "https://docs.example/ask",
+        412: "https://docs.example/tab-b",
+      };
       window.__intentSimplifyAnswer = simplifyAnswer;
       window.__intentSimplifySource = simplifySource;
       window.chrome = {
@@ -1988,7 +1997,19 @@ function recordDeterministic(good) {
           async sendMessage() {
             return { ok: true };
           },
-          onUpdated: { addListener() {} },
+          async get(tabId) {
+            return { id: tabId, url: window.__intentTabUrls[tabId] };
+          },
+          onActivated: {
+            addListener(listener) {
+              tabActivatedListeners.push(listener);
+            },
+          },
+          onUpdated: {
+            addListener(listener) {
+              tabUpdatedListeners.push(listener);
+            },
+          },
           onRemoved: { addListener() {} },
         },
         runtime: {
@@ -2173,6 +2194,10 @@ function recordDeterministic(good) {
       ).length,
       inputDisabled: document.getElementById("input")?.disabled,
       label: document.querySelector(".source-label")?.textContent || "",
+      starterEnabled:
+        document.getElementById("summarize-starter")?.disabled === false,
+      starterText:
+        document.getElementById("summarize-starter")?.textContent?.trim() || "",
       placeholder:
         document.getElementById("input")?.getAttribute("placeholder") || "",
       truncationNote:
@@ -2220,6 +2245,220 @@ function recordDeterministic(good) {
       };
     });
 
+    await page.waitForTimeout(40);
+    await page.evaluate(() => {
+      for (const listener of window.__intentTabActivatedListeners) {
+        listener({ tabId: 412, windowId: 23 });
+      }
+    });
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("context-text")
+          ?.textContent?.includes("This tab has no saved chat yet") &&
+        document.querySelectorAll("[data-answer-content]").length === 0
+    );
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "tab-b-seed",
+        capturedAt: 20,
+        tabId: 412,
+        windowId: 23,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "ask",
+        sourceType: "page",
+        url: "https://docs.example/tab-b",
+        text:
+          "Tab B contains a separate captured document about release planning, " +
+          "deployment gates, rollback checks, and operational ownership.",
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("context-text")
+          ?.textContent?.includes("Tab B contains") &&
+        document.getElementById("input")?.disabled === false
+    );
+    await page.waitForTimeout(40);
+    await page.evaluate(() => {
+      for (const listener of window.__intentTabActivatedListeners) {
+        listener({ tabId: 411, windowId: 23 });
+      }
+    });
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector("[data-answer-content]")
+          ?.textContent?.includes("shortened review cycles") &&
+        document
+          .getElementById("notice")
+          ?.textContent?.includes("Restored the saved chat")
+    );
+    const tabAAfterReturn = await page.evaluate(() => ({
+      answerCount: document.querySelectorAll("[data-answer-content]").length,
+      context:
+        document.getElementById("context-text")?.textContent || "",
+    }));
+    await page.evaluate(() => {
+      for (const listener of window.__intentTabActivatedListeners) {
+        listener({ tabId: 412, windowId: 23 });
+      }
+    });
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("context-text")
+          ?.textContent?.includes("Tab B contains") &&
+        document.querySelectorAll("[data-answer-content]").length === 0
+    );
+    const tabBAfterReturn = await page.evaluate(() => ({
+      answerCount: document.querySelectorAll("[data-answer-content]").length,
+      context:
+        document.getElementById("context-text")?.textContent || "",
+      inputDisabled: document.getElementById("input")?.disabled,
+    }));
+    await page.evaluate(() => {
+      for (const listener of window.__intentTabActivatedListeners) {
+        listener({ tabId: 411, windowId: 23 });
+      }
+    });
+    await page.waitForFunction(() =>
+      document
+        .querySelector("[data-answer-content]")
+        ?.textContent?.includes("shortened review cycles")
+    );
+
+    await page.evaluate(() => {
+      const awayUrl = "https://docs.example/another-page";
+      for (const listener of window.__intentTabUpdatedListeners) {
+        listener(411, { url: awayUrl }, { id: 411, url: awayUrl });
+      }
+    });
+    await page.waitForFunction(() =>
+      document
+        .getElementById("context-text")
+        ?.textContent?.includes("no saved chat yet")
+    );
+    await page.evaluate(() => {
+      const returnUrl = "https://docs.example/ask";
+      for (const listener of window.__intentTabUpdatedListeners) {
+        listener(411, { url: returnUrl }, { id: 411, url: returnUrl });
+      }
+    });
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("notice")
+          ?.textContent?.includes("Restored the saved chat") &&
+        document
+          .querySelector("[data-answer-content]")
+          ?.textContent?.includes("shortened review cycles")
+    );
+    const restoredChat = await page.evaluate(() => ({
+      answer:
+        document.querySelector("[data-answer-content]")?.textContent || "",
+      inputDisabled: document.getElementById("input")?.disabled,
+      notice: document.getElementById("notice")?.textContent || "",
+    }));
+
+    await page.locator("#clear-chat").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll("[data-answer-content]").length === 0 &&
+        document.getElementById("summarize-starter")
+    );
+    await page.evaluate(() => {
+      const awayUrl = "https://docs.example/after-clear";
+      for (const listener of window.__intentTabUpdatedListeners) {
+        listener(411, { url: awayUrl }, { id: 411, url: awayUrl });
+      }
+    });
+    await page.waitForFunction(() =>
+      document
+        .getElementById("context-text")
+        ?.textContent?.includes("no saved chat yet")
+    );
+    await page.evaluate(() => {
+      const returnUrl = "https://docs.example/ask";
+      for (const listener of window.__intentTabUpdatedListeners) {
+        listener(411, { url: returnUrl }, { id: 411, url: returnUrl });
+      }
+    });
+    await page.waitForTimeout(40);
+    const clearedChatStayedDeleted = await page.evaluate(
+      () =>
+        document.querySelectorAll("[data-answer-content]").length === 0 &&
+        !document
+          .getElementById("notice")
+          ?.textContent?.includes("Restored the saved chat")
+    );
+
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "changed-seed-base",
+        capturedAt: 21,
+        tabId: 411,
+        windowId: 23,
+        frameId: 19,
+        captureMode: "full-page",
+        intent: "ask",
+        sourceType: "page",
+        url: "https://docs.example/ask",
+        text: window.__intentAskSource,
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () => document.getElementById("input")?.disabled === false
+    );
+    await page.locator("#input").fill("What remained unchanged?");
+    await page.locator("#send").click();
+    await page.waitForFunction(
+      () =>
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length === 3
+    );
+    await page.waitForTimeout(40);
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "changed-seed-current",
+        capturedAt: 22,
+        tabId: 411,
+        windowId: 23,
+        frameId: 19,
+        captureMode: "full-page",
+        intent: "ask",
+        sourceType: "page",
+        url: "https://docs.example/ask",
+        text:
+          "A completely different article now occupies this URL. It covers " +
+          "ocean currents, marine habitats, coastal weather, research ships, " +
+          "satellite observations, fisheries, conservation policy, and a new " +
+          "international survey with unrelated findings and conclusions.",
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById("notice")
+          ?.textContent?.includes("changed significantly") &&
+        document.querySelectorAll("[data-answer-content]").length === 0
+    );
+    const changedContentStartedFresh = await page.evaluate(
+      () =>
+        document
+          .getElementById("notice")
+          ?.textContent?.includes("started a fresh chat") === true
+    );
+
     const good =
       simplifyResult.prompt.includes("clear, simple language") &&
       simplifyResult.prompt.includes("preserving all facts") &&
@@ -2237,6 +2476,8 @@ function recordDeterministic(good) {
       askReadyState.answerCount === 0 &&
       askReadyState.inputDisabled === false &&
       askReadyState.label === "Entire page" &&
+      askReadyState.starterEnabled &&
+      askReadyState.starterText === "Summarize" &&
       askReadyState.placeholder === "Ask about the page…" &&
       askReadyState.truncationNote &&
       askResult.question === explicitQuestion &&
@@ -2244,7 +2485,18 @@ function recordDeterministic(good) {
       askResult.systemIncludesContext &&
       askResult.document ===
         (await page.evaluate(() => window.__intentAskSource)) &&
-      askResult.answer.includes("shortened review cycles");
+      askResult.answer.includes("shortened review cycles") &&
+      tabAAfterReturn.answerCount === 1 &&
+      tabAAfterReturn.context ===
+        (await page.evaluate(() => window.__intentAskSource)) &&
+      tabBAfterReturn.answerCount === 0 &&
+      tabBAfterReturn.context.includes("Tab B contains") &&
+      tabBAfterReturn.inputDisabled === false &&
+      restoredChat.answer.includes("shortened review cycles") &&
+      restoredChat.inputDisabled === false &&
+      restoredChat.notice.includes("Restored the saved chat") &&
+      clearedChatStayedDeleted &&
+      changedContentStartedFresh;
     console.log("\n### Capture-intent side-panel fixture");
     console.log(
       `  [simplify auto + ask on submit] ${good ? "PASS" : "FAIL"}` +

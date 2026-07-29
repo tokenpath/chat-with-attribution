@@ -1,4 +1,11 @@
 import { extractPdfText } from "@/pdf-text-extractor";
+import {
+  deletePageChat,
+  pageChatKey,
+  pageContentSignificantlyChanged,
+  readPageChat,
+  writePageChat,
+} from "@/chat-cache";
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
@@ -87,6 +94,16 @@ type SummaryRequest = TldrSummaryRequest;
 type AutomaticRequest = SummaryRequest & {
   intent: Exclude<CaptureIntent, "ask">;
 };
+
+interface CachedPageChat {
+  version: 1;
+  context: string;
+  contextLabel: string;
+  captureMode: CaptureMode;
+  sourceType: SourceType;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+  messages: PanelMessage[];
+}
 
 const THEME_KEY = "tldr-theme";
 const SUMMARY_LENGTH_KEY = "tldr-summary-length";
@@ -200,6 +217,7 @@ export class PanelController {
   private activeTurnCleanup: (() => void) | null = null;
   private activePdfExtractionController: AbortController | null = null;
   private heatmapControllers = new Map<string, AbortController>();
+  private navigationEpoch = 0;
 
   constructor() {
     const themePreference = readThemePreference();
@@ -389,6 +407,21 @@ export class PanelController {
     void this.clearActiveHighlight(fallback);
   };
 
+  clearConversation = async () => {
+    const key = pageChatKey(this.sourceUrl);
+    if (key) await deletePageChat(key).catch(() => undefined);
+    this.history = [];
+    this.pendingAutoSummary = null;
+    this.cancelActiveWork();
+    this.cancelHighlightAndClear();
+    this.update({
+      busy: false,
+      messages: [],
+      notice: null,
+    });
+    this.showToast("Chat cleared for this page.");
+  };
+
   dispose = () => {
     if (this.disposed) return;
     this.disposed = true;
@@ -397,6 +430,7 @@ export class PanelController {
       this.toastTimer = null;
     }
     this.cancelActiveWork();
+    void this.persistCurrentPageChat();
     this.highlightEpoch++;
     const pendingPdfHighlight = this.pendingPdfHighlight;
     this.pendingPdfHighlight = null;
@@ -788,6 +822,13 @@ export class PanelController {
       messages: [],
       notice: null,
     });
+    if (intent === "ask") {
+      void this.restorePageChat(text, this.contextVersion, true).then(
+        (restored) => {
+          if (!restored) void this.persistCurrentPageChat();
+        }
+      );
+    }
     if (truncated) {
       const sourceName =
         this.captureMode === "full-pdf" ? "PDF" : "page";
@@ -1055,6 +1096,7 @@ export class PanelController {
         this.activeTurnController = null;
         this.activeTurnCleanup = null;
         this.update({ busy: false });
+        void this.persistCurrentPageChat();
         this.maybeRunAutoSummary();
       }
     }
@@ -1160,7 +1202,19 @@ export class PanelController {
     const boundedQuestion = TldrPanelLogic.truncateCodePoints(question, 10_000);
     const systemPrefix =
       `You are given some text from ${this.sourceBaseUrl}. ` +
-      "Answer the user's question.\n\n" +
+      "Answer the user's question using the given text as the source of " +
+      "truth. Do not invent details that the source does not support. If the " +
+      "captured text is too limited to answer meaningfully, say so plainly " +
+      "instead of producing a generic explanation.\n\n" +
+      "When the user asks for a summary:\n" +
+      "- Start with the source's central thesis or purpose in concrete terms.\n" +
+      "- Preserve the important claims, recommendations, reasons, examples, " +
+      "qualifications, and conclusions needed to understand the source.\n" +
+      "- For list or how-to content, retain the distinct takeaways and explain " +
+      "what each one means; do not collapse them into vague prose.\n" +
+      "- Prefer specific language from the source over generic phrases such " +
+      "as 'the text discusses' or 'a specific entity.'\n" +
+      "- Make the result useful to someone who has not read the source.\n\n" +
       "Formatting:\n" +
       "- Use concise Markdown.\n" +
       "- Prefer bullet points when they make the answer easier to scan.\n" +
@@ -1306,7 +1360,115 @@ export class PanelController {
       if (this.heatmapControllers.get(messageId) === controller) {
         this.heatmapControllers.delete(messageId);
       }
+      void this.persistCurrentPageChat();
     }
+  }
+
+  private async persistCurrentPageChat() {
+    const key = pageChatKey(this.sourceUrl);
+    if (
+      !key ||
+      !this.context ||
+      this.snapshot.busy
+    ) {
+      return;
+    }
+    const value: CachedPageChat = {
+      version: 1,
+      context: this.context,
+      contextLabel: this.snapshot.contextLabel,
+      captureMode: this.captureMode,
+      sourceType: this.sourceType,
+      history: this.history.map((message) => ({ ...message })),
+      messages: this.snapshot.messages.map((message) => ({
+        ...message,
+        attribution: message.attribution
+          ? { ...message.attribution }
+          : undefined,
+        source: message.source ? { ...message.source } : undefined,
+      })),
+    };
+    await writePageChat(key, value).catch(() => undefined);
+  }
+
+  private async restorePageChat(
+    capturedText: string | null,
+    expectedContextVersion: number,
+    hasFreshCapture: boolean
+  ) {
+    const key = pageChatKey(this.sourceUrl);
+    if (!key) return false;
+    const record = await readPageChat<CachedPageChat>(key).catch(() => null);
+    if (
+      !record ||
+      record.value.version !== 1 ||
+      expectedContextVersion !== this.contextVersion
+    ) {
+      return false;
+    }
+
+    const cached = record.value;
+    if (
+      capturedText &&
+      pageContentSignificantlyChanged(cached.context, capturedText)
+    ) {
+      await deletePageChat(key).catch(() => undefined);
+      if (expectedContextVersion !== this.contextVersion) return false;
+      this.update({
+        notice:
+          "This page has changed significantly since the saved chat. " +
+          "TokenPath started a fresh chat with the current content.",
+      });
+      return false;
+    }
+
+    this.context = capturedText || cached.context;
+    this.history = cached.history.map((message) => ({ ...message }));
+    this.captureMode = cached.captureMode;
+    this.sourceType = cached.sourceType;
+    this.invalidated = false;
+    this.messageSequence = Math.max(
+      this.messageSequence,
+      ...cached.messages.map((message) => {
+        const match = /^message-(\d+)$/.exec(message.id);
+        return match ? Number(match[1]) : 0;
+      })
+    );
+    const messages = cached.messages.map((message) => ({
+      ...message,
+      attribution: message.attribution
+        ? { ...message.attribution }
+        : undefined,
+      source:
+        hasFreshCapture && message.source
+          ? {
+              ...message.source,
+              tabId: this.tabId,
+              frameId: this.frameId,
+              captureId: this.captureId,
+              contextVersion: this.contextVersion,
+              sourceType: this.sourceType,
+              url: this.sourceUrl,
+            }
+          : undefined,
+    }));
+    const hasConversation = messages.some(
+      (message) => message.kind !== "note"
+    );
+    this.update({
+      busy: false,
+      contextLabel: cached.contextLabel,
+      contextText: this.context,
+      hasContext: true,
+      messages,
+      notice: hasConversation
+        ? hasFreshCapture
+          ? "Restored the saved chat for this page."
+          : "Restored the saved chat for this page. Reopen TokenPath on the " +
+            "page to re-enable source highlighting."
+        : null,
+    });
+    return true;
   }
 
   private async attributionFailureMessage(error: unknown) {
@@ -1459,6 +1621,15 @@ export class PanelController {
   }
 
   private watchTab() {
+    chrome.tabs.onActivated?.addListener((activeInfo) => {
+      if (
+        activeInfo.tabId === this.tabId &&
+        activeInfo.windowId === this.windowId
+      ) {
+        return;
+      }
+      void this.handleTabActivation(activeInfo.tabId, activeInfo.windowId);
+    });
     chrome.tabs.onUpdated.addListener((id, changeInfo) => {
       if (id !== this.tabId || !changeInfo.url) return;
       if (
@@ -1467,18 +1638,73 @@ export class PanelController {
       ) {
         return;
       }
-      this.invalidate(
-        "The page navigated. The captured selection no longer maps to the live page — re-select text and choose a TokenPath action again.",
-        false
-      );
+      void this.handlePageNavigation(changeInfo.url);
     });
     chrome.tabs.onRemoved.addListener((id) => {
       if (id === this.tabId) this.invalidate("The tab was closed.", false);
     });
   }
 
+  private async handleTabActivation(tabId: number, windowId: number) {
+    const navigationEpoch = ++this.navigationEpoch;
+    await this.persistCurrentPageChat();
+    if (navigationEpoch !== this.navigationEpoch) return;
+
+    this.cancelHighlightAndClear();
+    this.cancelActiveWork();
+    this.invalidated = true;
+    this.context = "";
+    this.history = [];
+    this.pendingAutoSummary = null;
+    this.contextVersion++;
+    this.tabId = tabId;
+    this.windowId = windowId;
+    this.frameId = 0;
+    this.captureId = null;
+    this.update({
+      busy: false,
+      contextLabel: "Current page",
+      contextText:
+        "This tab has no saved chat yet. Open TokenPath on the page to start one.",
+      hasContext: false,
+      messages: [],
+      notice: null,
+    });
+
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (
+      !tab ||
+      navigationEpoch !== this.navigationEpoch ||
+      tabId !== this.tabId
+    ) {
+      return;
+    }
+    this.sourceUrl = tab.url || null;
+    this.sourceBaseUrl = websiteBaseUrl(this.sourceUrl);
+    await this.restorePageChat(null, this.contextVersion, false);
+  }
+
+  private async handlePageNavigation(url: string) {
+    const navigationEpoch = ++this.navigationEpoch;
+    await this.persistCurrentPageChat();
+    if (navigationEpoch !== this.navigationEpoch) return;
+    this.invalidate(
+      "This page has no saved chat yet. Open TokenPath on the page to start one.",
+      false
+    );
+    this.sourceUrl = url;
+    this.sourceBaseUrl = websiteBaseUrl(url);
+    this.captureId = null;
+    this.contextVersion++;
+    await this.restorePageChat(null, this.contextVersion, false);
+  }
+
   private invalidate(reason: string, clearHighlight = true) {
     this.invalidated = true;
+    this.context = "";
+    this.history = [];
+    this.pendingAutoSummary = null;
+    this.contextVersion++;
     this.highlightEpoch++;
     const pendingPdfHighlight = this.pendingPdfHighlight;
     this.pendingPdfHighlight = null;
@@ -1498,7 +1724,14 @@ export class PanelController {
       }
     }
     this.cancelActiveWork();
-    this.update({ notice: reason });
+    this.update({
+      busy: false,
+      contextLabel: "Current page",
+      contextText: reason,
+      hasContext: false,
+      messages: [],
+      notice: null,
+    });
   }
 
   private showToast(text: string) {
