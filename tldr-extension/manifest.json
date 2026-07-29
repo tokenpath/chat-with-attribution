@@ -17,6 +17,7 @@
     "storage"
   ],
   "host_permissions": [
+    "<all_urls>",
     "https://api.tokenpath.ai/*",
     "https://api-staging.tokenpath.ai/*",
     "http://localhost:8000/*",

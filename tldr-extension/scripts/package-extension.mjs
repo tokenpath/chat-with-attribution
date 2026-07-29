@@ -45,9 +45,12 @@ try {
   }
 
   // Development endpoints stay available to unpacked local builds, but the
-  // Web Store package requests access only to TokenPath's production API.
+  // Web Store package keeps page access for automatic tab capture and requests
+  // API access only to TokenPath's production endpoint.
   manifest.host_permissions = manifest.host_permissions.filter(
-    (permission) => permission === "https://api.tokenpath.ai/*"
+    (permission) =>
+      permission === "<all_urls>" ||
+      permission === "https://api.tokenpath.ai/*"
   );
   await writeFile(
     join(stagingDir, "manifest.json"),

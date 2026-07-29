@@ -29,6 +29,14 @@ const contextMenuItems = new Map([
   ],
 ]);
 
+const manifest = JSON.parse(
+  readFileSync(join(__dirname, "..", "manifest.json"), "utf8")
+);
+assert(
+  manifest.host_permissions.includes("<all_urls>"),
+  "automatic tab capture requires persistent access to ordinary web pages"
+);
+
 function emitTabCommit(tabId, url) {
   tabUrls.set(tabId, url);
   for (const listener of tabUpdateListeners) {
