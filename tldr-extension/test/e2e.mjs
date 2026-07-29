@@ -2326,10 +2326,7 @@ function recordDeterministic(good) {
       () =>
         document
           .querySelector("[data-answer-content]")
-          ?.textContent?.includes("shortened review cycles") &&
-        document
-          .getElementById("notice")
-          ?.textContent?.includes("Restored the saved chat")
+          ?.textContent?.includes("shortened review cycles")
     );
     const tabAAfterReturn = await page.evaluate(() => ({
       answerCount: document.querySelectorAll("[data-answer-content]").length,
@@ -2382,9 +2379,6 @@ function recordDeterministic(good) {
     });
     await page.waitForFunction(
       () =>
-        document
-          .getElementById("notice")
-          ?.textContent?.includes("Restored the saved chat") &&
         document
           .querySelector("[data-answer-content]")
           ?.textContent?.includes("shortened review cycles")
@@ -2488,6 +2482,80 @@ function recordDeterministic(good) {
           ?.textContent?.includes("started a fresh chat") === true
     );
 
+    await page.evaluate(async () => {
+      const key = "https://docs.example/interrupted";
+      const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("tokenpath-page-chats", 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction("conversations", "readwrite");
+        transaction.onerror = () => reject(transaction.error);
+        transaction.oncomplete = () => resolve();
+        transaction.objectStore("conversations").put({
+          key,
+          savedAt: Date.now(),
+          value: {
+            version: 1,
+            context:
+              "An interrupted cached article contains enough text to restore.",
+            contextLabel: "Entire page",
+            captureMode: "full-page",
+            sourceType: "page",
+            history: [
+              { role: "user", content: "What is the main point?" },
+              { role: "assistant", content: "The answer finished generating." },
+            ],
+            messages: [
+              {
+                id: "message-99",
+                role: "assistant",
+                kind: "answer",
+                text: "The answer finished generating.",
+                answerStatus: "attributing",
+                attribution: {
+                  document:
+                    "An interrupted cached article contains enough text to restore.",
+                  question: "What is the main point?",
+                  status: "loading",
+                },
+                source: {
+                  tabId: 411,
+                  frameId: 0,
+                  captureId: "interrupted-capture",
+                  contextVersion: 1,
+                  sourceType: "page",
+                  url: key,
+                },
+              },
+            ],
+          },
+        });
+      });
+      database.close();
+      window.__intentTabUrls[411] = key;
+      for (const listener of window.__intentTabUpdatedListeners) {
+        listener(411, { url: key }, { id: 411, url: key });
+      }
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="unavailable"]') &&
+        document
+          .getElementById("messages")
+          ?.textContent?.includes("Source map unavailable") &&
+        !document
+          .getElementById("messages")
+          ?.textContent?.includes("Mapping this answer")
+    );
+    const interruptedMappingRecovered = await page.evaluate(
+      () =>
+        document
+          .querySelector('[data-answer-status="unavailable"]')
+          ?.textContent?.includes("Source map unavailable") === true
+    );
+
     const good =
       simplifyResult.prompt.includes("clear, simple language") &&
       simplifyResult.prompt.includes("preserving all facts") &&
@@ -2523,9 +2591,10 @@ function recordDeterministic(good) {
       tabBAfterReturn.inputDisabled === false &&
       restoredChat.answer.includes("shortened review cycles") &&
       restoredChat.inputDisabled === false &&
-      restoredChat.notice.includes("Restored the saved chat") &&
+      restoredChat.notice === "" &&
       clearedChatStayedDeleted &&
-      changedContentStartedFresh;
+      changedContentStartedFresh &&
+      interruptedMappingRecovered;
     console.log("\n### Capture-intent side-panel fixture");
     console.log(
       `  [simplify auto + ask on submit] ${good ? "PASS" : "FAIL"}` +

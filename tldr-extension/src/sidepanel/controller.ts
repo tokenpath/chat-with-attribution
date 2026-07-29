@@ -570,12 +570,6 @@ export class PanelController {
     end: number,
     source: HighlightSource
   ) => {
-    if (this.invalidated) {
-      this.showToast(
-        "The page navigated — re-select and choose a TokenPath action again."
-      );
-      return;
-    }
     if (
       source.tabId == null ||
       !Number.isFinite(start) ||
@@ -1492,40 +1486,56 @@ export class PanelController {
         return match ? Number(match[1]) : 0;
       })
     );
-    const messages = cached.messages.map((message) => ({
-      ...message,
-      attribution: message.attribution
-        ? { ...message.attribution }
-        : undefined,
-      source:
-        hasFreshCapture && message.source
+    let normalizedInterruptedAttribution = false;
+    const messages = cached.messages.map((message) => {
+      const attributionWasInterrupted =
+        message.kind === "answer" &&
+        (message.answerStatus === "attributing" ||
+          message.attribution?.status === "loading");
+      if (attributionWasInterrupted) normalizedInterruptedAttribution = true;
+      return {
+        ...message,
+        answerStatus: attributionWasInterrupted
+          ? ("unavailable" as const)
+          : message.answerStatus,
+        attribution: message.attribution
+          ? attributionWasInterrupted
+            ? {
+                ...message.attribution,
+                error:
+                  "Source mapping was interrupted when you left this page.",
+                status: "error" as const,
+              }
+            : { ...message.attribution }
+          : undefined,
+        source: message.source
           ? {
               ...message.source,
               tabId: this.tabId,
-              frameId: this.frameId,
-              captureId: this.captureId,
+              frameId: hasFreshCapture
+                ? this.frameId
+                : message.source.frameId,
+              captureId: hasFreshCapture
+                ? this.captureId
+                : message.source.captureId,
               contextVersion: this.contextVersion,
               sourceType: this.sourceType,
               url: this.sourceUrl,
             }
           : undefined,
-    }));
-    const hasConversation = messages.some(
-      (message) => message.kind !== "note"
-    );
+      };
+    });
     this.update({
       busy: false,
       contextLabel: cached.contextLabel,
       contextText: this.context,
       hasContext: true,
       messages,
-      notice: hasConversation
-        ? hasFreshCapture
-          ? "Restored the saved chat for this page."
-          : "Restored the saved chat for this page. Reopen TokenPath on the " +
-            "page to re-enable source highlighting."
-        : null,
+      notice: null,
     });
+    if (normalizedInterruptedAttribution) {
+      void this.persistCurrentPageChat();
+    }
     return true;
   }
 
@@ -1590,9 +1600,8 @@ export class PanelController {
   private isCurrentHighlight(source: HighlightSource, epoch: number) {
     return (
       epoch === this.highlightEpoch &&
-      !this.invalidated &&
       source.contextVersion === this.contextVersion &&
-      source.captureId === this.captureId
+      (this.invalidated || source.captureId === this.captureId)
     );
   }
 
