@@ -227,6 +227,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "clear-tab-highlights") {
+    const tabId = validTabId(message.tabId);
+    if (tabId == null) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    warmContentScript(tabId, 0)
+      .then(() =>
+        chrome.tabs.sendMessage(tabId, { type: "clear-highlight" })
+      )
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
   if (
     message?.type !== "highlight-pdf-source" &&
     message?.type !== "clear-pdf-source-highlight" &&

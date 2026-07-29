@@ -304,6 +304,15 @@ function recordDeterministic(good) {
           onRemoved: { addListener() {} },
         },
         runtime: {
+          async sendMessage(message) {
+            if (message?.type === "clear-tab-highlights") {
+              window.__panelSent.push([
+                message.tabId,
+                { type: "clear-highlight" },
+              ]);
+            }
+            return { ok: true };
+          },
           onMessage: {
             addListener(listener) {
               runtimeListeners.push(listener);
@@ -1103,7 +1112,7 @@ function recordDeterministic(good) {
       clickedSent?.[1]?.start === expectedFable &&
       clickedSent?.[1]?.end === expectedFable + 7 &&
       panelHideClear?.[1]?.type === "clear-highlight" &&
-      panelHideClear?.[1]?.captureId === "seed-1" &&
+      panelHideClear?.[1]?.captureId === undefined &&
       panelResult.heatmapThreshold === 0.1 &&
       panelResult.clickGuide &&
       panelResult.clickablePhraseText.includes("Fable 5") &&
@@ -3186,6 +3195,7 @@ function recordDeterministic(good) {
           }
         );
         return {
+          currentStart,
           currentOk: current?.ok === true,
           recapturedText: recaptured?.text || "",
           staleRangeCount,
@@ -3193,6 +3203,52 @@ function recordDeterministic(good) {
         };
       },
       { start: targetStart, end: targetEnd }
+    );
+
+    await page.evaluate(() => {
+      window.__tldrContentLoaded = null;
+    });
+    await page.evaluate(CONTENT_JS);
+    const restoredAfterReload = await page.evaluate(
+      ({ documentText, start }) => {
+        let highlighted;
+        window.__tldrMsg(
+          {
+            type: "highlight",
+            captureId: "full-page-2",
+            document: documentText,
+            start,
+            end: start + "shared source phrase".length,
+          },
+          null,
+          (value) => {
+            highlighted = value;
+          }
+        );
+        const restoredRange = CSS.highlights
+          ? [...(CSS.highlights.get("tldr-attrib") || [])][0]
+          : null;
+        let cleared;
+        window.__tldrMsg(
+          { type: "clear-highlight" },
+          null,
+          (value) => {
+            cleared = value;
+          }
+        );
+        return {
+          clearOk: cleared?.ok === true,
+          clearedRangeCount: CSS.highlights
+            ? [...(CSS.highlights.get("tldr-attrib") || [])].length
+            : 0,
+          highlightOk: highlighted?.ok === true,
+          text: restoredRange?.toString() || "",
+        };
+      },
+      {
+        documentText: ownership.recapturedText,
+        start: ownership.currentStart,
+      }
     );
 
     const truncation = await page.evaluate(() => {
@@ -3257,6 +3313,10 @@ function recordDeterministic(good) {
       ownership.staleRangeCount === 0 &&
       ownership.currentOk &&
       ownership.recapturedText.includes("Whole page fixture updated") &&
+      restoredAfterReload.highlightOk &&
+      restoredAfterReload.text === "shared source phrase" &&
+      restoredAfterReload.clearOk &&
+      restoredAfterReload.clearedRangeCount === 0 &&
       truncation.truncated &&
       truncation.length === 399_999 &&
       truncation.first === "A" &&

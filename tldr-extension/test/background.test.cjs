@@ -319,6 +319,30 @@ assert.ok(installedHandler, "context-menu installer registered");
   );
   console.log("PASS: an explicit chat action captures the full page");
 
+  const clearStart = calls.length;
+  const clearTabResponse = await dispatchRuntimeMessage({
+    type: "clear-tab-highlights",
+    tabId: 40,
+  });
+  const clearTabCalls = calls.slice(clearStart);
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(clearTabResponse)),
+    { ok: true }
+  );
+  const clearTabMessage = clearTabCalls.find(
+    ([name, tabId, message]) =>
+      name === "tabs.sendMessage" &&
+      tabId === 40 &&
+      message?.type === "clear-highlight"
+  );
+  assert.ok(clearTabMessage, "Clear broadcasts to the active tab");
+  assert.strictEqual(
+    clearTabMessage[3],
+    undefined,
+    "Clear must not be limited to one remembered frame"
+  );
+  console.log("PASS: Clear broadcasts across the active tab");
+
   const parentClickStart = calls.length;
   await clickHandler(
     { menuItemId: "TokenPath", frameId: 0, selectionText: "ignored" },

@@ -7,7 +7,7 @@
   // Guard against same-version double-injection (manifest + on-demand
   // scripting.executeScript). A versioned marker lets a fresh script replace a
   // stale isolated-world listener after an unpacked extension reload.
-  const CONTENT_VERSION = "2026-07-27.2";
+  const CONTENT_VERSION = "2026-07-29.1";
   if (window.__tldrContentLoaded === CONTENT_VERSION) return;
   window.__tldrContentLoaded = CONTENT_VERSION;
 
@@ -161,6 +161,14 @@
         break;
       }
       case "highlight": {
+        if (
+          msg.captureId &&
+          msg.captureId !== extraction?.captureId &&
+          typeof msg.document === "string" &&
+          msg.document
+        ) {
+          restoreExtractionForHighlight(msg.document, msg.captureId);
+        }
         const ok =
           (!msg.captureId || msg.captureId === extraction?.captureId) &&
           highlightRange(msg.start, msg.end);
@@ -898,6 +906,39 @@
           },
         }
       : { text: "", map: [], error: "No readable text found in the selection." };
+  }
+
+  // Completed attribution matrices outlive a content-script instance. After a
+  // page refresh or extension reload, rebuild the private DOM map lazily from
+  // the cached source text when the user clicks an attributed answer phrase.
+  // Exact prefix matching covers full-page captures (including prompt
+  // truncation); unique text matching covers selected passages.
+  function restoreExtractionForHighlight(documentText, captureId) {
+    if (!document.body || !documentText) return false;
+    const rebuilt = extractFullPage();
+    let candidate = null;
+    if (
+      !rebuilt.error &&
+      rebuilt.text.startsWith(documentText)
+    ) {
+      const map = sliceMap(rebuilt.map, 0, documentText.length);
+      if (map.length) {
+        candidate = {
+          ...rebuilt,
+          text: documentText,
+          map,
+          truncated: rebuilt.text.length > documentText.length,
+        };
+      }
+    }
+    if (!candidate) {
+      const selected = extractFromTextHint(documentText);
+      if (!selected.error) candidate = selected;
+    }
+    if (!candidate) return false;
+    extraction = candidate;
+    extraction.captureId = captureId || null;
+    return true;
   }
 
   function normalizeForComparison(text) {

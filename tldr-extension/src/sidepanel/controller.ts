@@ -425,6 +425,20 @@ export class PanelController {
     ) {
       return;
     }
+    if (this.sourceType !== "chrome-pdf" && this.tabId != null) {
+      this.highlightEpoch++;
+      this.highlightedTarget = null;
+      void chrome.runtime
+        .sendMessage({
+          type: "clear-tab-highlights",
+          tabId: this.tabId,
+        })
+        .then((result) => {
+          if (result?.ok !== false) this.showToast("Highlights cleared.");
+        })
+        .catch(() => undefined);
+      return;
+    }
     this.highlightEpoch++;
     const pendingPdfHighlight = this.pendingPdfHighlight;
     this.pendingPdfHighlight = null;
@@ -561,14 +575,16 @@ export class PanelController {
     await this.onAttributionClick(
       resolved.start,
       resolved.end,
-      message.source
+      message.source,
+      message.attribution.document
     );
   };
 
   onAttributionClick = async (
     start: number,
     end: number,
-    source: HighlightSource
+    source: HighlightSource,
+    documentText = this.context
   ) => {
     if (
       source.tabId == null ||
@@ -606,7 +622,7 @@ export class PanelController {
               type: "highlight-pdf-source",
               tabId: source.tabId,
               url: source.url,
-              document: this.context,
+              document: documentText,
               start,
               end,
               highlightId,
@@ -617,6 +633,7 @@ export class PanelController {
                 type: "highlight",
                 start,
                 end,
+                document: documentText,
                 captureId: source.captureId,
                 highlightId,
               },
