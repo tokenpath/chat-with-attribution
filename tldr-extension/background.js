@@ -106,7 +106,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   const intent =
     info.menuItemId === MENU_ID
       ? "ask"
-      : LEGACY_MENU_INTENTS.get(info.menuItemId);
+      : LEGACY_MENU_INTENTS.get(String(info.menuItemId));
   if (!intent || !tab || tab.id == null) return;
   return captureAndOpen(intent, info, tab);
 });
@@ -175,11 +175,16 @@ async function captureAndOpen(intent, info, tab, openPanel = true) {
               info.forceFullPage === true
             );
   if (latestCaptureByTab.get(tabId) !== captureId) return;
+  // The frame's own report of what it captured wins over the click's intent:
+  // it may have had an exact selection snapshotted, and a top-level YouTube
+  // watch page answers a full-page capture with the video's subtitle
+  // transcript rather than the shell rendered around the player.
   const effectiveCaptureMode =
     !isChromePdf &&
     captureMode === "full-page" &&
-    extraction.captureMode === "selection"
-      ? "selection"
+    (extraction.captureMode === "selection" ||
+      extraction.captureMode === "video-transcript")
+      ? extraction.captureMode
       : captureMode;
   const payload = {
     captureId,
@@ -192,11 +197,19 @@ async function captureAndOpen(intent, info, tab, openPanel = true) {
     text: extraction.text || "",
     error: extraction.error || null,
     truncated: extraction.truncated === true,
+    // A watch page whose captions could not be read falls back to page text;
+    // the panel says so rather than silently summarising the page shell.
+    transcriptUnavailable: extraction.transcriptUnavailable === true,
     sourceType: isChromePdf ? PDF_SOURCE_TYPE : "page",
     url: tab.url || info.pageUrl || null,
   };
 
-  await chrome.storage.session.set({ [seedKey(tabId)]: payload });
+  // `seededAt` stamps the write itself (capturedAt is the click). A panel that
+  // opens much later can expire a seed the user has moved on from. One key per
+  // tab, written with `set`, so a new capture replaces the previous seed whole.
+  await chrome.storage.session.set({
+    [seedKey(tabId)]: { ...payload, seededAt: Date.now() },
+  });
   if (latestCaptureByTab.get(tabId) !== captureId) return;
 
   // Notify the panel if it's already listening. Ignore "no receiver" errors.

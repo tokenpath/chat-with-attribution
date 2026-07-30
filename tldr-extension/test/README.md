@@ -1,8 +1,8 @@
 # Tests
 
-The suite has pure/unit coverage for offset math, summary policy, and background
-capture orchestration, plus Playwright integration coverage for the side panel
-and real content script.
+The suite has pure/unit coverage for offset math, summary policy, page-chat URL
+identity, and background capture orchestration, plus Playwright integration
+coverage for the side panel and the real content script.
 
 From `tldr-extension/`, build the packaged panel and run everything:
 
@@ -12,23 +12,40 @@ npm run setup:test # first run on a machine
 npm test
 ```
 
+`npm test` is `npm run check` (typecheck, the `checkJs` pass over the build-free
+scripts, and the Vite build) followed by the unit and browser suites.
+`setup:test` installs Chromium and runs `setup-libs.sh`, which is a no-op
+outside Debian/Ubuntu — running it on macOS is safe and does nothing.
+
+CI additionally verifies that the committed `sidepanel/panel.js` and
+`sidepanel/panel.css` match a fresh build of `src/`. A change under
+`src/sidepanel/` that is committed without its rebuilt bundle fails the build.
+
 ## Unit suite
 
 ```bash
 npm run test:unit
 ```
 
-This runs five files:
+This is a glob over `test/*.test.cjs`, so a new file is picked up by adding it.
+The files today:
 
-- **`roundtrip.test.cjs`** checks canonical extraction offsets against raw DOM
-  offsets, including synthetic block separators, headings, and exact
+- **`roundtrip.test.cjs`** evaluates the real `content.js` in a `vm` sandbox and
+  drives the helpers it exports through `globalThis.__tldrTestHooks`, which the
+  harness creates before evaluation — the script stays inert on a real page,
+  which the suite also asserts. It checks canonical extraction offsets against
+  raw DOM offsets, including synthetic block separators, headings, and exact
   sub-sentence ranges without sentence expansion.
-- **`panel-logic.test.cjs`** checks the 24-word automatic-summary cutoff,
-  the absence of a low automatic-summary output cap, code-point-safe truncation
-  around emoji, TokenPath code-point to browser
-  UTF-16 offset conversion, whitespace-free CJK handling, and the service-parity
-  heatmap resolver across sparse mass, weak-token gaps, repeated source text,
-  missing mass, and emoji.
+- **`panel-logic.test.cjs`** checks the 24-word concise-source cutoff, the
+  absence of a low summary output cap, code-point-safe truncation around emoji,
+  TokenPath code-point to browser UTF-16 offset conversion, CJK-dominant
+  handling, and the service-parity heatmap resolver across sparse mass,
+  weak-token gaps, repeated source text, missing mass, and emoji.
+- **`controller-urls.test.cjs`** pins page identity: a plain `#section` anchor, a
+  `:~:text=` directive, and PDF `#page`/`#zoom` anchors all keep one document
+  and one page-chat key, while a different path or query string does not. It
+  also covers tracking-parameter stripping and the agreement between the cache
+  key and the navigation guard.
 - **`api-clients.test.cjs`** exercises TokenPath's named generation SSE across
   byte-fragmented Unicode, terminal and error events, malformed/incomplete
   streams, caller cancellation, canonical `done.answer`, HTTP error details,
@@ -41,15 +58,14 @@ This runs five files:
 - **`background.test.cjs`** holds `chrome.sidePanel.open()` unresolved and proves
   that capture still proceeds immediately. It also verifies exact-frame warm
   injection, retries for missing receivers and stale “page changed” responses,
-  Gmail or nested-frame routing, click-order race handling, seed metadata, and
-  startup migration from the older single context-menu item to a **TokenPath**
-  submenu with **TLDR**, **Simplify**, and **Ask a question** actions.
-  Native-PDF coverage includes legacy and modern OOPIF detection, direct
-  context-menu capture, full-document descriptor routing for no-selection
-  clicks, exact-frame full-page HTML routing for all three actions,
-  bounded/contextual text-fragment encoding (including Unicode and reserved grammar),
-  URL-commit-before-reload ordering, and clearing highlights without losing
-  ordinary PDF anchors.
+  Gmail or nested-frame routing, click-order race handling, seed metadata
+  (including `capturedAt` and `seededAt`), and startup migration from the older
+  context-menu items to the single **Chat with TokenPath** item. Native-PDF
+  coverage includes legacy and modern OOPIF detection, direct context-menu
+  capture, full-document descriptor routing for no-selection clicks,
+  exact-frame full-page HTML routing, bounded/contextual text-fragment encoding
+  (including Unicode and reserved grammar), URL-commit-before-reload ordering,
+  and clearing highlights without losing ordinary PDF anchors.
 
 ## Browser integration
 
@@ -57,27 +73,28 @@ This runs five files:
 npm run test:e2e
 ```
 
-`e2e.mjs` loads representative fixtures and public pages, injects the real
-scripts behind a small Chrome API shim, and drives selection → **TokenPath**
-submenu action → capture → optional streaming generation → cached heatmap →
-arbitrary answer selection → source-offset highlight. TLDR summarizes,
-Simplify explains in plainer language, and Ask a question makes no generation
-or attribution request until the composer is submitted. It covers:
+`e2e.mjs` loads representative fixtures, injects the real scripts behind a small
+Chrome API shim, and drives capture → optional streaming generation → cached
+heatmap → phrase click, **Sources** list, or arbitrary answer selection →
+source-offset highlight. It covers:
 
-- side-panel bootstrap while `/credits` never resolves, persisted Short /
-  Medium / Detailed summary length and generation headroom, a messages-only TokenPath
-  `/v1/generate` request, split named SSE
-  events, one TokenPath heatmap per answer, and reuse of that heatmap across
-  different answer selections; exact raw-answer mapping across inline/fenced
-  and indented code, real mouse selection in link labels, bold delimiters,
-  block crossings, decoded entities, footnote definitions, hidden link
-  destinations/image alt text, repeated text, and Unicode; serialized
-  disconnect/key removal so a late delete cannot race a reconnect;
-  collapsed-by-default source text with accessible expansion, automatic
-  recollapse on replacement, always-visible capture errors, narrow-panel
-  layout, system/light/dark theme switching, code-point offset conversion
-  across a LinkedIn-shaped emoji, stale-seed rejection, and routing the resolved
-  source range to the original tab and frame;
+- side-panel bootstrap while `/credits` never resolves; a capture that waits
+  instead of generating; the **Summarize** starter and the persisted Short /
+  Medium / Detailed length driving the requested detail and generation headroom;
+  the already-concise note suppressing the starter; a messages-only TokenPath
+  `/v1/generate` request, split named SSE events, one TokenPath heatmap per
+  answer, and reuse of that heatmap across different answer selections; exact
+  raw-answer mapping across inline/fenced and indented code, real mouse
+  selection in link labels, bold delimiters, block crossings, decoded entities,
+  footnote definitions, hidden link destinations/image alt text, repeated text,
+  and Unicode; serialized disconnect/key removal so a late delete cannot race a
+  reconnect; collapsed-by-default source text with accessible expansion,
+  automatic recollapse on replacement, always-visible capture errors,
+  narrow-panel layout, system/light/dark theme switching, code-point offset
+  conversion across a LinkedIn-shaped emoji, stale-seed rejection, and routing
+  the resolved source range to the original tab and frame;
+- stopping a streaming answer and keeping the partial text marked incomplete,
+  plus the keyboard path through the **Sources** list;
 - delayed auth cleanup after a newer capture, out-of-order credit reads, rapid
   answer-selection responses, and content-script highlight ownership, proving
   stale async work cannot write into or clear newer UI state, plus side-panel
@@ -93,6 +110,10 @@ or attribution request until the composer is submitted. It covers:
   visible non-selectable text, excludes hidden/script/style text, safely caps a
   surrogate-boundary prefix, and preserves repeated-phrase attribution after a
   DOM replacement;
+- **Page-reload attribution recovery**: a refreshed tab throws away the content
+  script's node map, and the highlight still resolves from the cached document's
+  quote and bounded context — while a genuinely changed or removed passage fails
+  instead of highlighting the wrong text;
 - a Gmail-shaped nested scroll pane whose complete message subtree is replaced
   between capture and highlight, including repeated text and inline elements;
 - a WhatsApp-shaped selection spanning link-preview text and a later image
@@ -114,7 +135,8 @@ or attribution request until the composer is submitted. It covers:
   when the originally attributed occurrence changes;
 - duplicated generic element IDs falling back to page-level contextual
   disambiguation instead of trusting the first invalid-ID match;
-- rejection after query/hash route identity changes;
+- rejection after query route identity changes, and *acceptance* across
+  fragment-only changes, which are scroll position rather than a new document;
 - exact Range capture when Chrome's flattened selection hint omits an invisible
   character, followed by clearing the native page selection without losing
   later heatmap-resolved highlighting;
@@ -122,13 +144,24 @@ or attribution request until the composer is submitted. It covers:
   CSS-uppercase dates, `user-select:none` reaction controls, and a visibly
   rendered `aria-hidden` ancestor;
 - current X Article DraftJS selectors and blocks, repeated text, and a full
-  article subtree rerender;
+  article subtree rerender; and
 - X post identity across detach and reorder when another post contains the same
-  text, plus rejection of a connected React Text node whose contents changed;
-- a live public X post body, including a React-rendered span replacement; and
-- single-node and multi-block extraction and highlighting on Example,
-  Wikipedia, GNU, MDN, Hacker News, the live FLUX 3 article, a live Substack
-  post, and a live X profile.
+  text, plus rejection of a connected React Text node whose contents changed.
+
+### Live public sites
+
+The checks against real third-party pages (Example, Wikipedia, GNU, MDN, Hacker
+News, a live Substack post, a live X profile and post) are **skipped by
+default** — third-party markup and network availability change independently of
+this extension. Run them explicitly:
+
+```bash
+E2E_LIVE_SITES=1 npm run test:e2e
+```
+
+CI runs them on a nightly schedule, and on demand through the workflow's
+`live_sites` dispatch input. The deterministic fixtures above always run, on
+every push and pull request, and a fixture failure sets a nonzero exit code.
 
 To run both levels:
 
@@ -140,32 +173,36 @@ npm test
 
 Headless Chromium may need `libgbm.so.1` and `libwayland-server.so.0`.
 `setup-libs.sh` downloads and extracts them without root into `_libs/flat/`, and
-`e2e.mjs` adds that directory to `LD_LIBRARY_PATH`. If system installation is
-available, `npx playwright install-deps chromium` is the standard alternative.
+`e2e.mjs` adds that directory to `LD_LIBRARY_PATH`. On macOS, Windows, or
+non-apt Linux the script prints a skip line and exits 0. If system installation
+is available, `npx playwright install-deps chromium` is the standard
+alternative.
 
 ## Still manual
 
 The tests mock rather than launch a packaged Chrome extension, so a final
-load-unpacked pass should first verify that the **TokenPath** submenu exposes
-**TLDR**, **Simplify**, and **Ask a question**. Confirm that TLDR summarizes,
-Simplify starts a plain-language explanation, and Ask a question opens a
-captured chat without a generation or attribution request until submit. The
-pass should also verify the
-side panel, TokenPath HTTP/authentication flow, streamed Markdown, selecting
-arbitrary answer text to navigate, repeated selections without new attribution
-calls, nested Gmail scrolling, detached-DOM unique remapping, and searchable-PDF
-selection or full-document capture/highlight/clear behavior. Also right-click
-ordinary HTML without a selection and verify that the panel labels and
-attributes the entire rendered page. Restricted pages
-such as `chrome://` remain unavailable to content scripts by design; PDFs are
-handled separately through Chrome's native viewer. The PDF pass should use a
-top-level searchable file, first right-click without a selection and confirm
-that the hidden-copy read leaves the visible viewer untouched, then confirm that
-the native viewer finds an attributed span (including a repeated phrase with
-context). Inspect Back/Clear behavior because Chrome records fragment
-navigation in session history. An embedded PDF should remain unsupported
-without navigating or reloading its outer page.
+load-unpacked pass should verify the real entry points: the context menu offers
+exactly one item, **Chat with TokenPath**, on a selection and on a page with no
+selection, and the toolbar icon opens the panel for the current tab. Confirm
+that neither one generates anything on its own, that the **Summarize** starter
+runs a summary at the selected length, that a short source shows the “Already
+concise” note instead (with no starter beside it), and that **Stop** during a
+stream leaves the partial answer marked incomplete.
 
-Deterministic fixture failures set a nonzero exit code. Public-site smoke checks
-remain diagnostic because network availability and third-party markup can
-change independently of the extension.
+The pass should also verify the side panel, TokenPath HTTP/authentication flow,
+streamed Markdown, the three ways into attribution (clicking an underlined
+phrase, the **Sources** list by keyboard, and selecting answer text), repeated
+selections without new attribution calls, nested Gmail scrolling, detached-DOM
+unique remapping, chat restore after leaving and returning to a page, working
+attribution after a page refresh, and searchable-PDF selection or full-document
+capture/highlight/clear behavior. Check that **Clear chat** affects only the
+current page and that **Disconnect** clears every saved chat.
+
+Restricted pages such as `chrome://` remain unavailable to content scripts by
+design; PDFs are handled separately through Chrome's native viewer. The PDF pass
+should use a top-level searchable file, first invoke TokenPath without a
+selection and confirm that the hidden-copy read leaves the visible viewer
+untouched, then confirm that the native viewer finds an attributed span
+(including a repeated phrase with context). Inspect Back/Clear behavior because
+Chrome records fragment navigation in session history. An embedded PDF should
+remain unsupported without navigating or reloading its outer page.

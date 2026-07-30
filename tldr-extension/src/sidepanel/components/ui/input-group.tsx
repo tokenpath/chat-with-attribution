@@ -1,7 +1,7 @@
 import type {
   ButtonHTMLAttributes,
+  ComponentProps,
   HTMLAttributes,
-  TextareaHTMLAttributes,
 } from "react";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -25,7 +25,7 @@ export function InputGroup({
 export function InputGroupTextarea({
   className,
   ...props
-}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+}: ComponentProps<"textarea">) {
   return (
     <textarea
       className={cn(

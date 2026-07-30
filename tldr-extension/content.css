@@ -1,9 +1,24 @@
 /* TokenPath — highlight style for the CSS Custom Highlight API.
-   No DOM is mutated, so the node map stays valid across repeated highlights. */
+   No DOM is mutated, so the node map stays valid across repeated highlights.
+   content.js measures the backdrop luminance behind each attributed range and
+   registers the highlight under the matching name; page text is never used to
+   build a selector or a property value. */
 ::highlight(tldr-attrib) {
   background-color: rgba(255, 212, 0, 0.45);
   color: inherit;
   text-decoration: underline;
   text-decoration-color: rgba(190, 130, 0, 0.9);
+  text-decoration-thickness: 2px;
+}
+
+/* On a dark backdrop the light palette composites to a murky olive with a
+   barely visible underline. A brighter gold reads as a highlight against the
+   page while staying dark enough for the page's own light text, and the
+   underline flips to a light amber. */
+::highlight(tldr-attrib-dark) {
+  background-color: rgba(255, 214, 64, 0.38);
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 231, 148, 0.95);
   text-decoration-thickness: 2px;
 }

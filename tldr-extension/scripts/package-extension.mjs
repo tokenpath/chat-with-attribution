@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,7 +21,12 @@ const archiveName =
   `tokenpath-chat-with-attribution-${manifest.version}.zip`;
 const distDir = join(extensionRoot, "dist");
 const archivePath = join(distDir, archiveName);
-const stagingDir = await mkdtemp(join(tmpdir(), "tokenpath-extension-"));
+
+// Fixed archive timestamp. Info-ZIP writes DOS date/time from each entry's
+// local-time mtime, so the child process also runs with TZ=UTC. Together with
+// -X, -D, and a sorted entry list, the printed SHA-256 is re-derivable from
+// the same sources on any machine.
+const ARCHIVE_TIMESTAMP = new Date("2020-01-01T00:00:00Z");
 
 const runtimeFiles = [
   "background.js",
@@ -37,6 +43,86 @@ const runtimeFiles = [
   "sidepanel/tokenpath.js",
 ];
 
+// manifest.json cannot carry comments, so the host-permission policy lives
+// here.
+//
+// The store package deliberately keeps the blanket <all_urls> host permission.
+// The declared <all_urls> content script already carries the identical "read
+// and change all your data on all websites" install warning and store review
+// weight, so dropping the host permission gains nothing user-visible — and it
+// breaks features that genuinely depend on it:
+//   * `tabs.Tab.url` visibility outside a gesture (Chrome omits `url` from
+//     `tabs.query`/`tabs.onUpdated` without host access), which per-page chat
+//     restore, navigation invalidation, and stale-seed checks all read;
+//   * the credentialed full-PDF download in src/sidepanel/pdf-text-extractor.ts
+//     (cross-origin fetch from the side panel comes from host_permissions;
+//     activeTab does not cover it);
+//   * `chrome.scripting` injection into tabs that predate an extension reload,
+//     when no fresh gesture has occurred (automatic capture on tab switch).
+// Network access to TokenPath itself is separately constrained by the
+// base-URL allowlist in sidepanel/tokenpath.js.
+const STORE_HOST_PERMISSIONS = ["<all_urls>", "https://api.tokenpath.ai/*"];
+const DEVELOPMENT_HOST_PERMISSIONS = [
+  "https://api-staging.tokenpath.ai/*",
+  "http://localhost:8000/*",
+  "http://127.0.0.1:8000/*",
+];
+
+function storeHostPermissions(declared) {
+  if (!Array.isArray(declared)) {
+    throw new Error(
+      'manifest.json "host_permissions" must be an array; refusing to guess ' +
+        "what the store package should request."
+    );
+  }
+
+  const known = new Set([
+    ...STORE_HOST_PERMISSIONS,
+    ...DEVELOPMENT_HOST_PERMISSIONS,
+  ]);
+  const unexpected = declared.filter((permission) => !known.has(permission));
+  if (unexpected.length) {
+    throw new Error(
+      `Unrecognized host permission(s) in manifest.json: ${unexpected.join(
+        ", "
+      )}\n` +
+        "Add each one to STORE_HOST_PERMISSIONS or " +
+        "DEVELOPMENT_HOST_PERMISSIONS in scripts/package-extension.mjs and " +
+        "update the store listing's permission justifications. Refusing to " +
+        "ship an undocumented host permission."
+    );
+  }
+
+  const missing = STORE_HOST_PERMISSIONS.filter(
+    (permission) => !declared.includes(permission)
+  );
+  if (missing.length) {
+    throw new Error(
+      `manifest.json is missing required host permission(s): ${missing.join(
+        ", "
+      )}`
+    );
+  }
+
+  // Development endpoints stay available to unpacked local builds only.
+  return [...STORE_HOST_PERMISSIONS];
+}
+
+function requireZip() {
+  const probe = spawnSync("zip", ["-v"], { encoding: "utf8" });
+  if (probe.error?.code === "ENOENT" || probe.status === null) {
+    throw new Error(
+      "The `zip` command was not found on PATH. Install Info-ZIP " +
+        "(macOS: preinstalled or `brew install zip`; Debian/Ubuntu: " +
+        "`sudo apt-get install zip`) and re-run `npm run package:store`."
+    );
+  }
+}
+
+requireZip();
+const hostPermissions = storeHostPermissions(manifest.host_permissions);
+const stagingDir = await mkdtemp(join(tmpdir(), "tokenpath-extension-"));
+
 try {
   for (const relativePath of runtimeFiles) {
     const destination = join(stagingDir, relativePath);
@@ -44,25 +130,39 @@ try {
     await copyFile(join(extensionRoot, relativePath), destination);
   }
 
-  // Development endpoints stay available to unpacked local builds, but the
-  // Web Store package keeps page access for automatic tab capture and requests
-  // API access only to TokenPath's production endpoint.
-  manifest.host_permissions = manifest.host_permissions.filter(
-    (permission) =>
-      permission === "<all_urls>" ||
-      permission === "https://api.tokenpath.ai/*"
-  );
+  manifest.host_permissions = hostPermissions;
   await writeFile(
     join(stagingDir, "manifest.json"),
     `${JSON.stringify(manifest, null, 2)}\n`
   );
 
+  // Sorted entries + normalized mtimes keep the archive byte-identical across
+  // runs and machines.
+  const archiveEntries = [...runtimeFiles, "manifest.json"].sort();
+  for (const relativePath of archiveEntries) {
+    await utimes(
+      join(stagingDir, relativePath),
+      ARCHIVE_TIMESTAMP,
+      ARCHIVE_TIMESTAMP
+    );
+  }
+
   await mkdir(distDir, { recursive: true });
   await rm(archivePath, { force: true });
-  const result = spawnSync("zip", ["-q", "-r", archivePath, "."], {
-    cwd: stagingDir,
-    encoding: "utf8",
-  });
+  // -X drops uid/gid and platform extra fields (and macOS __MACOSX entries),
+  // -D omits directory entries, and the explicit sorted list fixes entry order.
+  const result = spawnSync(
+    "zip",
+    ["-q", "-X", "-D", archivePath, ...archiveEntries],
+    {
+      cwd: stagingDir,
+      encoding: "utf8",
+      env: { ...process.env, TZ: "UTC" },
+    }
+  );
+  if (result.error?.code === "ENOENT") {
+    throw new Error("The `zip` command was not found on PATH.");
+  }
   if (result.status !== 0) {
     throw new Error(result.stderr || "zip failed");
   }
@@ -70,6 +170,7 @@ try {
     .update(await readFile(archivePath))
     .digest("hex");
   console.log(`Created dist/${basename(archivePath)}`);
+  console.log(`Store host_permissions: ${hostPermissions.join(", ")}`);
   console.log(`SHA-256 ${digest}`);
 } finally {
   await rm(stagingDir, { recursive: true, force: true });

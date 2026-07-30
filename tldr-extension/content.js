@@ -8,10 +8,17 @@
   // scripting.executeScript). A versioned marker lets a fresh script replace a
   // stale isolated-world listener after an unpacked extension reload.
   const CONTENT_VERSION = "2026-07-29.1";
-  if (window.__tldrContentLoaded === CONTENT_VERSION) return;
-  window.__tldrContentLoaded = CONTENT_VERSION;
+  const tldrWindow = /** @type {Window & { __tldrContentLoaded?: string }} */ (
+    window
+  );
+  if (tldrWindow.__tldrContentLoaded === CONTENT_VERSION) return;
+  tldrWindow.__tldrContentLoaded = CONTENT_VERSION;
 
   const HL_NAME = "tldr-attrib";
+  const HL_NAME_DARK = "tldr-attrib-dark";
+  // Below this relative luminance the backdrop behind an attribution is dark
+  // enough that the light-page highlight palette turns into murky olive.
+  const DARK_BACKDROP_LUMINANCE = 0.4;
   const QUOTE_CONTEXT_LENGTH = 48;
   const MAX_QUOTE_MATCHES = 256;
   const MAX_QUOTE_SOURCE_LENGTH = 500_000;
@@ -20,6 +27,25 @@
   const MAX_FULL_PAGE_RAW_SOURCE_LENGTH = 2_000_000;
   const MAX_FULL_PAGE_MAP_ENTRIES = 50_000;
   const MAX_FULL_PAGE_TEXT_NODES = 100_000;
+
+  // YouTube's time parameters move the playhead inside one video rather than
+  // naming a different document, so they are excluded from route identity.
+  // chat-cache.ts applies the identical host-scoped rule to the page-chat key
+  // and the navigation guard; the two must agree.
+  const YOUTUBE_TIME_PARAMETERS = ["t", "start", "time_continue"];
+  const TRANSCRIPT_TIMEOUT_MS = 8_000;
+  const MAX_TRANSCRIPT_BODY_LENGTH = 20_000_000;
+  const MAX_WATCH_PAGE_SCAN_LENGTH = 8_000_000;
+  const MAX_TRANSCRIPT_CUES = 40_000;
+  const MAX_PANEL_NODES = 400_000;
+  const MAX_PANEL_DEPTH = 48;
+  const TRANSCRIPT_PANEL_ID = "PAmodern_transcript_view";
+  // The watch page publishes its InnerTube app version inline. If that read
+  // ever fails, a recent known-good version is tried rather than giving up —
+  // the endpoint tolerates a slightly stale client version.
+  const TRANSCRIPT_CLIENT_VERSION_FALLBACK = "2.20260729.00.00";
+  const SEEK_INDICATOR_ID = "tokenpath-transcript-seek-indicator";
+  const SEEK_INDICATOR_MS = 2_400;
 
   // The live Range snapshotted at contextmenu time (before the menu click can
   // collapse the visible selection).
@@ -30,15 +56,24 @@
   //   { start, end, node, rawOffsets }
   // where start/end are offsets into `text`, and rawOffsets[i] is the raw
   // node.data offset of the extraction char at position (start + i).
+  //
+  // A YouTube watch-page capture is the same kind of state in the same place:
+  // `videoTranscript: true`, an empty node map, and a private cue table
+  //   { start, end, tStartMs }
+  // whose start/end are UTF-16 offsets into `text`. Like the node map, the cue
+  // table NEVER crosses the message boundary — only the plain transcript text
+  // travels to the panel and the API.
   let extraction = null;
 
   let highlight = null;
   let activeHighlightId = null;
+  let seekIndicator = null;
+  let seekIndicatorTimer = null;
 
   // --- Selection snapshot ---------------------------------------------------
 
   function isActiveInstance() {
-    return window.__tldrContentLoaded === CONTENT_VERSION;
+    return tldrWindow.__tldrContentLoaded === CONTENT_VERSION;
   }
 
   function liveSelectionRange() {
@@ -65,7 +100,11 @@
     // preparing the next context-menu capture separately. Chrome's flattened
     // selectionText is only a hint; Gmail/X can normalize invisible characters
     // differently from the exact DOM Range.
-    if (eagerlyExtract) pendingExtraction = extractFromRange(range);
+    //
+    // This runs on every right-click, including the ones that never reach a
+    // TokenPath menu item, so the expensive scope/block quote contexts are
+    // deferred until a capture message actually arrives.
+    if (eagerlyExtract) pendingExtraction = extractFromRange(range, true);
   }
 
   function sameRange(a, b) {
@@ -128,7 +167,7 @@
           const hinted = extractFromTextHint(msg.selectionText);
           if (!hinted.error) candidate = hinted;
         }
-        extraction = candidate;
+        extraction = ensureQuoteContexts(candidate);
         clearHighlight();
         extraction.captureId = msg.captureId || null;
         // The exact DOM map is now owned by `extraction`; the browser's native
@@ -146,8 +185,30 @@
             : extractFromRange(liveSelectionRange());
         pendingExtraction = null;
         const capturedSelection = !exactContextSelection.error;
+        // A YouTube watch page's document is what was said, not the shell
+        // rendered around the player. A selection is still a selection: only
+        // the full-page path becomes a transcript capture.
+        if (!capturedSelection && isVideoTranscriptFrame()) {
+          captureVideoTranscript()
+            .catch(() => null)
+            .then((transcript) => {
+              if (!isActiveInstance()) return;
+              extraction = transcript || extractFullPage();
+              clearHighlight();
+              extraction.captureId = msg.captureId || null;
+              respond(sendResponse, {
+                captureMode: transcript ? "video-transcript" : "full-page",
+                text: extraction.text,
+                error: extraction.error,
+                truncated: extraction.truncated === true,
+                // The panel says why it is showing page text for a video.
+                transcriptUnavailable: !transcript,
+              });
+            });
+          return true;
+        }
         extraction = capturedSelection
-          ? exactContextSelection
+          ? ensureQuoteContexts(exactContextSelection)
           : extractFullPage();
         clearHighlight();
         extraction.captureId = msg.captureId || null;
@@ -161,29 +222,69 @@
         break;
       }
       case "highlight": {
-        if (
-          msg.captureId &&
-          msg.captureId !== extraction?.captureId &&
-          typeof msg.document === "string" &&
-          msg.document
-        ) {
-          restoreExtractionForHighlight(msg.document, msg.captureId);
+        const cachedDocument =
+          typeof msg.document === "string" ? msg.document : "";
+        // A capture this frame does not hold — a content script that reloaded
+        // with its page, or one a newer capture has already replaced — has no
+        // live map to trust and none to protect. Only then may the cached
+        // source document stand in for the lost extraction.
+        const foreignCapture =
+          !extraction ||
+          Boolean(msg.captureId && msg.captureId !== extraction.captureId);
+
+        // A transcript capture resolves to a caption cue and seeks the player.
+        // There is no DOM range to paint, and no cue means no citation.
+        if (!foreignCapture && extraction?.videoTranscript) {
+          const seeked = seekToTranscriptSpan(msg.start, msg.end);
+          if (seeked) activeHighlightId = messageHighlightId(msg);
+          sendResponse({ ok: seeked });
+          break;
         }
-        const ok =
+        // After a reload this frame holds no cue table at all. Rebuild it on
+        // demand — the same lazy pattern restoreExtractionForHighlight uses
+        // for a lost node map — before falling back to page-text recovery.
+        if (foreignCapture && cachedDocument && isVideoTranscriptFrame()) {
+          restoreTranscriptForHighlight(cachedDocument, msg.captureId)
+            .catch(() => false)
+            .then((restored) => {
+              if (!isActiveInstance()) return;
+              const ok = restored
+                ? seekToTranscriptSpan(msg.start, msg.end)
+                : highlightFromCachedDocument(cachedDocument, msg);
+              if (ok) activeHighlightId = messageHighlightId(msg);
+              respond(sendResponse, { ok });
+            });
+          return true;
+        }
+
+        if (foreignCapture && cachedDocument) {
+          restoreExtractionForHighlight(cachedDocument, msg.captureId);
+        }
+        let ok =
           (!msg.captureId || msg.captureId === extraction?.captureId) &&
           highlightRange(msg.start, msg.end);
-        if (ok) {
-          activeHighlightId =
-            typeof msg.highlightId === "string" && msg.highlightId
-              ? msg.highlightId
-              : null;
+        // Restoring the whole map above needs the reloaded page to still match
+        // the cached document exactly, and one live counter, ad slot, or
+        // relative timestamp anywhere on the page is enough to break that.
+        // Locating a single attributed quote never needed the whole document.
+        if (!ok && foreignCapture && cachedDocument) {
+          ok = highlightDocumentQuote(cachedDocument, msg.start, msg.end);
         }
+        if (ok) activeHighlightId = messageHighlightId(msg);
         sendResponse({ ok });
         break;
       }
       case "clear-highlight": {
+        // A highlight id is minted per attribution click and recorded only
+        // after this frame applied that exact highlight, so it proves
+        // ownership by itself — including for a highlight recovered from the
+        // cached document, where this frame holds no capture to compare.
+        const ownsHighlight =
+          Boolean(msg.highlightId) && msg.highlightId === activeHighlightId;
         const captureMatches =
-          !msg.captureId || msg.captureId === extraction?.captureId;
+          ownsHighlight ||
+          !msg.captureId ||
+          msg.captureId === extraction?.captureId;
         const highlightMatches =
           !msg.highlightId || msg.highlightId === activeHighlightId;
         const ok = captureMatches && highlightMatches;
@@ -208,6 +309,32 @@
       // Visual cleanup is best-effort and must never turn a valid capture into
       // a failed one on an unusual document implementation.
     }
+  }
+
+  function messageHighlightId(msg) {
+    return typeof msg.highlightId === "string" && msg.highlightId
+      ? msg.highlightId
+      : null;
+  }
+
+  // An asynchronous handler can finish after the panel that asked has gone
+  // away. A closed message port is not a capture failure.
+  function respond(sendResponse, payload) {
+    try {
+      sendResponse(payload);
+    } catch (e) {
+      // The requester is gone; nothing to report to.
+    }
+  }
+
+  // The page-text half of the reload recovery path, shared by the ordinary and
+  // transcript highlight branches.
+  function highlightFromCachedDocument(cachedDocument, msg) {
+    restoreExtractionForHighlight(cachedDocument, msg.captureId);
+    return (
+      highlightRange(msg.start, msg.end) ||
+      highlightDocumentQuote(cachedDocument, msg.start, msg.end)
+    );
   }
 
   // --- Extraction -----------------------------------------------------------
@@ -252,7 +379,12 @@
     };
   }
 
-  function extractFromRange(range) {
+  // `deferQuoteContexts` keeps the eager contextmenu snapshot cheap: the exact
+  // Range, its normalized text, and its node map are captured immediately,
+  // while the two extra full-subtree passes that collect quote contexts wait
+  // for ensureQuoteContexts(). The capture message arrives milliseconds later,
+  // with the same live DOM.
+  function extractFromRange(range, deferQuoteContexts = false) {
     if (!range) {
       return {
         text: "",
@@ -338,8 +470,24 @@
     }
     const anchor = makeRangeAnchor(range);
     attachAnchorPaths(map, anchor);
-    attachScopeQuoteContexts(map, anchor);
-    return { text, map, error: null, anchor };
+    if (!deferQuoteContexts) attachScopeQuoteContexts(map, anchor);
+    return {
+      text,
+      map,
+      error: null,
+      anchor,
+      pendingQuoteContexts: deferQuoteContexts,
+    };
+  }
+
+  // Attach the deferred quote contexts of an eager contextmenu snapshot. Any
+  // other extraction already carries them (or never had any) and is returned
+  // unchanged.
+  function ensureQuoteContexts(candidate) {
+    if (!candidate?.pendingQuoteContexts || candidate.error) return candidate;
+    candidate.pendingQuoteContexts = false;
+    attachScopeQuoteContexts(candidate.map, candidate.anchor);
+    return candidate;
   }
 
   // Rebuild a page-wide normalized text map only as a mutation fallback. If
@@ -533,8 +681,41 @@
     return (
       location.origin +
       location.pathname +
-      location.search +
+      currentRouteSearch() +
       routeHash
+    );
+  }
+
+  // Query parameters are identity — except the host-scoped exceptions that are
+  // playback position rather than a different document. Kept in lockstep with
+  // chat-cache.ts's stripHostScopedParameters.
+  function currentRouteSearch() {
+    return isYouTubeIdentityHost(location.hostname)
+      ? normalizedYouTubeSearch(location.search)
+      : location.search;
+  }
+
+  function normalizedYouTubeSearch(search) {
+    try {
+      const parameters = new URLSearchParams(String(search || ""));
+      for (const parameter of YOUTUBE_TIME_PARAMETERS) {
+        parameters.delete(parameter);
+      }
+      const normalized = parameters.toString();
+      return normalized ? `?${normalized}` : "";
+    } catch (e) {
+      return String(search || "");
+    }
+  }
+
+  function isYouTubeWatchHost(hostname) {
+    return /^(?:(?:www|m|music)\.)?youtube\.com$/i.test(String(hostname || ""));
+  }
+
+  function isYouTubeIdentityHost(hostname) {
+    return (
+      isYouTubeWatchHost(hostname) ||
+      /^(?:www\.)?youtu\.be$/i.test(String(hostname || ""))
     );
   }
 
@@ -941,6 +1122,574 @@
     return true;
   }
 
+  // --- YouTube transcript capture -------------------------------------------
+  //
+  // A watch page is captured as its subtitle transcript. The panel and the API
+  // see one plain string; the offset -> timestamp cue table stays here, beside
+  // the node map, and an attributed span is answered by seeking the player
+  // rather than by painting a DOM range.
+
+  // Only the top-level watch document owns a player. Embedded players, and the
+  // YouTube iframes scattered across other sites, keep ordinary page capture.
+  function isVideoTranscriptFrame() {
+    try {
+      if (window !== window.top) return false;
+    } catch (e) {
+      return false;
+    }
+    return (
+      isYouTubeWatchHost(location.hostname) &&
+      location.pathname === "/watch" &&
+      Boolean(currentVideoId())
+    );
+  }
+
+  function currentVideoId() {
+    try {
+      const id = new URLSearchParams(location.search).get("v") || "";
+      return /^[\w-]{5,32}$/.test(id) ? id : "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  async function captureVideoTranscript() {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), TRANSCRIPT_TIMEOUT_MS);
+    try {
+      const playerResponse = await currentPlayerResponse(abort.signal);
+      // The player response still advertises caption availability correctly;
+      // only its signed `baseUrl` is unusable (a bare fetch of it, even
+      // in-page with the real session, answers 200 with an empty body under
+      // proof-of-origin enforcement). It is the availability gate, nothing
+      // more — the transcript itself comes from the panel endpoint below,
+      // which returns the video's default track. Track preference therefore
+      // no longer applies.
+      //
+      // When the page says there are no captions, believe it and skip the
+      // request. When the player response could not be read at all, there is
+      // no evidence either way: ask the panel endpoint rather than declaring
+      // a captioned video captionless on the strength of a failed page read.
+      if (playerResponse && !hasCaptionTracks(playerResponse)) return null;
+      const panel = await fetchTranscriptPanel(currentVideoId(), abort.signal);
+      if (!panel) return null;
+      const segments = transcriptSegmentsFrom(panel);
+      if (!segments.length) {
+        // A 200 that parses to nothing means the view-model shape moved.
+        // Say so distinctly: this is the one failure a field report cannot
+        // otherwise distinguish from "this video has no subtitles".
+        console.warn(
+          "[TokenPath] YouTube transcript panel returned 0 segments from a " +
+            "successful response — the get_panel view-model shape may have changed."
+        );
+        return null;
+      }
+      const built = buildTranscriptFromSegments(segments);
+      if (!built.text || !built.cues.length) return null;
+      return {
+        text: built.text,
+        map: [],
+        cues: built.cues,
+        error: null,
+        truncated: built.truncated,
+        videoTranscript: true,
+        routeKey: currentRouteKey(),
+      };
+    } catch (e) {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // `ytInitialPlayerResponse` is served inline in the watch page's HTML, so the
+  // isolated world can read it without any page bridge. It describes whichever
+  // document the tab loaded first, though, and YouTube navigates between
+  // videos in-app: a response whose videoId is not the current `?v=` is stale
+  // and is never used. Re-reading the current watch URL same-origin is the
+  // freshest source available without reaching into the main world.
+  async function currentPlayerResponse(signal) {
+    const inline = readPlayerResponseFromDocument();
+    if (playerResponseMatchesCurrentVideo(inline)) return inline;
+    let response;
+    try {
+      response = await fetch(location.href, {
+        credentials: "same-origin",
+        signal,
+      });
+    } catch (e) {
+      return null;
+    }
+    if (!response.ok) return null;
+    let html;
+    try {
+      html = (await response.text()).slice(0, MAX_WATCH_PAGE_SCAN_LENGTH);
+    } catch (e) {
+      return null;
+    }
+    const refetched = playerResponseFrom(html);
+    return playerResponseMatchesCurrentVideo(refetched) ? refetched : null;
+  }
+
+  function readPlayerResponseFromDocument() {
+    const scripts = document.querySelectorAll("script");
+    for (const script of scripts) {
+      const source = script.textContent || "";
+      if (!source.includes("ytInitialPlayerResponse")) continue;
+      const parsed = playerResponseFrom(source);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
+
+  function playerResponseFrom(text) {
+    const source = String(text || "");
+    for (const marker of [
+      "ytInitialPlayerResponse = ",
+      "ytInitialPlayerResponse=",
+      'ytInitialPlayerResponse"] = ',
+    ]) {
+      const parsed = extractJsonObjectAfter(source, marker);
+      if (parsed && typeof parsed === "object") return parsed;
+    }
+    return null;
+  }
+
+  function playerResponseMatchesCurrentVideo(playerResponse) {
+    const videoId = playerResponse?.videoDetails?.videoId;
+    const current = currentVideoId();
+    return Boolean(current) && videoId === current;
+  }
+
+  // The assignment is followed by a JSON object that routinely contains braces
+  // inside strings, so a regular expression cannot bound it. Scan for the
+  // balanced closing brace instead, honouring string and escape state.
+  function extractJsonObjectAfter(text, marker) {
+    const markerIndex = text.indexOf(marker);
+    if (markerIndex < 0) return null;
+    const start = text.indexOf("{", markerIndex + marker.length);
+    if (start < 0) return null;
+    const limit = Math.min(text.length, start + MAX_WATCH_PAGE_SCAN_LENGTH);
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < limit; index++) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') {
+        inString = true;
+      } else if (character === "{") {
+        depth++;
+      } else if (character === "}") {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(text.slice(start, index + 1));
+          } catch (e) {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  // Availability only. The player response is untrusted page data and nothing
+  // in it is fetched, rendered, or used to build a selector.
+  function hasCaptionTracks(playerResponse) {
+    const tracks =
+      playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    return (
+      Array.isArray(tracks) &&
+      tracks.some(
+        (track) => track && typeof track.baseUrl === "string" && track.baseUrl
+      )
+    );
+  }
+
+  // The transcript comes from the watch page's own transcript panel, requested
+  // exactly the way the page requests it: same-origin, session cookies, and a
+  // minimal WEB client context. No API key, visitor data, or proof-of-origin
+  // token is involved.
+  async function fetchTranscriptPanel(videoId, signal) {
+    const params = transcriptPanelParams(videoId);
+    if (!params) return null;
+    const detected = innertubeClientVersion();
+    const versions =
+      detected && detected !== TRANSCRIPT_CLIENT_VERSION_FALLBACK
+        ? [detected, TRANSCRIPT_CLIENT_VERSION_FALLBACK]
+        : [TRANSCRIPT_CLIENT_VERSION_FALLBACK];
+    for (const clientVersion of versions) {
+      const panel = await requestTranscriptPanel(params, clientVersion, signal);
+      if (panel) return panel;
+      if (signal?.aborted) return null;
+    }
+    return null;
+  }
+
+  async function requestTranscriptPanel(params, clientVersion, signal) {
+    // Built from location.origin so the request stays same-origin (and keeps
+    // its cookies) on www, m, and music alike.
+    const endpoint = `${location.origin}/youtubei/v1/get_panel?prettyPrint=false`;
+    let response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context: {
+            client: { clientName: "WEB", clientVersion, hl: "en", gl: "US" },
+          },
+          panelId: TRANSCRIPT_PANEL_ID,
+          params,
+        }),
+        signal,
+      });
+    } catch (e) {
+      return null;
+    }
+    if (!response.ok) {
+      console.warn(
+        `[TokenPath] YouTube transcript panel request failed (HTTP ${response.status}).`
+      );
+      return null;
+    }
+    try {
+      const body = (await response.text()).slice(0, MAX_TRANSCRIPT_BODY_LENGTH);
+      const parsed = JSON.parse(body);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // The panel's `params` is a two-field protobuf message — an inner message
+  // holding the video id, plus a constant flag — which is short enough to
+  // encode by hand rather than carrying a protobuf runtime:
+  //
+  //   field 149 (0xaa 0x09), length-delimited, containing
+  //     field 1 (0x0a) = the ASCII video id
+  //     field 3 (0x18) = 1
+  //
+  // Verified byte-identical to what YouTube's own transcript panel sends.
+  function transcriptPanelParams(videoId) {
+    const id = String(videoId || "");
+    if (!/^[\w-]{1,64}$/.test(id)) return null;
+    const bytes = [0xaa, 0x09, id.length + 4, 0x0a, id.length];
+    for (let index = 0; index < id.length; index++) {
+      bytes.push(id.charCodeAt(index) & 0xff);
+    }
+    bytes.push(0x18, 0x01);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    try {
+      return btoa(binary);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Read the app version the page itself is running, the same defensive way
+  // the player response is read: inline scripts only, bounded, no page bridge.
+  function innertubeClientVersion() {
+    const pattern =
+      /"INNERTUBE_(?:CONTEXT_)?CLIENT_VERSION"\s*:\s*"([\w.-]{1,32})"/;
+    for (const script of document.querySelectorAll("script")) {
+      const source = script.textContent || "";
+      if (!source.includes("INNERTUBE_")) continue;
+      const match = pattern.exec(source.slice(0, MAX_WATCH_PAGE_SCAN_LENGTH));
+      if (match) return match[1];
+    }
+    return TRANSCRIPT_CLIENT_VERSION_FALLBACK;
+  }
+
+  // Transcript rows are `transcriptSegmentViewModel` objects nested inside
+  // panel/timeline wrappers. Walk the response in document order and take only
+  // those: chapter headings and other view-model types sit in the same lists
+  // and are not speech. There is no start-time field in this shape — the
+  // displayed timestamp is the source, at one-second precision, which is finer
+  // than any cue boundary a viewer can perceive.
+  function transcriptSegmentsFrom(panel) {
+    const segments = [];
+    let budget = MAX_PANEL_NODES;
+    const visit = (node, depth) => {
+      if (
+        budget-- <= 0 ||
+        depth > MAX_PANEL_DEPTH ||
+        segments.length >= MAX_TRANSCRIPT_CUES
+      ) {
+        return;
+      }
+      if (Array.isArray(node)) {
+        for (const item of node) visit(item, depth + 1);
+        return;
+      }
+      if (!node || typeof node !== "object") return;
+      const segment = node.transcriptSegmentViewModel;
+      if (segment && typeof segment === "object") {
+        const text =
+          typeof segment.simpleText === "string" ? segment.simpleText : "";
+        const tStartMs = timestampToMs(segment.timestamp);
+        if (text.trim() && tStartMs != null) segments.push({ text, tStartMs });
+        return;
+      }
+      for (const key of Object.keys(node)) visit(node[key], depth + 1);
+    };
+    visit(panel, 0);
+    return segments;
+  }
+
+  // "0:03", "12:34", "1:02:45" — the transcript panel's own display format.
+  function timestampToMs(value) {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!/^\d{1,4}(?::[0-5]?\d){1,2}$/.test(trimmed)) return null;
+    let seconds = 0;
+    for (const part of trimmed.split(":")) seconds = seconds * 60 + Number(part);
+    return Number.isFinite(seconds) ? seconds * 1_000 : null;
+  }
+
+  // Cue offsets are UTF-16 indexes into the joined transcript — the same units
+  // the panel resolves an attributed span in. Cues are joined with a single
+  // space so the transcript reads as prose in the panel and to the model; that
+  // separator belongs to no cue, and a span that lands on one resolves to the
+  // nearer neighbour. A cue is truncated whole: the source cap never cuts a
+  // line in half, so every character of the transcript has a timestamp.
+  function buildTranscriptFromSegments(segments, limits) {
+    const maxCharacters =
+      limits?.maxCharacters ?? MAX_FULL_PAGE_SOURCE_LENGTH;
+    const maxCues = limits?.maxCues ?? MAX_TRANSCRIPT_CUES;
+    const cues = [];
+    let text = "";
+    let truncated = false;
+    if (!Array.isArray(segments)) return { text, cues, truncated };
+    for (const segment of segments) {
+      if (cues.length >= maxCues) {
+        truncated = true;
+        break;
+      }
+      if (!segment) continue;
+      const tStartMs = cueStartMs(segment.tStartMs);
+      if (tStartMs == null) continue;
+      // A transcript row wraps across two display lines often enough that its
+      // own newlines have to collapse before the cue is measured.
+      const cueText = String(segment.text || "")
+        .replace(/\s+/gu, " ")
+        .trim();
+      if (!cueText) continue;
+      const separator = text ? " " : "";
+      if (text.length + separator.length + cueText.length > maxCharacters) {
+        truncated = true;
+        break;
+      }
+      text += separator;
+      const start = text.length;
+      text += cueText;
+      cues.push({ start, end: text.length, tStartMs });
+    }
+    return { text, cues, truncated };
+  }
+
+  function cueStartMs(value) {
+    const start = Number(value);
+    if (!Number.isFinite(start) || start < 0) return null;
+    return Math.round(start);
+  }
+
+  // The cue an attributed [start, end) came from: the earliest one it overlaps,
+  // or — when it landed on a separator between two cues — the nearer
+  // neighbour. A span entirely outside the cue table has no timestamp and
+  // fails closed rather than seeking somewhere arbitrary.
+  function findCueForSpan(cues, start, end) {
+    if (!Array.isArray(cues) || !cues.length) return null;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return null;
+    }
+    const last = cues[cues.length - 1];
+    if (end <= cues[0].start || start >= last.end) return null;
+
+    let low = 0;
+    let high = cues.length - 1;
+    let index = cues.length;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (cues[mid].end > start) {
+        index = mid;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+    const candidate = index < cues.length ? cues[index] : null;
+    if (candidate && candidate.start < end) return candidate;
+    const previous = index > 0 ? cues[index - 1] : null;
+    if (!candidate) return previous;
+    if (!previous) return candidate;
+    return start - previous.end <= candidate.start - end ? previous : candidate;
+  }
+
+  function seekToTranscriptSpan(rawStart, rawEnd) {
+    if (!extraction?.videoTranscript || !extraction.cues?.length) return false;
+    if (extraction.routeKey && extraction.routeKey !== currentRouteKey()) {
+      return false;
+    }
+    const { start, end } = clampSpan(extraction.text, rawStart, rawEnd);
+    const cue = findCueForSpan(extraction.cues, start, end);
+    if (!cue) return false;
+    const video = playerVideoElement();
+    if (!video) return false;
+    const seconds = cue.tStartMs / 1_000;
+    if (!Number.isFinite(seconds)) return false;
+    try {
+      video.currentTime = Math.max(0, seconds);
+    } catch (e) {
+      return false;
+    }
+    // Deliberately no play(): an attribution click asks where an answer came
+    // from. Starting audio the user did not ask for is worse than landing
+    // paused on the right moment.
+    scrollPlayerIntoView(video);
+    showSeekIndicator(video, cue.tStartMs);
+    return true;
+  }
+
+  function playerVideoElement() {
+    // Fixed selectors of our own, never built from page data.
+    const player = /** @type {HTMLVideoElement | null} */ (
+      document.querySelector("#movie_player video") ||
+        document.querySelector("video.html5-main-video") ||
+        document.querySelector("video")
+    );
+    return player && player.isConnected ? player : null;
+  }
+
+  function scrollPlayerIntoView(video) {
+    try {
+      const rect = video.getBoundingClientRect();
+      if (rect.top >= 0 && rect.bottom <= window.innerHeight) return;
+      const reduced = window.matchMedia?.(
+        "(prefers-reduced-motion: reduce)"
+      ).matches;
+      video.scrollIntoView({
+        behavior: reduced ? "auto" : "smooth",
+        block: "center",
+        inline: "nearest",
+      });
+    } catch (e) {
+      // Scrolling is a convenience; the seek itself already happened.
+    }
+  }
+
+  // The CSS Custom Highlight API cannot paint inside a <video>, so the source
+  // confirmation is a small element of our own, removed after a moment. Its
+  // only dynamic content is a timestamp formatted from a number, and every
+  // style is a literal: no page-controlled string reaches HTML or CSS.
+  function showSeekIndicator(video, tStartMs) {
+    removeSeekIndicator();
+    const host = document.body || document.documentElement;
+    if (!host) return;
+    try {
+      const element = document.createElement("div");
+      element.id = SEEK_INDICATOR_ID;
+      element.setAttribute("role", "status");
+      element.textContent = `TokenPath source · ${formatTimestamp(tStartMs)}`;
+      const rect = video.getBoundingClientRect();
+      const top = Math.round(
+        Math.max(12, Math.min(window.innerHeight - 56, rect.top + 16))
+      );
+      const left = Math.round(
+        Math.max(12, Math.min(window.innerWidth - 240, rect.left + 16))
+      );
+      const styles = [
+        ["position", "fixed"],
+        ["top", `${top}px`],
+        ["left", `${left}px`],
+        ["z-index", "2147483647"],
+        ["margin", "0"],
+        ["padding", "6px 10px"],
+        ["border-radius", "6px"],
+        ["background-color", "rgba(24, 24, 27, 0.92)"],
+        ["color", "rgb(255, 231, 148)"],
+        ["font", "500 13px/1.3 system-ui, sans-serif"],
+        ["pointer-events", "none"],
+        ["box-shadow", "0 2px 8px rgba(0, 0, 0, 0.35)"],
+      ];
+      for (const [property, value] of styles) {
+        element.style.setProperty(property, value, "important");
+      }
+      host.appendChild(element);
+      seekIndicator = element;
+      seekIndicatorTimer = setTimeout(removeSeekIndicator, SEEK_INDICATOR_MS);
+    } catch (e) {
+      // Feedback is best-effort; the player has already moved.
+    }
+  }
+
+  function removeSeekIndicator() {
+    if (seekIndicatorTimer != null) {
+      clearTimeout(seekIndicatorTimer);
+      seekIndicatorTimer = null;
+    }
+    // Removed through our own reference so a page element that happens to
+    // share the id can never be touched.
+    if (seekIndicator) {
+      seekIndicator.remove();
+      seekIndicator = null;
+    }
+  }
+
+  function formatTimestamp(totalMs) {
+    const totalSeconds = Math.max(0, Math.floor(Number(totalMs) / 1_000));
+    const hours = Math.floor(totalSeconds / 3_600);
+    const minutes = Math.floor((totalSeconds % 3_600) / 60);
+    const seconds = totalSeconds % 60;
+    const pad = (value) => String(value).padStart(2, "0");
+    return hours
+      ? `${hours}:${pad(minutes)}:${pad(seconds)}`
+      : `${minutes}:${pad(seconds)}`;
+  }
+
+  // A reloaded frame holds no cue table, exactly as it holds no node map.
+  // Rebuild it from the live page and accept it only if it reproduces the
+  // cached transcript the answer was attributed against.
+  async function restoreTranscriptForHighlight(documentText, captureId) {
+    if (!documentText || !isVideoTranscriptFrame()) return false;
+    const rebuilt = await captureVideoTranscript();
+    if (!rebuilt) return false;
+    if (rebuilt.text === documentText) {
+      extraction = rebuilt;
+      extraction.captureId = captureId || null;
+      return true;
+    }
+    // A capture bounded by the source cap is a prefix of the full transcript.
+    if (rebuilt.text.startsWith(documentText)) {
+      const cues = rebuilt.cues
+        .filter((cue) => cue.start < documentText.length)
+        .map((cue) => ({
+          start: cue.start,
+          end: Math.min(cue.end, documentText.length),
+          tStartMs: cue.tStartMs,
+        }));
+      if (!cues.length) return false;
+      extraction = {
+        ...rebuilt,
+        text: documentText,
+        cues,
+        truncated: true,
+        captureId: captureId || null,
+      };
+      return true;
+    }
+    // Different captions than the ones the answer cites: fail closed.
+    return false;
+  }
+
   function normalizeForComparison(text) {
     const normalized = String(text || "")
       .replace(/[\u00ad\u200b-\u200d\u2060\ufeff]/g, "")
@@ -1189,10 +1938,12 @@
       // `user-select` can be overridden below a non-selectable app shell.
       // WhatsApp does exactly that: the shell is `none`, while message text is
       // explicitly `text`. The closest decisive value controls whether this
-      // node is selectable; distant ancestors must not override it. Continue
-      // walking every ancestor for actual visibility checks.
-      if (selectable === null && cs.userSelect && cs.userSelect !== "auto") {
+      // node is selectable; distant ancestors must not override it. Visibility
+      // has already been checked on every ancestor by isRenderedTextNode, so
+      // the first decisive value ends this walk.
+      if (cs.userSelect && cs.userSelect !== "auto") {
         selectable = cs.userSelect !== "none";
+        break;
       }
       el = el.parentElement;
     }
@@ -1362,6 +2113,21 @@
     const selector = makeQuoteSelector(capturedProjection, target);
     if (!selector.exact) return null;
 
+    const matched = matchQuoteWithin(scope, selector);
+    if (!matched) return null;
+    if (
+      matched.evidence === "path" &&
+      !rangeMatchesCapturedPath(matched.resolved.range, target, scope)
+    ) {
+      return null;
+    }
+    return matched.resolved;
+  }
+
+  // Project a live subtree exactly the way a captured extraction is projected,
+  // then take the one occurrence the selector's bounded context supports.
+  // Missing, ambiguous, and oversized sources all fail rather than guess.
+  function matchQuoteWithin(scope, selector) {
     // Selectability is a capture concern, not a liveness requirement. Dynamic
     // apps may remove a temporary user-select override while the source remains
     // rendered and attributable.
@@ -1391,14 +2157,57 @@
       canonicalStart,
       canonicalEnd
     );
-    if (!resolved) return null;
-    if (
-      match.evidence === "path" &&
-      !rangeMatchesCapturedPath(resolved.range, target, scope)
-    ) {
-      return null;
-    }
-    return resolved;
+    return resolved ? { resolved, evidence: match.evidence } : null;
+  }
+
+  // Recover one attributed span in a document this frame never captured: the
+  // page reloaded after the answer was attributed, so the node map is gone and
+  // the cached document no longer matches the page character for character.
+  // The cached document still records the exact quote and the text around it,
+  // which is all the shared quote resolver needs.
+  function highlightDocumentQuote(documentText, rawStart, rawEnd) {
+    const resolved = resolveDocumentQuoteRange(documentText, rawStart, rawEnd);
+    if (!resolved) return false;
+    clearHighlight();
+    applyHighlight(resolved.range);
+    scrollRangeIntoView(resolved.range);
+    return true;
+  }
+
+  function resolveDocumentQuoteRange(documentText, rawStart, rawEnd) {
+    if (!document.body) return null;
+    const selector = makeDocumentQuoteSelector(documentText, rawStart, rawEnd);
+    if (!selector) return null;
+    const matched = matchQuoteWithin(document.body, selector);
+    // A reloaded page keeps no saved path to corroborate a lone match, so
+    // being the page's only occurrence is the identity — the same rule that
+    // rebases a unique captured selection onto fresh nodes. Repeats still have
+    // to be singled out by the cached context, and ties still fail.
+    return matched ? matched.resolved : null;
+  }
+
+  // The cached document is mapped node text plus synthetic block separators,
+  // so projecting it under one whole-text entry produces exactly the string a
+  // live extraction of the same nodes projects.
+  function makeDocumentQuoteSelector(documentText, rawStart, rawEnd) {
+    const text = String(documentText || "");
+    const { start, end } = clampSpan(text, rawStart, rawEnd);
+    if (end <= start) return null;
+    const projection = buildQuoteProjection(text, [
+      { start: 0, end: text.length },
+    ]);
+    const exact = projectedSlice(projection, start, end).trim();
+    if (!exact) return null;
+    const contexts = [];
+    addQuoteContext(
+      contexts,
+      projectedSlice(projection, 0, start).slice(-QUOTE_CONTEXT_LENGTH),
+      projectedSlice(projection, end, text.length).slice(
+        0,
+        QUOTE_CONTEXT_LENGTH
+      )
+    );
+    return { exact, contexts };
   }
 
   function recoveryScopeForSpan(target) {
@@ -1742,11 +2551,18 @@
       return;
     }
     highlight = new Highlight(range);
-    CSS.highlights.set(HL_NAME, highlight);
+    // Two static rulesets in content.css; choosing between them by name keeps
+    // every colour value in the stylesheet and never lets page-controlled
+    // text reach CSS.
+    CSS.highlights.set(
+      hasDarkBackdrop(range) ? HL_NAME_DARK : HL_NAME,
+      highlight
+    );
   }
 
   function clearHighlight() {
     activeHighlightId = null;
+    removeSeekIndicator();
     if (!("highlights" in CSS)) {
       const selection = window.getSelection();
       if (selection) selection.removeAllRanges();
@@ -1757,6 +2573,65 @@
       highlight = null;
     }
     CSS.highlights.delete(HL_NAME);
+    CSS.highlights.delete(HL_NAME_DARK);
+  }
+
+  // Gmail's dark theme and X paint their own backgrounds rather than switching
+  // the page's colour scheme, so ask the DOM what is actually behind the
+  // attributed text: the nearest effectively opaque background above it, then
+  // the document canvas.
+  function hasDarkBackdrop(range) {
+    try {
+      const start = range.startContainer;
+      const from =
+        start.nodeType === Node.ELEMENT_NODE ? start : start.parentElement;
+      for (let el = from; el; el = el.parentElement) {
+        const color = parseCssColor(
+          window.getComputedStyle(el).backgroundColor
+        );
+        if (color && color.alpha >= 0.5) {
+          return relativeLuminance(color) < DARK_BACKDROP_LUMINANCE;
+        }
+      }
+      for (const fallback of [document.body, document.documentElement]) {
+        if (!fallback) continue;
+        const color = parseCssColor(
+          window.getComputedStyle(fallback).backgroundColor
+        );
+        if (color && color.alpha >= 0.5) {
+          return relativeLuminance(color) < DARK_BACKDROP_LUMINANCE;
+        }
+      }
+    } catch (e) {
+      // An unusual document implementation must never block a highlight.
+    }
+    return false;
+  }
+
+  function parseCssColor(value) {
+    const match = /^rgba?\(([^)]+)\)$/i.exec(String(value || "").trim());
+    if (!match) return null;
+    const parts = match[1]
+      .split(/[\s,/]+/)
+      .filter(Boolean)
+      .map(Number);
+    if (parts.length < 3 || parts.slice(0, 3).some((n) => !Number.isFinite(n))) {
+      return null;
+    }
+    const alpha = Number.isFinite(parts[3]) ? parts[3] : 1;
+    return { r: parts[0], g: parts[1], b: parts[2], alpha };
+  }
+
+  function relativeLuminance({ r, g, b }) {
+    const channel = (value) => {
+      const scaled = Math.min(255, Math.max(0, value)) / 255;
+      return scaled <= 0.03928
+        ? scaled / 12.92
+        : Math.pow((scaled + 0.055) / 1.055, 2.4);
+    };
+    return (
+      0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+    );
   }
 
   // Center the exact Range through nested scroll panes. Gmail's nearest text
@@ -1806,5 +2681,38 @@
         behavior,
       });
     }
+  }
+
+  // --- Test hooks -----------------------------------------------------------
+
+  // Unit tests evaluate this exact file and exercise the pure offset helpers
+  // through this object, so their behaviour can never drift from the page's.
+  // A real page never defines `__tldrTestHooks`, so nothing is exported and no
+  // runtime behaviour changes; the harness must create the object first.
+  if (
+    globalThis.__tldrTestHooks &&
+    typeof globalThis.__tldrTestHooks === "object"
+  ) {
+    Object.assign(globalThis.__tldrTestHooks, {
+      buildQuoteProjection,
+      buildTranscriptFromSegments,
+      chooseQuoteMatch,
+      clampSpan,
+      findCueForSpan,
+      findEntry,
+      firstEntryAtOrAfter,
+      hasDarkBackdrop,
+      isWs,
+      lastEntryAtOrBefore,
+      hasCaptionTracks,
+      makeDocumentQuoteSelector,
+      normalizeSlice,
+      normalizedYouTubeSearch,
+      playerResponseFrom,
+      resolveRangeFromMap,
+      timestampToMs,
+      transcriptPanelParams,
+      transcriptSegmentsFrom,
+    });
   }
 })();

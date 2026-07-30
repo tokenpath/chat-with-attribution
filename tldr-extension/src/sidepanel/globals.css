@@ -182,7 +182,7 @@
   border-radius: 2px;
   color: #ffffff;
   font-family: var(--font-mono);
-  font-size: 0.68rem;
+  font-size: 0.7rem;
   font-weight: 500;
   letter-spacing: -0.035em;
   line-height: 1;
@@ -209,7 +209,7 @@
 .brand-divider,
 .product-name {
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: 0.7rem;
   line-height: 1;
 }
 
@@ -346,9 +346,9 @@
 .source-label {
   color: var(--muted-foreground);
   font-family: var(--font-mono);
-  font-size: 0.64rem;
+  font-size: 0.7rem;
   font-weight: 600;
-  letter-spacing: 0.11em;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
 }
 
@@ -426,6 +426,7 @@
 }
 
 .token-badge {
+  min-width: 0;
   max-width: 7.5rem;
   overflow: hidden;
   border: 1px solid var(--border-strong);
@@ -434,7 +435,7 @@
   padding: 0.14rem 0.45rem;
   color: var(--muted-foreground);
   font-family: var(--font-mono);
-  font-size: 0.62rem;
+  font-size: 0.7rem;
   line-height: 1rem;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -508,9 +509,29 @@
   margin-top: 0.35rem;
   color: var(--muted-foreground);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
-  line-height: 1rem;
+  font-size: 0.72rem;
+  line-height: 1.05rem;
   user-select: none;
+}
+
+.answer-attribution-error,
+.answer-attribution-partial {
+  align-items: flex-start;
+}
+
+.answer-attribution-error > svg,
+.answer-attribution-partial > svg {
+  margin-top: 0.1rem;
+}
+
+.answer-attribution-error > span,
+.answer-attribution-partial > span {
+  min-width: 0;
+}
+
+/* The failure reason is a sentence, not a status token. */
+.answer-attribution-reason {
+  font-family: var(--font-sans);
 }
 
 [data-answer-status="attributing"] .answer-attribution-status {
@@ -521,16 +542,24 @@
   color: var(--destructive);
 }
 
+.answer-attribution-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+  margin-top: 0.5rem;
+}
+
 .answer-attribution-guide {
   display: flex;
   align-items: center;
   gap: 0.34rem;
   min-height: 1.5rem;
-  margin-top: 0.5rem;
   color: var(--positive);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
-  line-height: 1rem;
+  font-size: 0.72rem;
+  line-height: 1.05rem;
   user-select: none;
 }
 
@@ -593,6 +622,248 @@
   color: var(--foreground);
 }
 
+/* Keyboard and screen-reader path to the same attribution the pointer gets. */
+.answer-sources-toggle {
+  display: inline-flex;
+  min-height: 1.5rem;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.3rem;
+  background: var(--surface);
+  padding: 0.12rem 0.4rem;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1rem;
+  transition:
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.answer-sources-toggle > svg {
+  width: 0.8rem;
+  height: 0.8rem;
+  flex: none;
+}
+
+.answer-sources-toggle:hover,
+.answer-sources-toggle.is-open {
+  border-color: var(--positive);
+  color: var(--foreground);
+}
+
+.answer-sources-count {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--positive) 20%, transparent);
+  padding-inline: 0.32rem;
+  color: var(--foreground);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.answer-sources {
+  margin-top: 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  background: var(--surface);
+  padding: 0.35rem;
+}
+
+.answer-sources-list {
+  display: flex;
+  max-height: 12rem;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+}
+
+.answer-source-phrase {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  border-radius: 0.3rem;
+  padding: 0.28rem 0.4rem;
+  color: var(--foreground);
+  font-size: 0.75rem;
+  line-height: 1.15rem;
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.answer-source-phrase:hover,
+.answer-source-phrase:focus-visible {
+  background: color-mix(in srgb, var(--positive) 14%, transparent);
+}
+
+.answer-source-index {
+  flex: none;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.answer-source-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.answer-sources-help {
+  margin-top: 0.3rem;
+  padding: 0 0.4rem 0.15rem;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  line-height: 1rem;
+}
+
+/* Live regions stay mounted; only their contents change. */
+.notice-region,
+.toast-region {
+  display: contents;
+}
+
+.panel-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--tp-accent) 7%, var(--surface));
+  padding: 0.5rem 0.6rem 0.5rem 0.85rem;
+  color: var(--foreground);
+  font-size: 0.75rem;
+  line-height: 1.15rem;
+}
+
+.panel-notice > svg,
+.context-error > svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: none;
+  margin-top: 0.15rem;
+}
+
+.panel-notice > svg {
+  color: var(--tp-accent);
+}
+
+.panel-notice > span {
+  min-width: 0;
+  flex: 1;
+}
+
+.panel-notice-dismiss {
+  display: inline-flex;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.25rem;
+  color: var(--muted-foreground);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.panel-notice-dismiss > svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+.panel-notice-dismiss:hover {
+  background: var(--surface-hover);
+  color: var(--foreground);
+}
+
+.context-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--destructive) 28%, transparent);
+  background: var(--negative-soft);
+  padding: 0.5rem 0.85rem;
+  color: var(--destructive);
+  font-size: 0.75rem;
+  line-height: 1.15rem;
+}
+
+.summary-length {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 1px;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.4rem;
+  background: var(--muted);
+  padding: 1px;
+}
+
+.summary-length-option {
+  border-radius: 0.3rem;
+  padding: 0.18rem 0.42rem;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1rem;
+  white-space: nowrap;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.summary-length-option:hover:not(:disabled) {
+  color: var(--foreground);
+}
+
+.summary-length-option.is-selected {
+  background: var(--background);
+  box-shadow: 0 1px 2px oklch(0 0 0 / 0.1);
+  color: var(--foreground);
+}
+
+.summary-length-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.summary-length-option:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.panel-failure {
+  max-width: 22rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.6rem;
+  background: var(--surface);
+  padding: 0.9rem 1rem;
+  font-size: 0.8rem;
+  line-height: 1.35rem;
+}
+
+.panel-failure-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.3rem;
+  color: var(--destructive);
+  font-weight: 600;
+}
+
+.panel-failure-heading > svg {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+
+.panel-failure > p {
+  color: var(--muted-foreground);
+}
+
 [data-streamdown="root"] {
   overflow-wrap: anywhere;
 }
@@ -618,7 +889,7 @@
   margin-top: 0.45rem;
   border-top: 1px solid var(--border);
   padding-top: 0.42rem;
-  font-size: 0.68rem;
+  font-size: 0.72rem;
 }
 
 .developer-cta {
@@ -660,11 +931,16 @@
   color: var(--foreground);
 }
 
+.composer-dock {
+  position: relative;
+}
+
+/* Anchored to the composer so it can never sit on top of a multi-line draft. */
 .toast {
-  position: fixed;
+  position: absolute;
   z-index: 50;
   right: 0.75rem;
-  bottom: 5.6rem;
+  bottom: calc(100% + 0.3rem);
   left: 0.75rem;
   margin-inline: auto;
   max-width: max-content;
@@ -691,6 +967,21 @@
 @media (max-width: 360px) {
   .token-badge {
     display: none;
+  }
+}
+
+/*
+  The Sources control has to stay on the guide's row in a narrow panel, but a
+  screen reader should still hear the whole instruction.
+*/
+@media (max-width: 400px) {
+  .answer-attribution-detail {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }
 

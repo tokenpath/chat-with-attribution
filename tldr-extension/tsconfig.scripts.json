@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "forceConsistentCasingInFileNames": true,
+    "types": ["chrome"]
+  },
+  "files": [
+    "scripts-globals.d.ts",
+    "background.js",
+    "content.js",
+    "sidepanel/panel-logic.js",
+    "sidepanel/tokenpath.js"
+  ]
+}

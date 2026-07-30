@@ -20,6 +20,12 @@ const PANEL_URL = pathToFileURL(
   join(__dirname, "..", "sidepanel", "panel.html")
 ).href;
 
+// Live third-party pages are diagnostic only: their markup and anti-bot walls
+// change independently of this extension, and they cannot fail the suite. They
+// are skipped unless explicitly requested, so ordinary runs stay deterministic
+// and offline-friendly. The fixture suites below always run.
+const LIVE_SITES = process.env.E2E_LIVE_SITES === "1";
+
 const SITES = [
   "https://example.com",
   "https://en.wikipedia.org/wiki/Web_browser",
@@ -501,12 +507,26 @@ function recordDeterministic(good) {
         },
       ]);
     });
+    // A capture never starts a turn by itself any more: the panel shows the
+    // source card and waits. The summary only runs from the Summarize starter,
+    // which routes through controller.runSummary().
     await page.waitForFunction(
       () =>
         document
           .getElementById("context-text")
           ?.textContent.startsWith("Fable 5") &&
-        document.querySelector('[data-answer-status="ready"]')
+        document.getElementById("summarize-starter")
+    );
+    const capturedWithoutTurn = await page.evaluate(
+      () =>
+        window.__panelRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length === 0 &&
+        document.querySelectorAll("[data-answer-content]").length === 0
+    );
+    await page.locator("#summarize-starter").click();
+    await page.waitForFunction(() =>
+      document.querySelector('[data-answer-status="ready"]')
     );
     const collapsedSourceState = await page.evaluate(() => {
       const card = document.getElementById("context");
@@ -520,7 +540,14 @@ function recordDeterministic(good) {
         contextVisible: context?.getClientRects().length === 1,
         hasButton:
           toggle instanceof HTMLButtonElement && toggle.type === "button",
-        hasSummaryControl: !!document.getElementById("summary-length"),
+        // The Short/Medium/Detailed control belongs to the composer, never to
+        // the source card.
+        composerHasSummaryControl: !!document.querySelector(
+          ".composer-dock #summary-length"
+        ),
+        sourceCardHasSummaryControl: !!document.querySelector(
+          "#context #summary-length"
+        ),
       };
     });
     const sourceStaysCollapsedWithoutLegacyControls = await page.evaluate(
@@ -795,7 +822,15 @@ function recordDeterministic(good) {
           (message) => message.role === "assistant"
         )?.content,
         generation,
-        hasSummaryControl: !!document.getElementById("summary-length"),
+        sourceCardHasSummaryControl: !!document.querySelector(
+          "#context #summary-length"
+        ),
+        summaryLengthOptions: [
+          ...document.querySelectorAll('#summary-length [role="radio"]'),
+        ].map((option) => option.textContent),
+        summaryLengthSelected:
+          document.querySelector('#summary-length [aria-checked="true"]')
+            ?.textContent || "",
         hasTokenPathWordmark:
           document.querySelector(".tokenpath-wordmark")?.textContent ===
             "tokenpath" &&
@@ -834,11 +869,13 @@ function recordDeterministic(good) {
           'img[src*="tracker.invalid"]'
         ),
         hasFixedSpans: !!document.querySelector(".attrib"),
+        // The guide is plain visible text now; its trailing detail is only
+        // hidden by CSS below 400px, so the probe reads what a reader sees.
         hasClickGuide:
           document
             .querySelector(".answer-attribution-guide")
-            ?.getAttribute("aria-label") ===
-            "Click an underlined phrase in this answer to reveal its source",
+            ?.textContent?.trim() ===
+            "Click an underlined phrase to reveal its source",
         clickGuide:
           document.querySelectorAll(
             ".answer-attribution-guide.is-animated"
@@ -894,13 +931,6 @@ function recordDeterministic(good) {
       });
     });
     await page.waitForFunction(
-      (previousCount) =>
-        window.__panelRequests.filter((item) =>
-          item.path.endsWith("/v1/generate")
-        ).length > previousCount,
-      generationCountBeforeOpaqueOrigin
-    );
-    await page.waitForFunction(
       () =>
         document
           .getElementById("context-text")
@@ -908,7 +938,8 @@ function recordDeterministic(good) {
         document.getElementById("context-text")?.hidden === true &&
         document
           .getElementById("context-toggle")
-          ?.getAttribute("aria-expanded") === "false"
+          ?.getAttribute("aria-expanded") === "false" &&
+        document.getElementById("summarize-starter")
     );
     const replacementSourceCollapsed = await page.evaluate(
       () =>
@@ -916,6 +947,15 @@ function recordDeterministic(good) {
         document
           .getElementById("context-toggle")
           ?.getAttribute("aria-expanded") === "false"
+    );
+    // The replacement capture also waits; the second summary is user-driven.
+    await page.locator("#summarize-starter").click();
+    await page.waitForFunction(
+      (previousCount) =>
+        window.__panelRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length > previousCount,
+      generationCountBeforeOpaqueOrigin
     );
     const opaqueOriginGeneration = await page.evaluate(() => {
       const generation = window.__panelRequests
@@ -942,6 +982,12 @@ function recordDeterministic(good) {
       () =>
         document.getElementById("tokenpath-key")?.disabled === true &&
         document.getElementById("auth-connect")?.disabled === true
+    );
+    // disconnect() clears the page-chat cache before it touches the saved
+    // key, so the delayed-removal resolver appears only once that IndexedDB
+    // work settles; resolving before it exists would deadlock the mock.
+    await page.waitForFunction(() =>
+      Boolean(window.__resolveTokenPathRemoval)
     );
     await page.evaluate(() => window.__resolveTokenPathRemoval?.());
     await page.waitForFunction(
@@ -980,9 +1026,9 @@ function recordDeterministic(good) {
         context: context?.textContent || "",
         hidden: card?.hidden,
         hasToggle: !!document.getElementById("context-toggle"),
-        summaryVisible:
-          document.getElementById("summary-length")?.getClientRects().length ===
-          1,
+        summaryInSourceCard: !!document.querySelector(
+          "#context #summary-length"
+        ),
         visible: context?.getClientRects().length === 1,
       };
     });
@@ -1002,12 +1048,14 @@ function recordDeterministic(good) {
       pendingSourceState.hasToggle === false &&
       pendingSourceState.hidden === true &&
       !pendingSourceState.visible &&
+      capturedWithoutTurn &&
       collapsedSourceState.hasButton &&
       collapsedSourceState.ariaControls === "context-text" &&
       collapsedSourceState.ariaExpanded === "false" &&
       collapsedSourceState.contextHidden === true &&
       collapsedSourceState.contextVisible === false &&
-      collapsedSourceState.hasSummaryControl === false &&
+      collapsedSourceState.sourceCardHasSummaryControl === false &&
+      collapsedSourceState.composerHasSummaryControl === true &&
       collapsedSourceState.cardHeight <= 52 &&
       sourceStaysCollapsedWithoutLegacyControls &&
       expandedSourceState.ariaExpanded === "true" &&
@@ -1020,7 +1068,7 @@ function recordDeterministic(good) {
       sourceErrorState.context === "" &&
       sourceErrorState.hidden === true &&
       sourceErrorState.hasToggle === false &&
-      sourceErrorState.summaryVisible === false &&
+      sourceErrorState.summaryInSourceCard === false &&
       !sourceErrorState.visible &&
       firstHeatmapCount === 1 &&
       cachedHeatmapCount === 1 &&
@@ -1092,7 +1140,10 @@ function recordDeterministic(good) {
       ) &&
       !opaqueOriginGeneration.systemPrompt?.includes("news.example") &&
       !opaqueOriginGeneration.systemPrompt?.includes("/Users/private") &&
-      panelResult.hasSummaryControl === false &&
+      panelResult.sourceCardHasSummaryControl === false &&
+      panelResult.summaryLengthOptions.join("/") ===
+        "Short/Medium/Detailed" &&
+      panelResult.summaryLengthSelected === "Short" &&
       savedSummaryLength === null &&
       summaryPrompt?.includes("Aim for 2-3 concise sentences") &&
       opaqueOriginGeneration.userPrompt?.includes(
@@ -1127,10 +1178,10 @@ function recordDeterministic(good) {
     console.log("\n### Side-panel selection fixture");
     console.log(
       `  [stream + one heatmap + arbitrary Markdown selections] ${good ? "PASS" : "FAIL"}` +
-        ` — calls=${firstHeatmapCount}/${cachedHeatmapCount}, frame=${firstOptions?.frameId}, ` +
+        ` — waited=${capturedWithoutTurn}, calls=${firstHeatmapCount}/${cachedHeatmapCount}, frame=${firstOptions?.frameId}, ` +
         `source=${firstMessage?.start}/${secondMessage?.start}, markdown=${panelResult.hasMarkdownHeading}/${panelResult.hasMarkdownStrong}, ` +
         `canonical=${panelResult.autoHeatmapAnswer === panelResult.canonicalSummary}/${panelResult.followupHistoryAnswer === panelResult.canonicalSummary}, ` +
-        `length=${panelResult.summaryLength}/${savedSummaryLength}, output=${generationBody.max_output_tokens}/${opaqueOriginGeneration.maxOutputTokens}, ` +
+        `length=${panelResult.summaryLengthSelected}/${savedSummaryLength}, output=${generationBody.max_output_tokens}/${opaqueOriginGeneration.maxOutputTokens}, ` +
         `sourceCard=${collapsedSourceState.cardHeight.toFixed(0)}px/${expandedSourceState.contextVisible}/${replacementSourceCollapsed}/${sourceErrorState.visible}, ` +
         `brand=${panelResult.hasTokenPathWordmark}/${panelResult.hasTokenRail}, ` +
         `cta=${panelResult.cta?.text}/${panelResult.ctaDoesNotOverlapDisconnect}, ` +
@@ -1142,6 +1193,10 @@ function recordDeterministic(good) {
     console.log(
       `\n### Side-panel selection fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
     );
+    const at = String(error.stack)
+      .split("\n")
+      .find((line) => line.includes("e2e.mjs"));
+    if (at) console.log(`  at ${at.trim()}`);
     recordDeterministic(false);
   } finally {
     await page.close();
@@ -1257,7 +1312,9 @@ function recordDeterministic(good) {
               return {
                 [key]: {
                   captureId: "pdf-seed-1",
-                  capturedAt: 1,
+                  // A session seed is only honoured while it is fresh, so it
+                  // has to be stamped when the controller reads it.
+                  capturedAt: Date.now(),
                   tabId: 91,
                   windowId: 12,
                   frameId: 0,
@@ -1307,6 +1364,17 @@ function recordDeterministic(good) {
     });
 
     await page.goto(PANEL_URL);
+    // The seed only opens an attributed chat over the PDF text; the summary is
+    // spent on the user's command.
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent ===
+          window.__pdfSource && document.getElementById("summarize-starter")
+    );
+    const pdfSeedWaited = await page.evaluate(
+      () => window.__pdfRequests.length === 0
+    );
+    await page.locator("#summarize-starter").click();
     await page.waitForFunction(
       () =>
         document.querySelector('[data-answer-status="ready"]') &&
@@ -1512,6 +1580,7 @@ function recordDeterministic(good) {
       window.__pdfSource.indexOf(window.__pdfTarget)
     );
     const good =
+      pdfSeedWaited &&
       result.generationCalls === 1 &&
       result.heatmapCalls === 1 &&
       clearCountBeforeAttribution === 0 &&
@@ -1546,7 +1615,7 @@ function recordDeterministic(good) {
     console.log("\n### Native PDF side-panel fixture");
     console.log(
       `  [runtime attribution + fragment lifetime] ${good ? "PASS" : "FAIL"}` +
-        ` — calls=${result.generationCalls}/${result.heatmapCalls}, ` +
+        ` — waited=${pdfSeedWaited}, calls=${result.generationCalls}/${result.heatmapCalls}, ` +
         `range=${firstHighlight?.start}/${firstHighlight?.end}, ` +
         `samePdf=${samePdfStayedValid}, clears=${result.clearCount}, ` +
         `preclear=${clearCountBeforeAttribution}, ` +
@@ -1725,7 +1794,9 @@ function recordDeterministic(good) {
               return {
                 [key]: {
                   captureId: "full-pdf-older",
-                  capturedAt: 1,
+                  // Stamped on read: the controller drops seeds older than
+                  // two minutes.
+                  capturedAt: Date.now(),
                   tabId: 301,
                   windowId: 17,
                   frameId: 0,
@@ -1812,12 +1883,11 @@ function recordDeterministic(good) {
       window.__fullPdfRuntimeListeners[0]?.({
         type: "selection-captured",
         captureId: "full-pdf-newer",
-        capturedAt: 2,
+        capturedAt: Date.now(),
         tabId: 301,
         windowId: 17,
         frameId: 0,
         captureMode: "full-pdf",
-        intent: "simplify",
         sourceType: "chrome-pdf",
         url: window.__fullPdfNewerUrl,
         text: "",
@@ -1836,6 +1906,17 @@ function recordDeterministic(good) {
     await page.evaluate(() => {
       window.__resolveFullPdfEmbed(1, window.__fullPdfNewerText);
     });
+    // Extraction finishing does not start a turn either; the starter does.
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent ===
+          window.__fullPdfNewerText &&
+        document.getElementById("summarize-starter")
+    );
+    const extractionWaited = await page.evaluate(
+      () => window.__fullPdfRequests.length === 0
+    );
+    await page.locator("#summarize-starter").click();
     await page.waitForFunction(
       () =>
         document.querySelector('[data-answer-status="ready"]') &&
@@ -1893,15 +1974,16 @@ function recordDeterministic(good) {
       initialReadingState.placeholder === "Reading PDF…" &&
       initialReadingState.requestCount === 0 &&
       olderSignalWasAborted &&
+      extractionWaited &&
       result.label === "Entire PDF" &&
       result.context ===
         (await page.evaluate(() => window.__fullPdfNewerText)) &&
       result.answer.includes("durable scheduling improvement") &&
       result.generationCount === 1 &&
       result.generationHasNewerText &&
-      result.generationUserPrompt.includes("clear, simple language") &&
+      result.generationUserPrompt.includes("Aim for 2-3 concise sentences") &&
       result.generationUserPrompt.includes(
-        "Do not add any information that is not present"
+        "Do not add a title, a 'TL;DR:' label"
       ) &&
       result.heatmapCount === 1 &&
       result.heatmapDocument ===
@@ -1910,7 +1992,7 @@ function recordDeterministic(good) {
     console.log("\n### Full-PDF side-panel fixture");
     console.log(
       `  [reading state + extraction replacement + generation] ${good ? "PASS" : "FAIL"}` +
-        ` — label=${result.label}, fetches=${result.pdfFetchCount}, ` +
+        ` — label=${result.label}, waited=${extractionWaited}, fetches=${result.pdfFetchCount}, ` +
         `aborted=${olderSignalWasAborted}, calls=${result.generationCount}/${result.heatmapCount}`
     );
     recordDeterministic(good);
@@ -1924,14 +2006,15 @@ function recordDeterministic(good) {
   }
 }
 
-// Capture intent is part of the seed, not a UI-only flag. Simplify should run
-// one automatic attributed rewrite, while Ask should expose the captured
-// context without spending a request until the user submits a question.
+// A capture only opens an attributed chat: it exposes the captured context and
+// spends nothing until the user acts. The Summarize starter runs the
+// length-aware summary pathway; typing a question runs an ordinary chat turn.
+// Both keep working across tab switches, navigation, and cache restores.
 {
   const page = await browser.newPage();
   try {
     await page.addInitScript(() => {
-      const simplifySource =
+      const summarySource =
         "The operations team tested a revised workflow at three facilities " +
         "during the spring. The workflow reduced scheduling delays while " +
         "preserving the existing safety checks, quality reviews, staffing " +
@@ -1942,7 +2025,7 @@ function recordDeterministic(good) {
         "workflow over twelve weeks. The revised process shortened review " +
         "cycles, retained every required safety check, and produced the same " +
         "quality scores across all participating teams.";
-      const simplifyAnswer =
+      const summaryAnswer =
         "The team tested a simpler workflow that reduced delays without " +
         "changing safety, quality, staffing, or reporting requirements.";
       const askAnswer =
@@ -1991,8 +2074,8 @@ function recordDeterministic(good) {
         411: "https://docs.example/ask",
         412: "https://docs.example/tab-b",
       };
-      window.__intentSimplifyAnswer = simplifyAnswer;
-      window.__intentSimplifySource = simplifySource;
+      window.__intentSummaryAnswer = summaryAnswer;
+      window.__intentSummarySource = summarySource;
       window.chrome = {
         tabs: {
           async query() {
@@ -2070,8 +2153,8 @@ function recordDeterministic(good) {
               .reverse()
               .find((message) => message.role === "user")?.content || "";
           return doneStream(
-            question.includes("clear, simple language")
-              ? simplifyAnswer
+            question.includes("summary of the given text")
+              ? summaryAnswer
               : askAnswer
           );
         }
@@ -2118,19 +2201,36 @@ function recordDeterministic(good) {
     await page.evaluate(() => {
       window.__intentRuntimeListeners[0]?.({
         type: "selection-captured",
-        captureId: "simplify-seed",
+        captureId: "summary-seed",
         capturedAt: 10,
         tabId: 411,
         windowId: 23,
         frameId: 18,
         captureMode: "full-page",
-        intent: "simplify",
         sourceType: "page",
-        url: "https://docs.example/simplify",
-        text: window.__intentSimplifySource,
+        url: "https://docs.example/summary",
+        text: window.__intentSummarySource,
         error: null,
       });
     });
+    // The capture lands and waits: source card, starter, no spend.
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent ===
+          window.__intentSummarySource &&
+        document.getElementById("summarize-starter")
+    );
+    const captureSpentNothing = await page.evaluate(
+      () => window.__intentRequests.length === 0
+    );
+    // Summaries follow the persistent Short/Medium/Detailed preference.
+    await page
+      .locator('#summary-length [role="radio"]', { hasText: "Medium" })
+      .click();
+    const savedSummaryLength = await page.evaluate(() =>
+      localStorage.getItem("tldr-summary-length")
+    );
+    await page.locator("#summarize-starter").click();
     await page.waitForFunction(
       () =>
         document.querySelector('[data-answer-status="ready"]') &&
@@ -2141,7 +2241,7 @@ function recordDeterministic(good) {
           item.path.endsWith("/v1/attributions/heatmap")
         ).length === 1
     );
-    const simplifyResult = await page.evaluate(() => {
+    const summaryResult = await page.evaluate(() => {
       const generation = window.__intentRequests.find((item) =>
         item.path.endsWith("/v1/generate")
       );
@@ -2163,22 +2263,61 @@ function recordDeterministic(good) {
           (message) =>
             message.role === "system" &&
             message.content.includes(
-              JSON.stringify(window.__intentSimplifySource)
+              JSON.stringify(window.__intentSummarySource)
             )
         ),
       };
     });
 
+    // A capture too short to be worth summarising answers locally: the starter
+    // posts the "already concise" note instead of spending a request.
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "concise-seed",
+        capturedAt: 11,
+        tabId: 411,
+        windowId: 23,
+        frameId: 18,
+        captureMode: "full-page",
+        sourceType: "page",
+        url: "https://docs.example/concise",
+        text: "A very short page.",
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent ===
+          "A very short page." &&
+        document.getElementById("summarize-starter")
+    );
+    const requestsBeforeConcise = await page.evaluate(
+      () => window.__intentRequests.length
+    );
+    await page.locator("#summarize-starter").click();
+    await page.waitForFunction(() =>
+      document
+        .getElementById("messages")
+        ?.textContent?.includes(
+          "Already concise — ask anything about this page."
+        )
+    );
+    const conciseState = await page.evaluate((previousCount) => ({
+      answerCount: document.querySelectorAll("[data-answer-content]").length,
+      requestCount: window.__intentRequests.length - previousCount,
+      starterHidden: !document.getElementById("summarize-starter"),
+    }), requestsBeforeConcise);
+
     await page.evaluate(() => {
       window.__intentRuntimeListeners[0]?.({
         type: "selection-captured",
         captureId: "ask-seed",
-        capturedAt: 11,
+        capturedAt: 12,
         tabId: 411,
         windowId: 23,
         frameId: 19,
         captureMode: "full-page",
-        intent: "ask",
         sourceType: "page",
         url: "https://docs.example/ask",
         text: window.__intentAskSource,
@@ -2285,7 +2424,6 @@ function recordDeterministic(good) {
         windowId: 23,
         frameId: 0,
         captureMode: "full-page",
-        intent: "ask",
         sourceType: "page",
         url: "https://docs.example/tab-b",
         text: "",
@@ -2309,7 +2447,6 @@ function recordDeterministic(good) {
         windowId: 23,
         frameId: 0,
         captureMode: "full-page",
-        intent: "ask",
         sourceType: "page",
         url: "https://docs.example/tab-b",
         text:
@@ -2438,7 +2575,6 @@ function recordDeterministic(good) {
         windowId: 23,
         frameId: 19,
         captureMode: "full-page",
-        intent: "ask",
         sourceType: "page",
         url: "https://docs.example/ask",
         text: window.__intentAskSource,
@@ -2466,7 +2602,6 @@ function recordDeterministic(good) {
         windowId: 23,
         frameId: 19,
         captureMode: "full-page",
-        intent: "ask",
         sourceType: "page",
         url: "https://docs.example/ask",
         text:
@@ -2493,8 +2628,10 @@ function recordDeterministic(good) {
 
     await page.evaluate(async () => {
       const key = "https://docs.example/interrupted";
+      // Open at whatever version the panel already created: the cache format is
+      // version 2, which shares one documents[] array across the record.
       const database = await new Promise((resolve, reject) => {
-        const request = indexedDB.open("tokenpath-page-chats", 1);
+        const request = indexedDB.open("tokenpath-page-chats");
         request.onerror = () => reject(request.error);
         request.onsuccess = () => resolve(request.result);
       });
@@ -2506,12 +2643,15 @@ function recordDeterministic(good) {
           key,
           savedAt: Date.now(),
           value: {
-            version: 1,
+            version: 2,
             context:
               "An interrupted cached article contains enough text to restore.",
             contextLabel: "Entire page",
             captureMode: "full-page",
             sourceType: "page",
+            documents: [
+              "An interrupted cached article contains enough text to restore.",
+            ],
             history: [
               { role: "user", content: "What is the main point?" },
               { role: "assistant", content: "The answer finished generating." },
@@ -2524,8 +2664,7 @@ function recordDeterministic(good) {
                 text: "The answer finished generating.",
                 answerStatus: "attributing",
                 attribution: {
-                  document:
-                    "An interrupted cached article contains enough text to restore.",
+                  documentIndex: 0,
                   question: "What is the main point?",
                   status: "loading",
                 },
@@ -2566,17 +2705,24 @@ function recordDeterministic(good) {
     );
 
     const good =
-      simplifyResult.prompt.includes("clear, simple language") &&
-      simplifyResult.prompt.includes("preserving all facts") &&
-      simplifyResult.prompt.includes(
-        "Do not add any information that is not present"
+      captureSpentNothing &&
+      savedSummaryLength === "medium" &&
+      summaryResult.prompt.includes(
+        "Write a moderately detailed summary of the given text"
       ) &&
-      simplifyResult.maxOutputTokens === 768 &&
-      simplifyResult.label === "Entire page" &&
-      simplifyResult.systemIncludesContext &&
-      simplifyResult.document ===
-        (await page.evaluate(() => window.__intentSimplifySource)) &&
-      simplifyResult.answer.includes("simpler workflow") &&
+      summaryResult.prompt.includes("Aim for 4-6") &&
+      summaryResult.prompt.includes(
+        "Do not add a title, a 'TL;DR:' label"
+      ) &&
+      summaryResult.maxOutputTokens === 768 &&
+      summaryResult.label === "Entire page" &&
+      summaryResult.systemIncludesContext &&
+      summaryResult.document ===
+        (await page.evaluate(() => window.__intentSummarySource)) &&
+      summaryResult.answer.includes("simpler workflow") &&
+      conciseState.answerCount === 0 &&
+      conciseState.requestCount === 0 &&
+      conciseState.starterHidden &&
       askReadyState.generateCount === 1 &&
       askReadyState.heatmapCount === 1 &&
       askReadyState.answerCount === 0 &&
@@ -2604,17 +2750,18 @@ function recordDeterministic(good) {
       clearedChatStayedDeleted &&
       changedContentStartedFresh &&
       interruptedMappingRecovered;
-    console.log("\n### Capture-intent side-panel fixture");
+    console.log("\n### Capture starter side-panel fixture");
     console.log(
-      `  [simplify auto + ask on submit] ${good ? "PASS" : "FAIL"}` +
-        ` — simplify=${simplifyResult.maxOutputTokens}, ` +
+      `  [capture waits + length-aware summary + ask on submit] ${good ? "PASS" : "FAIL"}` +
+        ` — idleCapture=${captureSpentNothing}, summary=${savedSummaryLength}/${summaryResult.maxOutputTokens}, ` +
+        `concise=${conciseState.requestCount}/${conciseState.starterHidden}, ` +
         `askIdle=${askReadyState.generateCount}/${askReadyState.heatmapCount}, ` +
         `ask=${askResult.maxOutputTokens}`
     );
     recordDeterministic(good);
   } catch (error) {
     console.log(
-      `\n### Capture-intent side-panel fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
+      `\n### Capture starter side-panel fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
     );
     recordDeterministic(false);
   } finally {
@@ -2628,7 +2775,7 @@ function recordDeterministic(good) {
   const page = await browser.newPage();
   try {
     await page.addInitScript(() => {
-      const oldSource = "Old selection stays short enough to skip its automatic summary.";
+      const oldSource = "Old selection is the one the rejected question ran against.";
       const newSource = "New selection owns every message shown after the capture changes.";
       const responseJson = (body, status = 200) =>
         new Response(JSON.stringify(body), {
@@ -2686,7 +2833,7 @@ function recordDeterministic(good) {
               return {
                 [key]: {
                   captureId: "stale-context-1",
-                  capturedAt: 1,
+                  capturedAt: Date.now(),
                   tabId: 51,
                   windowId: 7,
                   frameId: 0,
@@ -2736,7 +2883,7 @@ function recordDeterministic(good) {
       window.__staleContextRuntimeListeners[0]?.({
         type: "selection-captured",
         captureId: "stale-context-2",
-        capturedAt: 2,
+        capturedAt: Date.now(),
         tabId: 51,
         windowId: 7,
         frameId: 0,
@@ -2760,8 +2907,9 @@ function recordDeterministic(good) {
     const good =
       result.context ===
         "New selection owns every message shown after the capture changes." &&
-      result.messages.length === 1 &&
-      result.messages[0].includes("Already concise") &&
+      // The new capture owns an empty conversation: nothing from the rejected
+      // turn may survive into it.
+      result.messages.length === 0 &&
       !result.messages.some((message) => message.includes("key was rejected")) &&
       !result.hasErrorCard;
     console.log("\n### Side-panel stale auth/context fixture");
@@ -2875,7 +3023,7 @@ function recordDeterministic(good) {
               return {
                 [key]: {
                   captureId: "sequence-seed",
-                  capturedAt: 1,
+                  capturedAt: Date.now(),
                   tabId: 62,
                   windowId: 8,
                   frameId: 4,
@@ -3046,6 +3194,352 @@ function recordDeterministic(good) {
   } catch (error) {
     console.log(
       `\n### Side-panel stale response sequencing fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
+    );
+    recordDeterministic(false);
+  } finally {
+    await page.close();
+  }
+}
+
+// A chrome.storage.session seed is keyed only by tab, so it can outlive the
+// document it describes. The controller replays it only while it still matches
+// the live tab and is younger than two minutes; anything else is dropped rather
+// than shown as this page's context. Fragment-only differences are the same
+// document and must survive.
+{
+  const seedText =
+    "Seeded page text that only a fresh, matching capture may show in the panel.";
+  const probeSeed = async ({ ageMs, seedUrl, tabUrl }) => {
+    const page = await browser.newPage();
+    try {
+      await page.addInitScript(
+        ({ ageMs, seedText, seedUrl, tabUrl }) => {
+          const localStore = { tokenpathKey: "tpk_seed_freshness" };
+          const responseJson = (body, status = 200) =>
+            new Response(JSON.stringify(body), {
+              status,
+              headers: { "Content-Type": "application/json" },
+            });
+          window.__seedRemovals = [];
+          window.__seedRequests = [];
+          window.chrome = {
+            tabs: {
+              async query() {
+                return [{ id: 77, windowId: 5, url: tabUrl }];
+              },
+              async sendMessage() {
+                return { ok: true };
+              },
+              onUpdated: { addListener() {} },
+              onRemoved: { addListener() {} },
+            },
+            runtime: {
+              async sendMessage() {
+                return { ok: true };
+              },
+              onMessage: { addListener() {} },
+            },
+            storage: {
+              local: {
+                async get(keys) {
+                  const requested = Array.isArray(keys) ? keys : [keys];
+                  return Object.fromEntries(
+                    requested
+                      .filter((key) => key in localStore)
+                      .map((key) => [key, localStore[key]])
+                  );
+                },
+                async set(values) {
+                  Object.assign(localStore, values);
+                },
+                async remove(key) {
+                  delete localStore[key];
+                },
+              },
+              session: {
+                async get(key) {
+                  return {
+                    [key]: {
+                      captureId: "freshness-seed",
+                      capturedAt: Date.now() - ageMs,
+                      tabId: 77,
+                      windowId: 5,
+                      frameId: 0,
+                      url: seedUrl,
+                      text: seedText,
+                      error: null,
+                    },
+                  };
+                },
+                async remove(key) {
+                  window.__seedRemovals.push(key);
+                },
+              },
+            },
+          };
+          window.fetch = async (url) => {
+            const path = String(url);
+            if (path.endsWith("/v1/me/credits")) {
+              return responseJson({ available_tokens: 4_000 });
+            }
+            window.__seedRequests.push(path);
+            return responseJson({}, 404);
+          };
+        },
+        { ageMs, seedText, seedUrl, tabUrl }
+      );
+      await page.goto(PANEL_URL);
+      // The seed key is consumed either way, so its removal is the point where
+      // the controller has finished deciding.
+      await page.waitForFunction(() =>
+        window.__seedRemovals.includes("seed:77")
+      );
+      await page.waitForTimeout(30);
+      const observed = await page.evaluate(() => ({
+        contextHidden: document.getElementById("context")?.hidden,
+        contextText:
+          document.getElementById("context-text")?.textContent || "",
+        hasStarter: !!document.getElementById("summarize-starter"),
+        requestCount: window.__seedRequests.length,
+      }));
+      return observed;
+    } finally {
+      await page.close();
+    }
+  };
+
+  try {
+    const fresh = await probeSeed({
+      ageMs: 5_000,
+      seedUrl: "https://news.example/article?ref=1",
+      // Only the fragment differs: still the same captured document.
+      tabUrl: "https://news.example/article?ref=1#section-3",
+    });
+    const expired = await probeSeed({
+      ageMs: 180_000,
+      seedUrl: "https://news.example/article",
+      tabUrl: "https://news.example/article",
+    });
+    const otherDocument = await probeSeed({
+      ageMs: 5_000,
+      seedUrl: "https://news.example/article",
+      tabUrl: "https://news.example/a-different-article",
+    });
+    const good =
+      fresh.contextText === seedText &&
+      fresh.contextHidden === false &&
+      fresh.hasStarter &&
+      fresh.requestCount === 0 &&
+      expired.contextText === "" &&
+      expired.contextHidden === true &&
+      expired.hasStarter &&
+      expired.requestCount === 0 &&
+      otherDocument.contextText === "" &&
+      otherDocument.contextHidden === true &&
+      otherDocument.hasStarter &&
+      otherDocument.requestCount === 0;
+    console.log("\n### Side-panel seed freshness fixture");
+    console.log(
+      `  [fragment-only seed kept, expired and off-document seeds dropped] ${good ? "PASS" : "FAIL"}` +
+        ` — fresh=${fresh.contextText === seedText}, expired=${expired.contextHidden}, ` +
+        `otherDocument=${otherDocument.contextHidden}`
+    );
+    recordDeterministic(good);
+  } catch (error) {
+    console.log(
+      `\n### Side-panel seed freshness fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
+    );
+    recordDeterministic(false);
+  }
+}
+
+// A running turn no longer locks the composer: the draft field stays usable and
+// the submit button becomes a Stop control. Stopping keeps whatever had already
+// streamed, marked incomplete and deliberately unattributed.
+{
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(() => {
+      const source =
+        "The stop fixture captures a page with enough prose to be worth " +
+        "summarising, covering the revised workflow, its safety checks, the " +
+        "quality reviews it preserved, and the measurements taken afterwards.";
+      const localStore = { tokenpathKey: "tpk_stop" };
+      const responseJson = (body, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+
+      window.__stopRequests = [];
+      window.__stopSource = source;
+      window.chrome = {
+        tabs: {
+          async query() {
+            return [{ id: 88, windowId: 9, url: "https://docs.example/stop" }];
+          },
+          async sendMessage() {
+            return { ok: true };
+          },
+          onUpdated: { addListener() {} },
+          onRemoved: { addListener() {} },
+        },
+        runtime: {
+          async sendMessage() {
+            return { ok: true };
+          },
+          onMessage: { addListener() {} },
+        },
+        storage: {
+          local: {
+            async get(keys) {
+              const requested = Array.isArray(keys) ? keys : [keys];
+              return Object.fromEntries(
+                requested
+                  .filter((key) => key in localStore)
+                  .map((key) => [key, localStore[key]])
+              );
+            },
+            async set(values) {
+              Object.assign(localStore, values);
+            },
+            async remove(key) {
+              delete localStore[key];
+            },
+          },
+          session: {
+            async get(key) {
+              return {
+                [key]: {
+                  captureId: "stop-seed",
+                  capturedAt: Date.now(),
+                  tabId: 88,
+                  windowId: 9,
+                  frameId: 0,
+                  url: "https://docs.example/stop",
+                  text: source,
+                  error: null,
+                },
+              };
+            },
+            async remove() {},
+          },
+        },
+      };
+
+      window.fetch = async (url, options = {}) => {
+        const path = String(url);
+        if (path.endsWith("/v1/me/credits")) {
+          return responseJson({ available_tokens: 5_000 });
+        }
+        window.__stopRequests.push(path);
+        if (path.endsWith("/v1/generate")) {
+          // One delta, then the stream stays open until the request is
+          // aborted — the shape of a long generation stopped mid-flight. A
+          // real fetch tears the body down on abort, so the stub does too.
+          const encoder = new TextEncoder();
+          const signal = options.signal;
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  "event: delta\ndata: " +
+                    JSON.stringify({
+                      text: "Partial answer that never finishes",
+                    }) +
+                    "\n\n"
+                )
+              );
+              signal?.addEventListener("abort", () => {
+                window.__stopStreamCancelled = true;
+                controller.error(new DOMException("Aborted", "AbortError"));
+              });
+            },
+          });
+          return new Response(stream, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          });
+        }
+        return responseJson({}, 404);
+      };
+    });
+
+    await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent ===
+          window.__stopSource && document.getElementById("summarize-starter")
+    );
+    await page.locator("#summarize-starter").click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector('[data-answer-status="streaming"]')
+        ?.textContent?.includes("Partial answer that never finishes")
+    );
+    const busyState = await page.evaluate(() => ({
+      inputDisabled: document.getElementById("input")?.disabled,
+      lengthDisabled: [
+        ...document.querySelectorAll('#summary-length [role="radio"]'),
+      ].every((option) => option.disabled),
+      sendDisabled: document.getElementById("send")?.disabled,
+      sendLabel: document.getElementById("send")?.getAttribute("aria-label"),
+    }));
+    await page.locator("#input").fill("Drafted while the answer streams.");
+    const draftWhileBusy = await page.evaluate(
+      () => document.getElementById("input")?.value || ""
+    );
+    await page.locator("#send").click();
+    // The partial answer is marked at once; the composer hands itself back only
+    // after the aborted request has unwound.
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="unavailable"]') &&
+        document.getElementById("send")?.getAttribute("aria-label") ===
+          "Send message"
+    );
+    const stoppedState = await page.evaluate(() => ({
+      answer:
+        document.querySelector("[data-answer-content]")?.textContent || "",
+      draft: document.getElementById("input")?.value || "",
+      incomplete:
+        document
+          .getElementById("messages")
+          ?.textContent?.includes(
+            "Answer incomplete — no sources for a partial answer."
+          ) === true,
+      inputDisabled: document.getElementById("input")?.disabled,
+      requestCount: window.__stopRequests.length,
+      sendLabel: document.getElementById("send")?.getAttribute("aria-label"),
+      streamCancelled: window.__stopStreamCancelled === true,
+      toast: document.getElementById("toast")?.textContent || "",
+    }));
+    const good =
+      busyState.inputDisabled === false &&
+      busyState.sendLabel === "Stop generating" &&
+      busyState.sendDisabled === false &&
+      busyState.lengthDisabled === true &&
+      draftWhileBusy === "Drafted while the answer streams." &&
+      stoppedState.answer === "Partial answer that never finishes" &&
+      stoppedState.incomplete &&
+      stoppedState.inputDisabled === false &&
+      stoppedState.sendLabel === "Send message" &&
+      stoppedState.draft === "Drafted while the answer streams." &&
+      stoppedState.streamCancelled &&
+      stoppedState.toast === "Stopped." &&
+      // Nothing was attributed: a truncated answer has no honest source map.
+      stoppedState.requestCount === 1;
+    console.log("\n### Composer stop-control fixture");
+    console.log(
+      `  [composer stays usable while busy + Stop keeps the partial answer] ${good ? "PASS" : "FAIL"}` +
+        ` — busy=${busyState.sendLabel}/${busyState.inputDisabled}, ` +
+        `stopped=${stoppedState.sendLabel}/${stoppedState.incomplete}, ` +
+        `calls=${stoppedState.requestCount}`
+    );
+    recordDeterministic(good);
+  } catch (error) {
+    console.log(
+      `\n### Composer stop-control fixture\n  FAIL — ${String(error.message).split("\n")[0]}`
     );
     recordDeterministic(false);
   } finally {
@@ -4665,9 +5159,16 @@ function recordDeterministic(good) {
   }
 }
 
+if (!LIVE_SITES) {
+  console.log(
+    `\n### Live public sites\n  SKIPPED — ${SITES.length + 1} third-party checks;` +
+      " set E2E_LIVE_SITES=1 to run them"
+  );
+}
+
 // Public X post detail page. Target the post body itself (not navigation) and
 // replace its rendered span before highlighting to exercise React rerenders.
-{
+if (LIVE_SITES) {
   const page = await browser.newPage({
     userAgent:
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0 Safari/537.36",
@@ -4724,7 +5225,7 @@ function recordDeterministic(good) {
   }
 }
 
-for (const url of SITES) {
+for (const url of LIVE_SITES ? SITES : []) {
   const page = await browser.newPage({
     userAgent:
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0 Safari/537.36",
@@ -4787,3 +5288,1198 @@ for (const url of SITES) {
 await browser.close();
 console.log(`\n=========================\nsuites passed: ${totalPass}, failed: ${totalFail}`);
 if (deterministicFail > 0) process.exitCode = 1;
+
+// Page-reload attribution recovery. A refreshed tab throws away the content
+// script and its node map, while the side panel still holds (or restores from
+// IndexedDB) the answer, its heatmap, and the captured source document. The
+// highlight has to come back from that cached document alone — and still
+// refuse to guess. Self-contained: its own browser, fixtures, and counters.
+{
+  const reloadBrowser = await chromium.launch({ args: ["--no-sandbox"] });
+  let reloadPass = 0;
+  let reloadFail = 0;
+  const reloadCheck = (name, good, detail) => {
+    if (good) reloadPass++;
+    else reloadFail++;
+    console.log(
+      `  [${name}] ${good ? "PASS" : "FAIL"}` +
+        (good || detail === undefined ? "" : ` — ${JSON.stringify(detail)}`)
+    );
+  };
+
+  // Serve a fixture whose body may differ per load, the way a real page's view
+  // counter, ad slot, or relative timestamp does.
+  const openFixture = async (bodyForLoad) => {
+    const page = await reloadBrowser.newPage();
+    let load = 0;
+    await page.route("https://reload.fixture.test/**", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body:
+          "<!doctype html><html><head><title>Reload fixture</title></head>" +
+          `<body>${bodyForLoad(++load)}</body></html>`,
+      })
+    );
+    await page.goto("https://reload.fixture.test/article");
+    await setupPage(page);
+    return page;
+  };
+
+  const request = (page, message) =>
+    page.evaluate((message) => {
+      let response;
+      window.__tldrMsg(message, null, (value) => (response = value));
+      const live =
+        CSS.highlights?.get("tldr-attrib") ||
+        CSS.highlights?.get("tldr-attrib-dark");
+      return {
+        resp: response,
+        ranges: live ? [...live].map((range) => range.toString()) : [],
+      };
+    }, message);
+
+  const capturePage = async (page) =>
+    (
+      await request(page, {
+        type: "capture-page",
+        captureId: "reload-capture",
+        forceFullPage: true,
+      })
+    ).resp.text;
+
+  const highlightAfterReload = (page, documentText, quote, occurrence = 0) => {
+    let start = -1;
+    for (let index = 0; index <= occurrence; index++) {
+      start = documentText.indexOf(quote, start + 1);
+    }
+    return request(page, {
+      type: "highlight",
+      start,
+      end: start + quote.length,
+      document: documentText,
+      captureId: "reload-capture",
+      highlightId: "reload-highlight",
+    });
+  };
+
+  console.log("\n### Page-reload attribution recovery");
+  try {
+    // 1. The article is unchanged apart from one volatile counter, which is
+    // enough to defeat a whole-document match.
+    {
+      const page = await openFixture(
+        (load) => `
+          <nav><span>${load * 7} people are reading this</span></nav>
+          <article>
+            <h1>Kettle physics</h1>
+            <p>Water boils at one hundred degrees Celsius at sea level.</p>
+            <p>Altitude lowers the boiling point because pressure drops.</p>
+          </article>`
+      );
+      const captured = await capturePage(page);
+      await page.reload();
+      await setupPage(page);
+      const recovered = await highlightAfterReload(
+        page,
+        captured,
+        "Altitude lowers the boiling point"
+      );
+      reloadCheck(
+        "reloaded page with a changed counter still highlights",
+        recovered.resp?.ok === true &&
+          recovered.ranges.join("") === "Altitude lowers the boiling point",
+        recovered
+      );
+
+      // The panel owns that highlight and must still be able to clear it,
+      // even though this frame holds no capture of its own.
+      const cleared = await request(page, {
+        type: "clear-highlight",
+        captureId: "reload-capture",
+        highlightId: "reload-highlight",
+      });
+      reloadCheck(
+        "the panel can clear a recovered highlight",
+        cleared.resp?.ok === true && cleared.ranges.length === 0,
+        cleared
+      );
+      await page.close();
+    }
+
+    // 2. A repeated quote is separated by the cached context, not by order.
+    {
+      const page = await openFixture(
+        (load) => `
+          <nav><span>${load * 7} reading</span></nav>
+          <article>
+            <p>Opening notes. The kettle sings. Closing notes.</p>
+            <p>Later section. The kettle sings. Final remark.</p>
+          </article>`
+      );
+      const captured = await capturePage(page);
+      await page.reload();
+      await setupPage(page);
+      const recovered = await highlightAfterReload(
+        page,
+        captured,
+        "The kettle sings",
+        1
+      );
+      const paragraph = await page.evaluate(() => {
+        const live =
+          CSS.highlights?.get("tldr-attrib") ||
+          CSS.highlights?.get("tldr-attrib-dark");
+        const range = live ? [...live][0] : null;
+        return range
+          ? range.startContainer.parentElement.textContent.trim().slice(0, 13)
+          : null;
+      });
+      reloadCheck(
+        "a repeated quote lands on the context-supported occurrence",
+        recovered.resp?.ok === true && paragraph === "Later section",
+        { recovered, paragraph }
+      );
+      await page.close();
+    }
+
+    // 3. Indistinguishable repeats fail closed instead of taking the first.
+    {
+      const page = await openFixture(
+        (load) => `
+          <nav><span>${load * 7} reading</span></nav>
+          <article>
+            <p>The kettle sings.</p>
+            <p>The kettle sings.</p>
+          </article>`
+      );
+      const captured = await capturePage(page);
+      await page.reload();
+      await setupPage(page);
+      const recovered = await highlightAfterReload(
+        page,
+        captured,
+        "The kettle sings"
+      );
+      reloadCheck(
+        "indistinguishable repeats fail closed after a reload",
+        recovered.resp?.ok === false && recovered.ranges.length === 0,
+        recovered
+      );
+      await page.close();
+    }
+
+    // 4. The attributed text itself is gone on reload.
+    {
+      const page = await openFixture((load) =>
+        load === 1
+          ? `<article><p>Altitude lowers the boiling point because pressure drops.</p></article>`
+          : `<article><p>The article was replaced with different copy.</p></article>`
+      );
+      const captured = await capturePage(page);
+      await page.reload();
+      await setupPage(page);
+      const recovered = await highlightAfterReload(
+        page,
+        captured,
+        "Altitude lowers the boiling point"
+      );
+      reloadCheck(
+        "a target that no longer exists fails closed",
+        recovered.resp?.ok === false && recovered.ranges.length === 0,
+        recovered
+      );
+      await page.close();
+    }
+
+    // 5. A selection capture survives a reload that re-wrapped its markup.
+    {
+      const page = await openFixture((load) =>
+        load === 1
+          ? `<article><p id="source">Altitude lowers the boiling point because pressure drops.</p>
+             <p>Water boils at one hundred degrees Celsius.</p></article>`
+          : `<article><p id="source">Altitude <em>lowers</em> the boiling point because pressure drops.</p>
+             <p>Water boils at one hundred degrees Celsius.</p></article>`
+      );
+      const captured = await page.evaluate(() => {
+        const node = document.getElementById("source").firstChild;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+        let response;
+        window.__tldrMsg(
+          {
+            type: "capture-selection",
+            captureId: "reload-capture",
+            selectionText: selection.toString(),
+          },
+          null,
+          (value) => (response = value)
+        );
+        return response.text;
+      });
+      await page.reload();
+      await setupPage(page);
+      const recovered = await highlightAfterReload(
+        page,
+        captured,
+        "boiling point"
+      );
+      reloadCheck(
+        "a selection capture recovers through re-wrapped markup",
+        recovered.resp?.ok === true &&
+          recovered.ranges.join("") === "boiling point",
+        recovered
+      );
+      await page.close();
+    }
+
+    // 6. A live capture whose own target changed must not fall through to the
+    // cached document and steal a surviving duplicate.
+    {
+      const page = await openFixture(
+        () => `
+          <article>
+            <p id="target">The kettle sings loudly today.</p>
+            <p>The kettle sings loudly today.</p>
+          </article>`
+      );
+      const captured = await page.evaluate(() => {
+        const node = document.getElementById("target").firstChild;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+        let response;
+        window.__tldrMsg(
+          {
+            type: "capture-selection",
+            captureId: "reload-capture",
+            selectionText: selection.toString(),
+          },
+          null,
+          (value) => (response = value)
+        );
+        return response.text;
+      });
+      await page.evaluate(() => {
+        document.getElementById("target").textContent =
+          "The kettle whistles loudly today.";
+      });
+      const recovered = await highlightAfterReload(
+        page,
+        captured,
+        "kettle sings"
+      );
+      reloadCheck(
+        "a changed live target never jumps to a surviving duplicate",
+        recovered.resp?.ok === false && recovered.ranges.length === 0,
+        recovered
+      );
+      await page.close();
+    }
+  } catch (error) {
+    reloadFail++;
+    console.log(
+      `  SUITE ERROR — ${String(error.message).split("\n")[0]}`
+    );
+  } finally {
+    await reloadBrowser.close();
+  }
+
+  console.log(
+    `  reload recovery: ${reloadPass} passed, ${reloadFail} failed`
+  );
+  if (reloadFail > 0) process.exitCode = 1;
+}
+
+// YouTube transcript chat with timestamp attribution. A top-level watch page
+// is captured as the video's subtitle transcript instead of the page's
+// rendered text, and an attributed answer span resolves to the caption cue it
+// came from and seeks the player there. The transcript-offset -> timestamp cue
+// table never leaves the frame; only the plain transcript travels to the panel.
+// Self-contained: its own browser, fixtures, and counters.
+{
+  const videoBrowser = await chromium.launch({ args: ["--no-sandbox"] });
+  let videoPass = 0;
+  let videoFail = 0;
+  const videoCheck = (name, good, detail) => {
+    if (good) videoPass++;
+    else videoFail++;
+    console.log(
+      `  [${name}] ${good ? "PASS" : "FAIL"}` +
+        (good || detail === undefined ? "" : ` — ${JSON.stringify(detail)}`)
+    );
+  };
+
+  const VIDEO_ID = "demo1234567";
+  const WATCH_URL = `https://www.youtube.com/watch?v=${VIDEO_ID}`;
+  const PAGE_MARKER = "Subscribe 1.2M subscribers";
+  const CLIENT_VERSION = "2.20260730.01.00";
+  // Read out of content.js rather than duplicated, so the pinned fallback and
+  // the assertions about it can never drift apart.
+  const FALLBACK_CLIENT_VERSION = /TRANSCRIPT_CLIENT_VERSION_FALLBACK = "([^"]+)"/
+    .exec(CONTENT_JS)?.[1];
+  // Synthesized by content.js from the video id alone; pinned here so a change
+  // to that encoding fails this fixture as well as the unit vectors.
+  const EXPECTED_PARAMS = "qgkPCgtkZW1vMTIzNDU2NxgB";
+  const SPOKEN = [
+    { tStartMs: 0, text: "Welcome back to the show" },
+    { tStartMs: 6_000, text: "today we are\ntalking about kettles" },
+    { tStartMs: 12_000, text: "water boils at one hundred degrees" },
+    { tStartMs: 42_000, text: "altitude lowers the boiling point" },
+    { tStartMs: 61_000, text: "thanks for listening everyone" },
+  ];
+  const TRANSCRIPT = SPOKEN.map((cue) =>
+    cue.text.replace(/\s+/g, " ")
+  ).join(" ");
+  const ATTRIBUTED = "altitude lowers the boiling point";
+  const ANSWER =
+    "The host explains that altitude lowers the boiling point because " +
+    "atmospheric pressure drops.";
+
+  const displayTimestamp = (tStartMs) => {
+    const total = Math.floor(tStartMs / 1_000);
+    const minutes = Math.floor(total / 60);
+    const seconds = String(total % 60).padStart(2, "0");
+    return `${minutes}:${seconds}`;
+  };
+
+  // The transcript panel's view-model shape: rows nested inside panel/timeline
+  // wrappers, with chapter headings of a different view-model type sharing the
+  // same list. There is no start-time field — the displayed timestamp is it.
+  const panelRow = (cue) => ({
+    macroMarkersPanelItemViewModel: {
+      timelineItemViewModel: {
+        transcriptSegmentViewModel: {
+          simpleText: cue.text,
+          timestamp: displayTimestamp(cue.tStartMs),
+          timestampA11yLabel: `${Math.floor(cue.tStartMs / 1_000)} seconds`,
+          textUtf16Length: cue.text.length,
+        },
+      },
+    },
+  });
+  const chapterRow = (headerText, cue) => ({
+    macroMarkersPanelItemViewModel: {
+      timelineItemViewModel: {
+        transcriptSectionHeaderViewModel: {
+          headerText,
+          timestamp: displayTimestamp(cue.tStartMs),
+        },
+      },
+    },
+  });
+  const panelBody = (cues) => ({
+    responseContext: { visitorData: "ignored" },
+    content: {
+      sectionListRenderer: {
+        contents: [
+          {
+            transcriptSegmentListRenderer: {
+              initialSegments: cues.flatMap((cue, index) =>
+                // A chapter heading before the physics section, to prove that
+                // only transcript rows become transcript.
+                index === 2
+                  ? [chapterRow("The physics", cue), panelRow(cue)]
+                  : [panelRow(cue)]
+              ),
+            },
+          },
+        ],
+      },
+    },
+  });
+  const TRANSCRIPT_PANEL = panelBody(SPOKEN);
+  const REPLACED_PANEL = panelBody([
+    { tStartMs: 0, text: "an entirely different episode about bread" },
+  ]);
+
+  const playerResponse = (videoId) => ({
+    videoDetails: { videoId, title: "Kettle physics" },
+    captions: {
+      playerCaptionsTracklistRenderer: {
+        // Availability only. The signed baseUrl is never fetched: under
+        // proof-of-origin enforcement it answers 200 with an empty body.
+        captionTracks: [
+          {
+            baseUrl: `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en`,
+            languageCode: "en",
+          },
+        ],
+      },
+    },
+  });
+
+  const watchPageHtml = ({
+    inlineVideoId = VIDEO_ID,
+    captions = true,
+    clientVersion = CLIENT_VERSION,
+    playerResponseReadable = true,
+  } = {}) => {
+    const inline = captions
+      ? playerResponse(inlineVideoId)
+      : { videoDetails: { videoId: inlineVideoId }, captions: {} };
+    return (
+      "<!doctype html><html><head><title>Kettle physics</title></head><body>" +
+      '<div id="movie_player"><video></video></div>' +
+      "<h1>Kettle physics, episode 12</h1>" +
+      `<div id="meta">${PAGE_MARKER}</div>` +
+      '<div id="description">Chapters, links, and a sponsor read.</div>' +
+      '<div id="comments">Comments 1,204 Great episode!</div>' +
+      (clientVersion
+        ? "<script>window.ytcfg={};ytcfg.set(" +
+          JSON.stringify({
+            INNERTUBE_CONTEXT_CLIENT_VERSION: clientVersion,
+            INNERTUBE_CLIENT_NAME: "WEB",
+          }) +
+          ");</script>"
+        : "") +
+      (playerResponseReadable
+        ? `<script>var ytInitialPlayerResponse = ${JSON.stringify(inline)};</script>`
+        : "") +
+      "</body></html>"
+    );
+  };
+
+  // `documentOptions` describes the HTML the tab loaded; `fetchOptions`
+  // describes what the same-origin re-read returns, which is how an in-app
+  // navigation to another video is reproduced deterministically.
+  const openWatchPage = async (
+    url,
+    documentOptions = {},
+    {
+      fetchOptions = documentOptions,
+      replacePanelAfterFirstRead = false,
+      panelRejects = () => false,
+    } = {}
+  ) => {
+    const page = await videoBrowser.newPage();
+    const panelRequests = [];
+    await page.route(/^https:\/\/www\.youtube\.com\/watch/, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: watchPageHtml(
+          route.request().resourceType() === "document"
+            ? documentOptions
+            : fetchOptions
+        ),
+      })
+    );
+    await page.route(
+      /^https:\/\/www\.youtube\.com\/youtubei\/v1\/get_panel/,
+      (route) => {
+        const request = route.request();
+        let body = null;
+        try {
+          body = JSON.parse(request.postData() || "null");
+        } catch {
+          body = null;
+        }
+        const attempt = {
+          url: request.url(),
+          method: request.method(),
+          body,
+        };
+        panelRequests.push(attempt);
+        if (panelRejects(attempt, panelRequests.length)) {
+          route.fulfill({
+            status: 400,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { code: 400, status: "FAILED_PRECONDITION" },
+            }),
+          });
+          return;
+        }
+        route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify(
+            replacePanelAfterFirstRead && panelRequests.length > 1
+              ? REPLACED_PANEL
+              : TRANSCRIPT_PANEL
+          ),
+        });
+      }
+    );
+    await page.goto(url);
+    await setupPage(page);
+    return { page, panelRequests };
+  };
+
+  // The content script answers a transcript capture and a transcript highlight
+  // asynchronously (both read captions), so wait for the reply rather than
+  // reading it synchronously the way the DOM-only fixtures can.
+  const send = (page, message) =>
+    page.evaluate(async (message) => {
+      const response = await Promise.race([
+        new Promise((resolve) => {
+          window.__tldrMsg(message, null, resolve);
+        }),
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ timedOut: true }), 10_000)
+        ),
+      ]);
+      const video = document.querySelector("#movie_player video");
+      const indicator = document.getElementById(
+        "tokenpath-transcript-seek-indicator"
+      );
+      return {
+        resp: response,
+        currentTime: video ? video.currentTime : null,
+        indicator: indicator ? indicator.textContent : null,
+      };
+    }, message);
+
+  const capturePage = (page, captureId = "video-capture") =>
+    send(page, { type: "capture-page", captureId, forceFullPage: true });
+
+  const attribute = (page, quote, overrides = {}) => {
+    const start = TRANSCRIPT.indexOf(quote);
+    return send(page, {
+      type: "highlight",
+      start,
+      end: start + quote.length,
+      document: TRANSCRIPT,
+      captureId: "video-capture",
+      highlightId: "video-highlight",
+      ...overrides,
+    });
+  };
+
+  const near = (value, expected) =>
+    typeof value === "number" && Math.abs(value - expected) < 0.05;
+
+  console.log("\n### YouTube transcript capture and timestamp attribution");
+  try {
+    // 1. Capture, cue lookup, and seeking on an ordinary watch page.
+    {
+      const { page, panelRequests } = await openWatchPage(WATCH_URL);
+      const captured = await capturePage(page);
+      videoCheck(
+        "a watch page captures the subtitle transcript, not the page text",
+        captured.resp?.captureMode === "video-transcript" &&
+          captured.resp?.text === TRANSCRIPT &&
+          !captured.resp?.error &&
+          captured.resp?.truncated === false &&
+          !captured.resp.text.includes("Subscribe") &&
+          !captured.resp.text.includes("Comments") &&
+          !captured.resp.text.includes("sponsor"),
+        captured.resp
+      );
+      // Exactly the request the watch page's own transcript panel makes: the
+      // synthesized params, the page's InnerTube version, a minimal WEB
+      // context, and no second attempt once one succeeds.
+      videoCheck(
+        "the transcript panel is requested the way the page requests it",
+        panelRequests.length === 1 &&
+          panelRequests[0].method === "POST" &&
+          panelRequests[0].url.includes("prettyPrint=false") &&
+          panelRequests[0].body?.panelId === "PAmodern_transcript_view" &&
+          panelRequests[0].body?.params === EXPECTED_PARAMS &&
+          panelRequests[0].body?.context?.client?.clientName === "WEB" &&
+          panelRequests[0].body?.context?.client?.clientVersion ===
+            CLIENT_VERSION,
+        panelRequests
+      );
+      // A row that wraps across two display lines is one span of transcript,
+      // and a chapter heading in the same list is not transcript at all.
+      videoCheck(
+        "a wrapped row is one line and chapter headings are excluded",
+        captured.resp?.text.includes("today we are talking about kettles") &&
+          !captured.resp?.text.includes("The physics"),
+        captured.resp?.text
+      );
+
+      const seeked = await attribute(page, ATTRIBUTED);
+      videoCheck(
+        "an attributed span seeks the player to its cue's timestamp",
+        seeked.resp?.ok === true &&
+          near(seeked.currentTime, 42) &&
+          seeked.indicator === "TokenPath source · 0:42",
+        seeked
+      );
+
+      const spanning = await attribute(page, "degrees altitude lowers");
+      videoCheck(
+        "a span crossing two cues seeks to the earlier one",
+        spanning.resp?.ok === true && near(spanning.currentTime, 12),
+        spanning
+      );
+
+      const before = spanning.currentTime;
+      const missed = await send(page, {
+        type: "highlight",
+        start: TRANSCRIPT.length + 40,
+        end: TRANSCRIPT.length + 60,
+        document: TRANSCRIPT,
+        captureId: "video-capture",
+        highlightId: "video-highlight",
+      });
+      videoCheck(
+        "an unmatchable span fails closed without moving the player",
+        missed.resp?.ok === false && missed.currentTime === before,
+        missed
+      );
+
+      const cleared = await send(page, {
+        type: "clear-highlight",
+        captureId: "video-capture",
+        highlightId: "video-highlight",
+      });
+      videoCheck(
+        "clearing removes the on-page seek indicator",
+        cleared.resp?.ok === true && cleared.indicator === null,
+        cleared
+      );
+      await page.close();
+    }
+
+    // 2. A selection on a watch page is still a selection.
+    {
+      const { page, panelRequests } = await openWatchPage(WATCH_URL);
+      const selected = await page.evaluate(() => {
+        const node = document.getElementById("description").firstChild;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+        return node.data;
+      });
+      const captured = await send(page, {
+        type: "capture-page",
+        captureId: "video-selection",
+      });
+      videoCheck(
+        "a selection on a watch page is never replaced by the transcript",
+        captured.resp?.captureMode === "selection" &&
+          captured.resp?.text === selected &&
+          panelRequests.length === 0,
+        { resp: captured.resp, panelRequests }
+      );
+      await page.close();
+    }
+
+    // 3. A video with no captions falls back to page text and says why.
+    {
+      const { page, panelRequests } = await openWatchPage(WATCH_URL, {
+        captions: false,
+      });
+      const captured = await capturePage(page);
+      videoCheck(
+        "a video with no captions captures page text and reports why",
+        captured.resp?.captureMode === "full-page" &&
+          captured.resp?.transcriptUnavailable === true &&
+          captured.resp?.text.includes(PAGE_MARKER) &&
+          captured.resp?.text.includes("Comments 1,204") &&
+          !captured.resp?.text.includes("boiling point") &&
+          panelRequests.length === 0,
+        { resp: captured.resp, panelRequests }
+      );
+      await page.close();
+    }
+
+    // 4. In-app navigation leaves the served HTML describing another video.
+    // The stale inline response is rejected and the current one re-read.
+    {
+      const { page } = await openWatchPage(
+        WATCH_URL,
+        { inlineVideoId: "stale7654321" },
+        { fetchOptions: { inlineVideoId: VIDEO_ID } }
+      );
+      const captured = await capturePage(page);
+      videoCheck(
+        "a stale inline player response is re-read for the current video",
+        captured.resp?.captureMode === "video-transcript" &&
+          captured.resp?.text === TRANSCRIPT,
+        captured.resp
+      );
+      await page.close();
+    }
+
+    // 4b. The client version is read from the page, but a page that does not
+    // publish one still gets a transcript from the pinned fallback version.
+    {
+      const { page, panelRequests } = await openWatchPage(WATCH_URL, {
+        clientVersion: null,
+      });
+      const captured = await capturePage(page);
+      videoCheck(
+        "an unreadable client version falls back to the pinned one",
+        captured.resp?.captureMode === "video-transcript" &&
+          captured.resp?.text === TRANSCRIPT &&
+          panelRequests.length === 1 &&
+          panelRequests[0].body?.context?.client?.clientVersion ===
+            FALLBACK_CLIENT_VERSION,
+        { resp: captured.resp, panelRequests }
+      );
+      await page.close();
+    }
+
+    // 4b-ii. A page whose player response cannot be read at all proves nothing
+    // about captions, so the panel is still asked rather than the video being
+    // declared captionless on the strength of a failed page read.
+    {
+      const { page, panelRequests } = await openWatchPage(WATCH_URL, {
+        playerResponseReadable: false,
+      });
+      const captured = await capturePage(page);
+      videoCheck(
+        "an unreadable player response still asks the transcript panel",
+        captured.resp?.captureMode === "video-transcript" &&
+          captured.resp?.text === TRANSCRIPT &&
+          panelRequests.length === 1,
+        { resp: captured.resp, panelRequests }
+      );
+      await page.close();
+    }
+
+    // 4c. A rejected client version is retried once with the pinned one, so a
+    // version the endpoint has stopped accepting is not a dead end.
+    {
+      const { page, panelRequests } = await openWatchPage(
+        WATCH_URL,
+        {},
+        {
+          panelRejects: (attempt) =>
+            attempt.body?.context?.client?.clientVersion === CLIENT_VERSION,
+        }
+      );
+      const captured = await capturePage(page);
+      videoCheck(
+        "a rejected client version is retried once with the pinned one",
+        captured.resp?.captureMode === "video-transcript" &&
+          captured.resp?.text === TRANSCRIPT &&
+          panelRequests.length === 2 &&
+          panelRequests[0].body?.context?.client?.clientVersion ===
+            CLIENT_VERSION &&
+          panelRequests[1].body?.context?.client?.clientVersion ===
+            FALLBACK_CLIENT_VERSION,
+        { resp: captured.resp, panelRequests }
+      );
+      await page.close();
+    }
+
+    // 4d. When the panel endpoint refuses outright — the shape this feature is
+    // most likely to break in — the capture degrades to page text and says so
+    // rather than presenting an empty or wrong transcript.
+    {
+      const { page, panelRequests } = await openWatchPage(
+        WATCH_URL,
+        {},
+        { panelRejects: () => true }
+      );
+      const captured = await capturePage(page);
+      videoCheck(
+        "a refused transcript panel degrades to page text, not to nothing",
+        captured.resp?.captureMode === "full-page" &&
+          captured.resp?.transcriptUnavailable === true &&
+          captured.resp?.text.includes(PAGE_MARKER) &&
+          !captured.resp?.text.includes("boiling point") &&
+          panelRequests.length === 2,
+        { resp: captured.resp, panelRequests }
+      );
+      await page.close();
+    }
+
+    // 5. A reload throws away the cue table. It is rebuilt on demand, and only
+    // accepted when it still reproduces the transcript the answer cites.
+    {
+      const { page } = await openWatchPage(WATCH_URL);
+      await capturePage(page);
+      await page.reload();
+      await setupPage(page);
+      const recovered = await attribute(page, ATTRIBUTED, {
+        captureId: "capture-from-before-the-reload",
+      });
+      videoCheck(
+        "a reloaded watch page rebuilds its cue table on demand",
+        recovered.resp?.ok === true && near(recovered.currentTime, 42),
+        recovered
+      );
+      await page.close();
+    }
+    {
+      const { page } = await openWatchPage(
+        WATCH_URL,
+        {},
+        { replacePanelAfterFirstRead: true }
+      );
+      await capturePage(page);
+      await page.reload();
+      await setupPage(page);
+      const recovered = await attribute(page, ATTRIBUTED, {
+        captureId: "capture-from-before-the-reload",
+      });
+      videoCheck(
+        "a transcript that no longer matches the cited one fails closed",
+        recovered.resp?.ok === false && recovered.currentTime === 0,
+        recovered
+      );
+      await page.close();
+    }
+
+    // 6. The panel end of the same flow: the transcript is labelled as one,
+    // summarises through the ordinary pathway, and its attribution message —
+    // forwarded verbatim into the real content script — seeks the player.
+    {
+      const contentFixture = await openWatchPage(WATCH_URL);
+      await capturePage(contentFixture.page);
+
+      const panel = await videoBrowser.newPage();
+      await panel.setViewportSize({ width: 360, height: 720 });
+      await panel.addInitScript(
+        ({ transcript, answer, attributed, watchUrl }) => {
+          const runtimeListeners = [];
+          const tabUpdatedListeners = [];
+          const localStore = { tokenpathKey: "tpk_video" };
+          window.__videoTranscript = transcript;
+          window.__videoAnswer = answer;
+          window.__videoSent = [];
+          window.__videoRequests = [];
+          window.__videoRuntimeListeners = runtimeListeners;
+          window.__videoTabUpdatedListeners = tabUpdatedListeners;
+
+          const codePointOffset = (text, utf16Offset) =>
+            Array.from(text.slice(0, utf16Offset)).length;
+          const responseJson = (body, status = 200) =>
+            new Response(JSON.stringify(body), {
+              status,
+              headers: { "Content-Type": "application/json" },
+            });
+
+          window.chrome = {
+            tabs: {
+              async query() {
+                return [{ id: 731, windowId: 41, url: watchUrl }];
+              },
+              async sendMessage(tabId, message, options) {
+                window.__videoSent.push({ tabId, message, options });
+                return { ok: true };
+              },
+              async get(tabId) {
+                return { id: tabId, url: watchUrl };
+              },
+              onActivated: { addListener() {} },
+              onUpdated: {
+                addListener(listener) {
+                  tabUpdatedListeners.push(listener);
+                },
+              },
+              onRemoved: { addListener() {} },
+            },
+            runtime: {
+              async sendMessage() {
+                return { ok: true };
+              },
+              onMessage: {
+                addListener(listener) {
+                  runtimeListeners.push(listener);
+                },
+              },
+            },
+            storage: {
+              local: {
+                async get(keys) {
+                  const requested = Array.isArray(keys) ? keys : [keys];
+                  return Object.fromEntries(
+                    requested
+                      .filter((key) => key in localStore)
+                      .map((key) => [key, localStore[key]])
+                  );
+                },
+                async set(values) {
+                  Object.assign(localStore, values);
+                },
+                async remove(key) {
+                  delete localStore[key];
+                },
+              },
+              session: {
+                async get() {
+                  return {};
+                },
+                async remove() {},
+              },
+            },
+          };
+
+          window.fetch = async (url, options = {}) => {
+            const path = String(url);
+            const request = options.body ? JSON.parse(options.body) : null;
+            if (path.endsWith("/v1/me/credits")) {
+              return responseJson({ available_tokens: 9_000 });
+            }
+            window.__videoRequests.push({ path, request });
+            if (path.endsWith("/v1/generate")) {
+              return new Response(
+                "event: done\ndata: " +
+                  JSON.stringify({
+                    answer,
+                    model: "google/gemini-3.1-flash-lite",
+                    usage: {
+                      input_tokens: 60,
+                      output_tokens: 18,
+                      billed_tokens: 55,
+                    },
+                    credits_remaining: 8_800,
+                  }) +
+                  "\n\n",
+                {
+                  status: 200,
+                  headers: { "Content-Type": "text/event-stream" },
+                }
+              );
+            }
+            if (path.endsWith("/v1/attributions/heatmap")) {
+              // Two aligned tokens — the smallest shape the panel derives an
+              // attributed phrase from — over the same words in the answer and
+              // in the transcript.
+              const half = Math.floor(attributed.length / 2);
+              const answerStart = request.answer.indexOf(attributed);
+              const documentStart = request.document.indexOf(attributed);
+              const token = (text, from, to) => [
+                codePointOffset(text, from),
+                codePointOffset(text, to),
+              ];
+              return responseJson({
+                row: [0, 1],
+                col: [0, 1],
+                data: [0.97, 0.93],
+                shape: [2, 2],
+                answer_offsets: [
+                  token(request.answer, answerStart, answerStart + half),
+                  token(
+                    request.answer,
+                    answerStart + half,
+                    answerStart + attributed.length
+                  ),
+                ],
+                document_offsets: [
+                  token(request.document, documentStart, documentStart + half),
+                  token(
+                    request.document,
+                    documentStart + half,
+                    documentStart + attributed.length
+                  ),
+                ],
+              });
+            }
+            return responseJson({}, 404);
+          };
+        },
+        {
+          transcript: TRANSCRIPT,
+          answer: ANSWER,
+          attributed: ATTRIBUTED,
+          watchUrl: WATCH_URL,
+        }
+      );
+
+      await panel.goto(PANEL_URL);
+      await panel.waitForFunction(
+        () =>
+          document.getElementById("summarize-starter") &&
+          document.getElementById("input")?.disabled === false
+      );
+      await panel.evaluate((watchUrl) => {
+        window.__videoRuntimeListeners[0]?.({
+          type: "selection-captured",
+          captureId: "video-seed",
+          capturedAt: 10,
+          tabId: 731,
+          windowId: 41,
+          frameId: 0,
+          captureMode: "video-transcript",
+          sourceType: "page",
+          url: watchUrl,
+          text: window.__videoTranscript,
+          error: null,
+        });
+      }, WATCH_URL);
+      await panel.waitForFunction(
+        () =>
+          document.getElementById("context-text")?.textContent ===
+          window.__videoTranscript
+      );
+      const labelled = await panel.evaluate(() => ({
+        label: document.querySelector(".source-label")?.textContent || "",
+        placeholder:
+          document.getElementById("input")?.getAttribute("placeholder") || "",
+        requestCount: window.__videoRequests.length,
+      }));
+      videoCheck(
+        "the panel labels a transcript capture and spends nothing on it",
+        labelled.label === "Video transcript" &&
+          labelled.placeholder === "Ask about the video…" &&
+          labelled.requestCount === 0,
+        labelled
+      );
+
+      await panel.locator("#summarize-starter").click();
+      await panel.waitForFunction(
+        () =>
+          document.querySelector('[data-answer-status="ready"]') &&
+          window.__videoRequests.filter((item) =>
+            item.path.endsWith("/v1/generate")
+          ).length === 1 &&
+          window.__videoRequests.filter((item) =>
+            item.path.endsWith("/v1/attributions/heatmap")
+          ).length === 1
+      );
+      const summarised = await panel.evaluate(() => {
+        const generation = window.__videoRequests.find((item) =>
+          item.path.endsWith("/v1/generate")
+        );
+        const heatmap = window.__videoRequests.find((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        );
+        return {
+          answer:
+            document.querySelector("[data-answer-content]")?.textContent || "",
+          heatmapDocument: heatmap?.request?.document || "",
+          systemIncludesTranscript: (generation?.request?.messages || []).some(
+            (message) =>
+              message.role === "system" &&
+              message.content.includes(JSON.stringify(window.__videoTranscript))
+          ),
+        };
+      });
+      videoCheck(
+        "Summarize runs the ordinary pathway over the transcript",
+        summarised.answer === ANSWER &&
+          summarised.heatmapDocument === TRANSCRIPT &&
+          summarised.systemIncludesTranscript,
+        summarised
+      );
+
+      await panel.locator(".answer-sources-toggle").click();
+      await panel.locator(".answer-source-phrase").first().click();
+      await panel.waitForFunction(() =>
+        window.__videoSent.some((entry) => entry.message?.type === "highlight")
+      );
+      const highlightMessage = await panel.evaluate(
+        () =>
+          window.__videoSent.find(
+            (entry) => entry.message?.type === "highlight"
+          ).message
+      );
+      videoCheck(
+        "the panel routes the resolved transcript range to the source frame",
+        highlightMessage?.document === TRANSCRIPT &&
+          TRANSCRIPT.slice(highlightMessage.start, highlightMessage.end) ===
+            ATTRIBUTED,
+        highlightMessage
+      );
+
+      // The panel's own message, unmodified, into the real content script.
+      const seeked = await send(contentFixture.page, highlightMessage);
+      videoCheck(
+        "that message seeks the live player to the cue that was cited",
+        seeked.resp?.ok === true && near(seeked.currentTime, 42),
+        seeked
+      );
+
+      // A `t=` share link is the same video: the chat must survive it, while
+      // a different `v=` is a different document and starts fresh.
+      const answerText = await panel.evaluate(
+        () => document.querySelector("[data-answer-content]")?.textContent || ""
+      );
+      await panel.evaluate((watchUrl) => {
+        for (const listener of window.__videoTabUpdatedListeners) {
+          listener(731, { url: `${watchUrl}&t=612` }, { id: 731 });
+        }
+      }, WATCH_URL);
+      await panel.waitForTimeout(60);
+      const afterTimeLink = await panel.evaluate(() => ({
+        answer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        contextText: document.getElementById("context-text")?.textContent || "",
+        label: document.querySelector(".source-label")?.textContent || "",
+      }));
+      videoCheck(
+        "a t= share link keys the same chat and never resets it",
+        afterTimeLink.answer === answerText &&
+          afterTimeLink.contextText === TRANSCRIPT &&
+          afterTimeLink.label === "Video transcript",
+        afterTimeLink
+      );
+
+      await panel.evaluate(() => {
+        for (const listener of window.__videoTabUpdatedListeners) {
+          listener(
+            731,
+            { url: "https://www.youtube.com/watch?v=another98765" },
+            { id: 731 }
+          );
+        }
+      });
+      await panel.waitForFunction(
+        () => !document.querySelector("[data-answer-content]")
+      );
+      const afterOtherVideo = await panel.evaluate(() => ({
+        answers: document.querySelectorAll("[data-answer-content]").length,
+        hasContext: document.getElementById("context")?.hidden === true,
+      }));
+      videoCheck(
+        "a different video is a different document and starts a fresh chat",
+        afterOtherVideo.answers === 0 && afterOtherVideo.hasContext === true,
+        afterOtherVideo
+      );
+
+      // A watch page with no readable captions explains itself in the chat.
+      await panel.evaluate(() => {
+        window.__videoRuntimeListeners[0]?.({
+          type: "selection-captured",
+          captureId: "no-captions-seed",
+          capturedAt: 20,
+          tabId: 731,
+          windowId: 41,
+          frameId: 0,
+          captureMode: "full-page",
+          sourceType: "page",
+          url: "https://www.youtube.com/watch?v=silent765432",
+          text: "Subscribe 1.2M subscribers Comments 1,204 Great episode!",
+          error: null,
+          transcriptUnavailable: true,
+        });
+      });
+      await panel.waitForFunction(() =>
+        document
+          .getElementById("messages")
+          ?.textContent?.includes("This video has no subtitles")
+      );
+      const fallbackNote = await panel.evaluate(() => ({
+        label: document.querySelector(".source-label")?.textContent || "",
+        note: document.getElementById("messages")?.textContent || "",
+      }));
+      videoCheck(
+        "a captionless video is labelled a page capture and says why",
+        fallbackNote.label === "Entire page" &&
+          fallbackNote.note.includes(
+            "so it captured the page text instead"
+          ),
+        fallbackNote
+      );
+
+      await panel.close();
+      await contentFixture.page.close();
+    }
+  } catch (error) {
+    videoFail++;
+    console.log(`  SUITE ERROR — ${String(error.message).split("\n")[0]}`);
+  } finally {
+    await videoBrowser.close();
+  }
+
+  console.log(
+    `  video transcript attribution: ${videoPass} passed, ${videoFail} failed`
+  );
+  if (videoFail > 0) process.exitCode = 1;
+}

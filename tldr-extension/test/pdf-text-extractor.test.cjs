@@ -11,23 +11,35 @@ const sourcePath = path.resolve(
 const compileDirectory = fs.mkdtempSync(
   path.join(os.tmpdir(), "tldr-pdf-text-test-")
 );
+
+// Compile through an explicit project file rather than bare command-line flags,
+// so no flag that only one TypeScript major understands (such as the former
+// `--ignoreConfig`) silently pins this suite to that major. `-p` also keeps the
+// repository tsconfig.json from being picked up implicitly.
+const compileConfigPath = path.join(compileDirectory, "tsconfig.json");
+fs.writeFileSync(
+  compileConfigPath,
+  JSON.stringify(
+    {
+      compilerOptions: {
+        lib: ["ES2022", "DOM", "DOM.Iterable"],
+        module: "Node16",
+        moduleResolution: "Node16",
+        outDir: compileDirectory,
+        rootDir: path.dirname(sourcePath),
+        skipLibCheck: true,
+        target: "ES2022",
+        types: [],
+      },
+      files: [sourcePath],
+    },
+    null,
+    2
+  )
+);
 childProcess.execFileSync(
   path.resolve(__dirname, "../node_modules/.bin/tsc"),
-  [
-    "--ignoreConfig",
-    sourcePath,
-    "--target",
-    "ES2022",
-    "--module",
-    "Node16",
-    "--moduleResolution",
-    "Node16",
-    "--lib",
-    "ES2022,DOM,DOM.Iterable",
-    "--skipLibCheck",
-    "--outDir",
-    compileDirectory,
-  ],
+  ["-p", compileConfigPath],
   { stdio: "inherit" }
 );
 

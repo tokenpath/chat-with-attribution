@@ -36,12 +36,25 @@ const TldrPanelLogic = (() => {
   }
 
   const CJK_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+  const CJK_GLOBAL_RE = new RegExp(CJK_RE.source, "gu");
+
+  // CJK prose has no word spaces, so whitespace tokens measure paragraphs
+  // rather than words: a 5,000-character article split into ten paragraphs
+  // counts as ten "words" and would look already concise. Judge the script
+  // itself instead of trusting the token count.
+  function isCjkDominant(text) {
+    const dense = text.replace(/\s+/gu, "");
+    if (!dense) return false;
+    const cjk = dense.match(CJK_GLOBAL_RE);
+    return !!cjk && cjk.length * 2 > Array.from(dense).length;
+  }
 
   function measure(text) {
     const clean = String(text || "").trim();
     const wordList = words(clean);
     const codePoints = Array.from(clean);
-    const characterMode = wordList.length <= 1 && CJK_RE.test(clean);
+    const characterMode =
+      isCjkDominant(clean) || (wordList.length <= 1 && CJK_RE.test(clean));
     return {
       clean,
       wordList,

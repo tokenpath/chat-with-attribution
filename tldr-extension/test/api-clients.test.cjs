@@ -39,6 +39,7 @@ function loadClassicClient(
     storage = {},
     setTimeout: contextSetTimeout = setTimeout,
     clearTimeout: contextClearTimeout = clearTimeout,
+    warnings = [],
   }
 ) {
   const context = vm.createContext({
@@ -49,8 +50,14 @@ function loadClassicClient(
     TextDecoder,
     TextEncoder,
     TldrPanelLogic: Logic,
+    URL,
     chrome: { storage: chromeStorage(storage) },
     clearTimeout: contextClearTimeout,
+    console: {
+      warn(...args) {
+        warnings.push(args.join(" "));
+      },
+    },
     fetch,
     setTimeout: contextSetTimeout,
   });
@@ -66,7 +73,8 @@ function tokenPathWith(fetch, options = {}) {
   return loadClassicClient("tokenpath.js", "TokenPath", {
     fetch,
     storage: {
-      tokenpathBaseUrl: "https://api.tokenpath.test",
+      // Only allowlisted origins survive TokenPath.getAuth().
+      tokenpathBaseUrl: "http://localhost:8000",
       tokenpathKey: "tpk_test",
     },
     ...options,
@@ -118,6 +126,80 @@ function test(name, run) {
   tests.push({ name, run });
 }
 
+test("TokenPath sends the key and document only to allowlisted origins", async () => {
+  const accepted = [
+    ["https://api.tokenpath.ai", "https://api.tokenpath.ai"],
+    ["https://api.tokenpath.ai/", "https://api.tokenpath.ai"],
+    ["https://api-staging.tokenpath.ai", "https://api-staging.tokenpath.ai"],
+    ["http://localhost:8000", "http://localhost:8000"],
+    ["http://localhost:8000/", "http://localhost:8000"],
+    ["  http://127.0.0.1:8000  ", "http://127.0.0.1:8000"],
+  ];
+  for (const [stored, expected] of accepted) {
+    const warnings = [];
+    const client = loadClassicClient("tokenpath.js", "TokenPath", {
+      fetch: async () => jsonResponse({ available_tokens: 1 }),
+      storage: { tokenpathBaseUrl: stored, tokenpathKey: "tpk_test" },
+      warnings,
+    });
+    assert.equal((await client.getAuth()).baseUrl, expected, stored);
+    assert.deepEqual(warnings, [], `${stored} must not warn`);
+  }
+
+  const rejected = [
+    "https://evil.example",
+    "https://api.tokenpath.ai.evil.example",
+    "http://api.tokenpath.ai",
+    "https://localhost:8000",
+    "http://localhost:8001",
+    "https://api.tokenpath.ai/v1",
+    "https://api.tokenpath.ai/?to=evil.example",
+    "https://api.tokenpath.ai#evil",
+    "https://user:pass@api.tokenpath.ai",
+    "javascript:alert(1)",
+    "not a url",
+    "",
+    null,
+    42,
+  ];
+  for (const stored of rejected) {
+    const warnings = [];
+    const client = loadClassicClient("tokenpath.js", "TokenPath", {
+      fetch: async () => jsonResponse({ available_tokens: 1 }),
+      storage: { tokenpathBaseUrl: stored, tokenpathKey: "tpk_test" },
+      warnings,
+    });
+    assert.equal(
+      (await client.getAuth()).baseUrl,
+      "https://api.tokenpath.ai",
+      `${String(stored)} must fall back to production`
+    );
+    // Only a value that was actually set and refused is worth a warning.
+    const expectedWarnings =
+      stored === "" || stored === null || stored === undefined ? 0 : 1;
+    assert.equal(warnings.length, expectedWarnings, String(stored));
+    // The warning is printed once per panel, not once per request.
+    await client.getAuth();
+    assert.equal(warnings.length, expectedWarnings, String(stored));
+  }
+});
+
+test("TokenPath requests an allowlisted origin even with a hostile setting", async () => {
+  let capturedUrl = null;
+  const client = loadClassicClient("tokenpath.js", "TokenPath", {
+    fetch: async (url) => {
+      capturedUrl = url;
+      return jsonResponse({ available_tokens: 9 });
+    },
+    storage: {
+      tokenpathBaseUrl: "https://attacker.example/collect",
+      tokenpathKey: "tpk_test",
+    },
+  });
+  assert.equal(await client.fetchCredits(), 9);
+  assert.equal(capturedUrl, "https://api.tokenpath.ai/v1/me/credits");
+});
+
 test("TokenPath generate parses fragmented SSE and returns canonical done data", async () => {
   const messages = [
     { role: "system", content: "Be concise." },
@@ -157,7 +239,7 @@ test("TokenPath generate parses fragmented SSE and returns canonical done data",
     },
   });
 
-  assert.equal(capturedRequest.url, "https://api.tokenpath.test/v1/generate");
+  assert.equal(capturedRequest.url, "http://localhost:8000/v1/generate");
   assert.equal(capturedRequest.options.method, "POST");
   assert.equal(
     capturedRequest.options.headers.Authorization,
@@ -297,6 +379,47 @@ test("TokenPath generate caller abort cancels an active response stream", async 
     0
   );
   assert.equal(sawDelta, true);
+});
+
+test("TokenPath generate closes the connection when a stream event throws", async () => {
+  const failingEvents = [
+    ["invalid_stream", "event: delta\ndata: {not-json}\n\n"],
+    ["invalid_stream", sseEvent("delta", { text: 7 })],
+    [
+      "generation_failed",
+      sseEvent("error", {
+        error: {
+          code: "generation_failed",
+          message: "The generation backend failed.",
+        },
+      }),
+    ],
+  ];
+
+  for (const [code, event] of failingEvents) {
+    let aborted = false;
+    const client = tokenPathWith(async (_url, options) => {
+      options.signal.addEventListener(
+        "abort",
+        () => {
+          aborted = true;
+        },
+        { once: true }
+      );
+      // The server keeps the response open after the offending event, exactly
+      // as a real stalled or erroring stream would.
+      return stalledSseResponse(options.signal, event);
+    });
+
+    await expectClientError(
+      client.generate({
+        messages: [{ role: "user", content: "question" }],
+      }),
+      code,
+      200
+    );
+    assert.equal(aborted, true, `${code} must close the HTTP connection`);
+  }
 });
 
 test("TokenPath generate times out while an active stream is idle", async () => {

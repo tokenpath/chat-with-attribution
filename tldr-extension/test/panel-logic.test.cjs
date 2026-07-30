@@ -36,6 +36,37 @@ assert.strictEqual(cjk.skip, false);
 assert.strictEqual(cjk.prompt, lowSummary.prompt);
 console.log("PASS: long CJK selections do not bypass summarization");
 
+// A CJK article has no word spaces, so its paragraph breaks are the only
+// whitespace: counting tokens would call a 5,000-character page ten "words".
+const cjkParagraph = "这是一个用于验证中文文章摘要行为的段落".repeat(26);
+const cjkArticle = Array.from({ length: 10 }, () => cjkParagraph).join("\n");
+assert.ok(cjkArticle.length > 4_000);
+assert.ok(cjkArticle.trim().match(/\S+/g).length <= Logic.SHORT_SELECTION_WORDS);
+const cjkArticleSummary = Logic.buildSummaryRequest(cjkArticle, "medium");
+assert.strictEqual(cjkArticleSummary.skip, false);
+assert.strictEqual(cjkArticleSummary.maxOutputTokens, 768);
+
+// Japanese and Korean use the same character-aware path.
+for (const long of [
+  "これは日本語の長い記事です。".repeat(12) + "\n" + "段落が変わります。".repeat(12),
+  "이것은 한국어로 된 긴 기사입니다.".repeat(8) + "\n" + "문단이 바뀝니다.".repeat(8),
+]) {
+  assert.strictEqual(Logic.buildSummaryRequest(long).skip, false, long.slice(0, 8));
+}
+
+// Genuinely short CJK stays "already concise", including across paragraphs.
+assert.strictEqual(Logic.buildSummaryRequest("这是一个很短的段落。\n第二段也很短。").skip, true);
+assert.strictEqual(Logic.buildSummaryRequest("短い。\nとても短い。").skip, true);
+
+// Mixed text that is mostly Latin keeps the word-count cutoff.
+const latinWithCjk = `${textWithWords(20)} 漢字 ${textWithWords(3)}`;
+assert.strictEqual(Logic.buildSummaryRequest(latinWithCjk).skip, true);
+assert.strictEqual(
+  Logic.buildSummaryRequest(`${textWithWords(60)} 漢字`).skip,
+  false
+);
+console.log("PASS: multi-paragraph CJK articles use the character-aware cutoff");
+
 assert.strictEqual(Logic.truncateCodePoints("ab🙂cd", 3), "ab🙂");
 assert.strictEqual(Logic.truncateCodePoints("ab🙂cd", 4), "ab🙂c");
 console.log("PASS: document limits never split emoji surrogate pairs");

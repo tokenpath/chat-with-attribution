@@ -3,56 +3,82 @@
 ## Goal
 
 TokenPath — Chat with Attribution is a Chrome Manifest V3 extension. A user
-right-clicks a page or Chrome's native PDF viewer, opens the **TokenPath**
-context-menu submenu, and chooses **TLDR**, **Simplify**, or **Ask a question**.
-A selection uses only that span. Invoking an action without a selection uses
-the rendered text of the originating page/frame or the entire top-level
-searchable PDF. The resulting side-panel chat is grounded in that source text.
-TokenPath streams each answer, then returns one answer-to-document heatmap.
-Selecting any part of an answer resolves that range against the cached heatmap,
-highlights its supporting source range, and scrolls there in the live page or
-PDF.
+opens the side panel from the toolbar icon, or selects text, right-clicks, and
+chooses the single **Chat with TokenPath** context-menu item. A selection uses
+only that span. A context-menu click without a selection uses the rendered text
+of the originating page/frame or the entire top-level searchable PDF. The
+resulting side-panel chat is grounded in that source text. TokenPath streams
+each answer, then returns one answer-to-document heatmap. Clicking an attributed
+phrase, choosing one from the answer's **Sources** list, or selecting any part
+of an answer resolves that range against the cached heatmap, highlights its
+supporting source range, and scrolls there in the live page or PDF.
 
 ## User flow
 
-1. Right-click a page, nested frame, or searchable PDF, open the **TokenPath**
-   submenu, and choose an action. A selection takes precedence; without one,
-   the originating HTML frame or top-level PDF becomes the source.
+1. Enter through the toolbar icon or through **Chat with TokenPath** on a page,
+   nested frame, or searchable PDF. The context menu is one item in the
+   selection, page, and frame contexts; a selection takes precedence, and
+   without one the originating HTML frame or top-level PDF becomes the source.
+   The toolbar icon opens the panel for the active tab and defers capture until
+   the user asks something (see step 3).
 2. The panel confirms capture immediately in a compact source row,
    independently of API-key validation or credit refresh. The full captured
    text is collapsed by default and can be expanded on demand.
-3. The initial action determines what happens next:
-   - **TLDR** immediately requests a length-controlled summary when the source
-     exceeds the concise-source cutoff; shorter sources show an “Already
-     concise” note without generation.
-   - **Simplify** immediately requests a plain-language explanation.
-   - **Ask a question** opens the composer with the source ready but makes no
-     generation or attribution request until the user submits a question.
+3. No capture starts a turn. The empty chat offers one **Summarize** starter,
+   which runs the summary pathway (`controller.runSummary()`) against the live
+   context, or — when the panel has no context yet, as after a toolbar-icon
+   open — submits a plain summary question that captures the page first.
+   Sources at or below the concise-source cutoff show an “Already concise” note
+   instead of generating, and the starter is suppressed while that note shows.
 4. Continue with follow-up questions in the same composer and attributed chat.
-5. Select any text in a completed answer to highlight and center its supporting
-   source text in the originating page frame or PDF.
+   The composer stays usable while an answer streams; its submit button becomes
+   **Stop**, which cancels the request and keeps the partial answer marked
+   incomplete.
+5. Click an attributed phrase, open the answer's **Sources (n)** list, or select
+   any text in a completed answer to highlight and center its supporting source
+   text in the originating page frame or PDF.
 
 ## Components
 
 - **`manifest.json`** injects `content.js` and `content.css` at
   `document_start` with `all_frames`, `match_about_blank`, and
-  `match_origin_as_fallback` enabled.
-- **`background.js`** owns the TokenPath submenu and its TLDR, Simplify, and Ask
-  a question actions; starts the side-panel open; captures from `info.frameId`;
-  detects native PDFs; stores and broadcasts a versioned selection seed plus
-  action; and owns PDF text-fragment navigation/reload.
+  `match_origin_as_fallback` enabled. Its `host_permissions` keep `<all_urls>`
+  alongside the TokenPath API origins — in the store package too — because the
+  panel reads `tab.url` outside a user gesture (chat restore, navigation
+  invalidation, stale-seed checks) and downloads full PDFs from the panel;
+  `scripts/package-extension.mjs` documents the policy and strips only the
+  staging and localhost development origins.
+- **`background.js`** owns the single **Chat with TokenPath** context-menu item
+  (and removes the legacy submenu items on startup); handles the toolbar action;
+  starts the side-panel open; captures from `info.frameId`; detects native PDFs;
+  stores and broadcasts a versioned selection seed; serves the panel's
+  `capture-tab-for-chat` request; and owns PDF text-fragment navigation/reload.
 - **`content.js`** snapshots selections, creates the canonical text-to-DOM map,
   extracts full rendered pages when requested, resolves document offsets,
   repairs mappings after supported DOM rerenders, renders the source highlight,
   and scrolls nested panes.
 - **`src/sidepanel/controller.ts`** manages auth, chat history, summary policy,
-  full-PDF extraction, capture/version epochs, and frame-targeted highlight
-  messages.
+  full-PDF extraction, capture/version epochs, cancellation, page-chat
+  persistence, and frame-targeted highlight messages.
+- **`src/sidepanel/chat-cache.ts`** owns the IndexedDB page-chat store: the
+  fragment-free cache key, document identity comparison, bounded retention, and
+  the shingle-based “page changed significantly” test.
 - **`src/sidepanel/pdf-text-extractor.ts`** fetches a verified PDF and uses a
   hidden Blob-backed instance of Chrome's native viewer to obtain PDFium's
   searchable text.
-- **`src/sidepanel/app.tsx`** renders the React panel with source-owned Vercel
-  AI Elements conversation, message, and prompt-input primitives.
+- **`src/sidepanel/app.tsx`** is a thin shell: it wires the controller snapshot
+  to the panel components, owns the empty-state **Summarize** starter, and
+  renders the dismissible notice and announcement regions.
+- **`src/sidepanel/components/panel/`** holds those components — `panel-header`
+  (theme, credits, clear highlight, clear chat), `auth-panel`, `source-card`,
+  `composer` (with `summary-length-control`), `answer-response` (attributed
+  phrases, the **Sources** list, incomplete/unavailable states), `chat-message`,
+  and `error-boundary`.
+- **`src/sidepanel/lib/answer-highlights.ts`** and
+  **`src/sidepanel/hooks/use-answer-highlights.ts`** own the panel-side CSS
+  custom highlights over attributable and hovered answer phrases;
+  **`src/sidepanel/lib/source-copy.ts`** derives every user-facing source string
+  from structured snapshot fields.
 - **`src/sidepanel/answer-selection.ts`** maps a DOM selection inside rendered
   Streamdown Markdown back to the exact raw-answer character bounds.
 - **`src/sidepanel/components/ai-elements/`** contains the trimmed, editable AI
@@ -63,15 +89,27 @@ PDF.
   and heatmap-to-source span-resolution helpers.
 - **`sidepanel/tokenpath.js`** calls TokenPath directly with the API key in
   `chrome.storage.local`, streams messages-only generation, validates sparse
-  heatmaps, and adapts their offset tables for browser use.
+  heatmaps, and adapts their offset tables for browser use. It also enforces the
+  base-URL allowlist: only `https://api.tokenpath.ai`,
+  `https://api-staging.tokenpath.ai`, `http://localhost:8000`, and
+  `http://127.0.0.1:8000` (bare origins, trailing slash tolerated) are accepted;
+  anything else logs one warning and falls back to production.
 
 ## Selection capture and panel bootstrap
 
 The context-menu callback supplies flattened `selectionText` but not DOM nodes.
-The parent **TokenPath** item contains three children—**TLDR**, **Simplify**, and
-**Ask a question**—across supported selection, page, and frame contexts. Each
-frame listens for selection changes, clones the current `Range`, and eagerly
-extracts it during `contextmenu`.
+One item, **Chat with TokenPath**, is registered across the selection, page, and
+frame contexts; the worker removes the earlier submenu's item IDs on startup, so
+an unpacked reload cannot leave stale actions behind. Each frame listens for
+selection changes, clones the current `Range`, and eagerly extracts it during
+`contextmenu`.
+
+The toolbar action is the second entry point. It only opens the side panel —
+`openPanelOnActionClick` is disabled — and capture is deferred: the panel
+restores this page's cached chat if there is one, and otherwise waits. The first
+question (or the **Summarize** starter with no context) sends
+`capture-tab-for-chat`, which runs the same full-page capture path against
+frame 0 without reopening the panel.
 
 `chrome.sidePanel.open()` must begin synchronously in the click gesture, but the
 background worker does not await it. It first starts an idempotent script and CSS
@@ -102,12 +140,15 @@ An eagerly extracted DOM `Range` is authoritative. Chrome's flattened
 These rules cover current Substack, WhatsApp, and X selection shapes without
 silently choosing the wrong duplicate.
 
-Every seed carries the chosen action together with `captureId`, `capturedAt`,
-`tabId`, `windowId`, and `frameId`. IDs are allocated before extraction, so
-click order—not async completion order—defines freshness. The panel installs
-its live listener before active-tab lookup, seed replay, or credit validation.
-Duplicate and stale seeds cannot replace a newer selection, start the wrong
-initial turn, or change its highlight route.
+Every seed carries `captureId`, `capturedAt` (the click), `seededAt` (the
+session-storage write), `tabId`, `windowId`, `frameId`, `captureMode`,
+`sourceType`, and the source URL. IDs are allocated before extraction, so click
+order—not async completion order—defines freshness. The panel installs its live
+listener before active-tab lookup, seed replay, or credit validation. A replayed
+seed is discarded when its capture is more than 120 seconds old or when its URL
+is a different document from the live tab's, so a panel opened long after the
+click cannot adopt a document the tab has left. Duplicate and stale seeds cannot
+replace a newer capture or change its highlight route.
 
 Chrome's built-in PDF viewer is a protected component extension, so ordinary
 content scripts cannot read its DOM or receive highlight messages. For every
@@ -115,8 +156,9 @@ PDF context-menu click, the worker probes the top-level document's MIME type and
 marks the seed `sourceType: "chrome-pdf"` while retaining the original PDF URL.
 With a selection, `OnClickData.selectionText` is the canonical document. With
 no selection, the seed uses `captureMode: "full-pdf"` and contains only a small
-descriptor. The side panel fetches that URL using the context-menu click's
-temporary `activeTab` access, verifies and bounds the bytes, then creates an
+descriptor. The side panel fetches that URL with the extension's `<all_urls>`
+host permission — a credentialed cross-origin fetch from an extension page,
+which `activeTab` does not cover — verifies and bounds the bytes, then creates an
 offscreen, nonzero-size `<embed>` backed by a same-origin Blob URL. Chrome's
 native PDF scripting bridge selects all inside this hidden duplicate and
 returns PDFium's searchable text. The panel removes the embed and revokes the
@@ -163,15 +205,20 @@ emoji while preserving repeated-string disambiguation.
 
 ## Summary and generation policy
 
-For the TLDR action, captured sources of 24 whitespace-delimited words or fewer
-skip the automatic model call. Whitespace-free CJK sources use an equivalent
-48-character cutoff instead of being mistaken for a one-word selection.
+The summary pathway is reached from the **Summarize** starter, never
+automatically. Captured sources of 24 whitespace-delimited words or fewer skip
+the model call and post an “Already concise” note naming the source kind
+(selection, page, or PDF); the starter is hidden while such a note is present.
+CJK-dominant sources are measured by characters (48) rather than whitespace
+tokens, so multi-paragraph CJK prose is not mistaken for a one-word selection.
 
-Longer selections use a locally persisted Short / Medium / Detailed preference:
+Longer sources use the persisted Short / Medium / Detailed preference, exposed
+as a `radiogroup` with roving focus in the composer footer and stored in
+`localStorage`:
 
-- Short (default): about 2–3 concise sentences, with 512 tokens of headroom.
-- Medium: about 4–6 concise sentences, with 768 tokens of headroom.
-- Detailed: about 8–12 concise sentences, with 1024 tokens of headroom.
+- Short (default, `low`): about 2–3 concise sentences, 512 tokens of headroom.
+- Medium: about 4–6 concise sentences, 768 tokens of headroom.
+- Detailed (`high`): about 8–12 concise sentences, 1024 tokens of headroom.
 
 The prompt allows an equivalently sized list or table when structured formatting
 is clearer, and forbids a title, label, preamble, explanation, or closing
@@ -184,12 +231,11 @@ split surrogate pairs.
 
 ## Streaming generation and just-in-time heatmap attribution
 
-TLDR and Simplify start an initial turn after capture; Ask a question
-intentionally does not. Its captured source may be inspected in the panel, but
-no generation or attribution request is made until the user submits the
-composer. Once a turn starts, the generator uses one streaming
-`POST /v1/generate` request. Its body
-contains only messages and an optional `max_output_tokens`:
+A capture never starts a turn. Its source may be inspected in the panel, but no
+generation or attribution request is made until the user submits the composer or
+runs the **Summarize** starter. Once a turn starts, the generator uses one
+streaming `POST /v1/generate` request. Its body contains only messages and an
+optional `max_output_tokens`:
 
 - a system message containing the website origin, exact canonical document,
   and conditional Markdown formatting instructions;
@@ -199,8 +245,16 @@ contains only messages and an optional `max_output_tokens`:
 TokenPath chooses the model. Named SSE `delta` events update one stable
 assistant message; the terminal `done.answer` is canonical and may replace the
 locally accumulated deltas. Navigation, a newer capture, or disconnect cancels
-active generation. The exact terminal answer is added to history and sent to
-attribution without client-side rewriting.
+active generation and discards its turn. The exact terminal answer is added to
+history and sent to attribution without client-side rewriting.
+
+Two cancellations are deliberately *not* invalidations. The composer's **Stop**
+button aborts the request while keeping the question and whatever text had
+streamed, flagged `incomplete`; a mid-stream network failure keeps the same
+partial answer and reports the failure as a note beside it. Neither attributes
+the partial text — a heatmap over an unfinished answer would map words the model
+never wrote — so both leave the answer with no source map. An empty partial
+answer is removed instead of being kept.
 
 Once generation finishes, the panel sends one
 `POST /v1/attributions/heatmap` request:
@@ -259,6 +313,17 @@ requests. Streamdown's sanitizer and external-link confirmation remain active,
 remote images are suppressed, and rendered links are limited to HTTP(S) and
 mail links.
 
+A ready answer also exposes its attributed phrases directly. `panel-logic.js`
+derives them from the same cached heatmap; the panel maps each one to a `Range`
+in the rendered Markdown and paints them with two document-scoped CSS custom
+highlights (all attributable phrases, plus the one under the pointer or
+keyboard). Clicking a phrase runs the same resolution path as selecting its
+text. The **Sources (n)** toggle beside the answer lists those phrases as a
+`toolbar` with roving focus: arrow keys and Home/End move, Enter activates the
+focused phrase, and Escape closes the list and returns focus to the toggle. This
+is the keyboard-reachable equivalent of clicking, not a second attribution
+mechanism.
+
 The panel owns the currently displayed source highlight. Its `pagehide` and
 `unload` lifecycle handlers clear that exact page or PDF highlight before the
 side-panel document is destroyed; ownership IDs prevent stale cleanup from
@@ -298,14 +363,28 @@ captured text or context-validated quote proves one occurrence. Missing,
 duplicate, route-mismatched, or changed-target matches fail visibly; the
 extension does not use `window.find` or select the first arbitrary copy.
 
+A refreshed page is the extreme case: the frame holds no extraction at all, and
+the panel's `highlight` message carries the cached canonical document with it.
+Because the frame holds no capture, it has none to protect, so it may stand in
+the cached document for the lost extraction — first by rebuilding the whole map
+when the reloaded page still matches that document exactly, and otherwise by
+projecting only the attributed quote, with bounded 48-character prefix and
+suffix contexts, into the live body. One live occurrence (or one that the cached
+context singles out) is the identity; ties, changed text, and vanished passages
+fail, and the panel reports “Couldn't locate that text in the page.” Each
+applied highlight records the panel's per-click ownership ID, so a recovered
+highlight can still be cleared even though the frame holds no capture ID.
+
 ## Message protocol
 
 | From → To | Type | Important payload |
 |---|---|---|
 | background → content frame | `capture-selection` | `captureId`, `selectionText`, targeted `frameId` |
 | background → content frame | `capture-page` | `captureId`, targeted `frameId` |
-| background → panel | `selection-captured` | chosen action, `captureId`, time, tab/window/frame IDs, `captureMode`, `sourceType`, URL, and `text` or `error` |
-| panel → content frame | `highlight` | `captureId`, `highlightId`, `start`, `end`, targeted `frameId` |
+| background → panel | `selection-captured` | `captureId`, `capturedAt`, tab/window/frame IDs, `captureMode`, `sourceType`, URL, and `text` or `error` |
+| panel → background | `capture-tab-for-chat` | tab ID to capture as a full page without opening the panel |
+| panel → background | `clear-tab-highlights` | tab ID whose page highlight must be cleared |
+| panel → content frame | `highlight` | `captureId`, `highlightId`, `start`, `end`, cached `document` for reload recovery, targeted `frameId` |
 | panel → content frame | `clear-highlight` | `captureId`, optional owning `highlightId`, targeted `frameId` |
 | panel → background | `highlight-pdf-source` | PDF tab/URL, canonical document, resolved `start` and `end` |
 | panel → background | `clear-pdf-source-highlight` | PDF tab/URL |
@@ -343,15 +422,36 @@ protected viewer.
 ## Lifecycle and non-goals
 
 A source-document URL change invalidates source mapping and requires a new
-capture. PDF viewer fragments are ignored because they do not change the source
-document. Capture IDs, context versions, highlight epochs, and per-highlight
-ownership IDs prevent stale generation or click work from overwriting or
-clearing a newer selection's highlight. Balance observations are similarly
-sequenced so a delayed credits read cannot replace a newer post-request balance.
+capture. Fragments never count as such a change: a plain `#section` anchor, the
+extension's own `:~:text=` directive, and the native PDF viewer's `#page`/`#zoom`
+parameters all move the viewport inside one document, so the chat survives them.
+`content.js` applies the same rule to its own route key, and the page-chat cache
+key strips fragments (and `utm_*`/tracking parameters, and sorts the remaining
+query) for the same reason. Capture IDs, context versions, highlight epochs, and
+per-highlight ownership IDs prevent stale generation or click work from
+overwriting or clearing a newer capture's highlight. Balance observations are
+similarly sequenced so a delayed credits read cannot replace a newer
+post-request balance.
+
+Chats are persisted per page in IndexedDB (`tokenpath-page-chats`, schema
+version 2: one record per page key, storing each distinct captured document once
+and referencing it from the messages that were attributed against it). A record
+holds the captured context, message list, bounded history, and cached heatmaps.
+Reopening or returning to a page restores it without an API call; a fresh
+capture whose content differs significantly from the cached one — judged by
+sampled 5-word shingles and a length ratio — deletes the record and posts a
+dismissible note that a new chat was started. Retention runs once per panel
+session over a `savedAt` index: at most 50 records, least-recently-saved first,
+and nothing older than 30 days. **Clear chat** deletes the current page's
+record; **Disconnect** clears the whole store along with the saved key, because
+those records hold captured page and PDF text.
+
+The panel is wrapped in a React error boundary, and `main.tsx` renders an
+explicit failure state if `panel-logic.js` or `tokenpath.js` did not load, so
+neither case can leave a blank side panel.
 
 Out of scope for this version: Readability/article-only extraction, cross-frame
-page concatenation, shadow-root traversal, unmounted virtualized content,
-persisted chats, OCR, OAuth, user-selectable models, and restricted Chrome
-pages. A capture belongs to one frame; cross-frame selections are unsupported.
-The model behind TokenPath's messages-only `/v1/generate` is intentionally not
-user-selectable.
+page concatenation, shadow-root traversal, unmounted virtualized content, OCR,
+OAuth, user-selectable models, and restricted Chrome pages. A capture belongs to
+one frame; cross-frame selections are unsupported. The model behind TokenPath's
+messages-only `/v1/generate` is intentionally not user-selectable.

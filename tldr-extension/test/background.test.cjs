@@ -32,9 +32,30 @@ const contextMenuItems = new Map([
 const manifest = JSON.parse(
   readFileSync(join(__dirname, "..", "manifest.json"), "utf8")
 );
+// Page capture rides the declared all-frames content script; the blanket
+// <all_urls> host permission is deliberate — it is what keeps tab.url visible
+// to tabs.query/tabs.onUpdated outside a gesture (per-page chat restore,
+// navigation invalidation, stale-seed checks) and covers the side panel's
+// credentialed full-PDF fetch, and the content script already carries the
+// identical install warning. TokenPath network access is separately
+// constrained by the base-URL allowlist in sidepanel/tokenpath.js, whose
+// origins must stay in lockstep with the API host permissions here.
 assert(
-  manifest.host_permissions.includes("<all_urls>"),
-  "automatic tab capture requires persistent access to ordinary web pages"
+  manifest.content_scripts.some((script) =>
+    script.matches.includes("<all_urls>")
+  ),
+  "automatic tab capture requires the content script on ordinary web pages"
+);
+assert.deepStrictEqual(
+  manifest.host_permissions,
+  [
+    "<all_urls>",
+    "https://api.tokenpath.ai/*",
+    "https://api-staging.tokenpath.ai/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*",
+  ],
+  "host permissions: deliberate <all_urls> plus allowlisted TokenPath origins"
 );
 
 function emitTabCommit(tabId, url) {
@@ -393,6 +414,15 @@ assert.ok(installedHandler, "context-menu installer registered");
 
   const storedObject = calls[storeIndex][1];
   const seed = storedObject["seed:42"];
+  assert.strictEqual(
+    Object.keys(storedObject).length,
+    1,
+    "one seed key per tab, replaced whole by the next capture"
+  );
+  assert.ok(
+    Number.isInteger(seed.seededAt) && seed.seededAt >= seed.capturedAt,
+    "the seed is stamped so a late panel can expire it"
+  );
   assert.strictEqual(seed.frameId, 7);
   assert.strictEqual(seed.windowId, 3);
   assert.strictEqual(seed.url, "https://mail.google.com/mail/u/0/");
@@ -506,6 +536,10 @@ assert.ok(installedHandler, "context-menu installer registered");
     racedSeeds.map((seed) => seed.text),
     ["newer"],
     "a slow older extraction must not replace the newer click"
+  );
+  assert.ok(
+    racedSeeds.every((seed) => Number.isInteger(seed.seededAt)),
+    "every stored seed carries its write timestamp"
   );
   console.log("PASS: out-of-order extraction completion keeps the newest click");
 

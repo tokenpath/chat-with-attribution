@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "TokenPath — Chat with Attribution",
   "version": "0.1.0",
-  "description": "Summarize, simplify, or ask about selected text or full pages and PDFs, then trace any answer span back to its source.",
+  "description": "Chat about selected text, full pages, and PDFs, then trace any answer span back to the exact source text that supports it.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",

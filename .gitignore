@@ -1,3 +1,4 @@
 node_modules/
 tldr-extension/node_modules/
 tldr-extension/dist/
+.DS_Store

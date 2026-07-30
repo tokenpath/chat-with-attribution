@@ -45,6 +45,23 @@ development, set `tokenpathBaseUrl` in extension storage:
 chrome.storage.local.set({ tokenpathBaseUrl: "http://localhost:8000" })
 ```
 
+That value is a developer convenience, not a routing instruction: every request
+carries the API key and the complete captured page text, so `tokenpath.js`
+accepts only these exact origins and ignores anything else, falling back to
+production with a one-time console warning.
+
+| Allowed base URL |
+|---|
+| `https://api.tokenpath.ai` (default) |
+| `https://api-staging.tokenpath.ai` |
+| `http://localhost:8000` |
+| `http://127.0.0.1:8000` |
+
+A trailing slash is tolerated. A path, query string, fragment, or userinfo is
+not — the value must be a bare origin from the list. The staging and localhost
+origins are also the only host permissions the store package drops, so this
+override is usable in an unpacked build only.
+
 ## TokenPath generation
 
 Generation uses:
@@ -102,14 +119,23 @@ message from `delta.text`, then uses `done.answer` as the canonical final
 string. A terminal `error` event carries the normal TokenPath error envelope.
 A new capture, navigation, or disconnect cancels in-flight generation.
 
-Selections of 24 words or fewer skip automatic generation; whitespace-free CJK
-uses a 48-character cutoff. Longer selections use a persisted client-side
-length preference: Low requests about 2–3 sentences with
-`max_output_tokens: 512`, Medium requests 4–6 with `768`, and High requests
-8–12 with `1024`. The ceilings leave completion headroom; prompt wording
-controls the intended length. The client does not clip or replace the result:
-the exact terminal `done.answer` is used for the UI, conversation history, and
-heatmap request.
+Generation is only ever started by a user action — a submitted question or the
+panel's **Summarize** starter. A capture by itself makes no request.
+
+For the summary pathway, sources of 24 words or fewer make no request at all
+(CJK-dominant text uses a 48-character cutoff); the panel posts an “Already
+concise” note instead. Longer sources use the persisted Short / Medium /
+Detailed preference: Short requests about 2–3 sentences with
+`max_output_tokens: 512`, Medium 4–6 with `768`, and Detailed 8–12 with `1024`.
+The ceilings leave completion headroom; prompt wording controls the intended
+length. The client does not clip or replace the result: the exact terminal
+`done.answer` is used for the UI, conversation history, and heatmap request.
+
+Cancellation is not always discarding. Navigation, a newer capture, or
+disconnect drops the turn, but the composer's **Stop** button and a mid-stream
+network failure both keep the partial answer, flagged incomplete. Neither sends
+a heatmap request for it: attributing an unfinished answer would map text the
+model never produced.
 
 ## TokenPath heatmap
 
@@ -187,12 +213,21 @@ The last rule preserves occurrence-level disambiguation when text such as
 `Fable 5` appears more than once. It never replaces the heatmap with an
 unconstrained first-string match.
 
+The same cached heatmap also drives the answer's phrase list: `panel-logic.js`
+derives every attributed phrase from it, the panel underlines them in the
+rendered answer, and the **Sources (n)** control lists them for keyboard use.
+Clicking a phrase, activating a list entry, and selecting answer text all run
+the resolution above against the one cached matrix — no additional request in
+any case.
+
 ## Capture and source navigation
 
-The originating `tabId`, `frameId`, and `captureId` are preserved from context
-menu through generation, heatmap caching, and highlight routing. The immutable
+The originating `tabId`, `frameId`, and `captureId` are preserved from capture
+through generation, heatmap caching, and highlight routing. The immutable
 attribution artifact also retains the exact canonical document and question
-used for that answer.
+used for that answer, and is what a restored page-chat replays: cached chats
+keep each distinct document once per record and reference it from the answers
+attributed against it, so reopening a page needs no TokenPath request at all.
 
 Once a source range is resolved, the existing content-script machinery maps its
 canonical document offsets to live DOM nodes. If those nodes were replaced, it
@@ -201,6 +236,12 @@ post/status/article identity, uniquely headed semantic article, or conservative
 generic scope. Context and exact source identity disambiguate repeats. Changed
 routes, changed target text, surviving duplicates, and ambiguous matches fail
 instead of highlighting an arbitrary occurrence.
+
+Because the highlight message carries the cached canonical document, a frame
+that reloaded since the answer was attributed can still recover: it re-derives
+the quote and its bounded surrounding context from that document and locates
+them in the fresh DOM. The same fail-closed rules apply, so a genuinely changed
+or vanished passage reports a failure rather than moving the highlight.
 
 Each navigation request also carries an opaque highlight ownership ID. Cleanup
 from an older answer selection can only remove the highlight it created, so

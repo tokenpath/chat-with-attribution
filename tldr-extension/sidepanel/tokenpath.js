@@ -10,6 +10,15 @@
 const TOKENPATH_DEFAULT_BASE_URL = "https://api.tokenpath.ai";
 const TOKENPATH_PLATFORM_URL = "https://platform.tokenpath.ai";
 const TOKENPATH_MAX_DOCUMENT_CHARS = 400_000;
+// Every request carries the API key and the complete captured page text, so
+// the destination is not a free-form preference. Only these exact origins may
+// ever receive them; anything else falls back to production.
+const TOKENPATH_ALLOWED_BASE_URLS = [
+  TOKENPATH_DEFAULT_BASE_URL,
+  "https://api-staging.tokenpath.ai",
+  "http://localhost:8000",
+  "http://127.0.0.1:8000",
+];
 
 class TokenPathError extends Error {
   constructor(status, code, message, details = null) {
@@ -33,7 +42,7 @@ const TokenPath = {
     ]);
     return {
       key: stored.tokenpathKey || null,
-      baseUrl: stored.tokenpathBaseUrl || TOKENPATH_DEFAULT_BASE_URL,
+      baseUrl: allowedBaseUrl(stored.tokenpathBaseUrl),
     };
   },
 
@@ -56,6 +65,14 @@ const TokenPath = {
   //
   // `delta` events are for responsive rendering only. The terminal `done`
   // event owns the canonical answer and metadata returned to the caller.
+  /**
+   * @param {{
+   *   messages?: unknown,
+   *   maxOutputTokens?: number,
+   *   onDelta?: (delta: string, partialAnswer: string) => void,
+   *   signal?: AbortSignal,
+   * }} [options]
+   */
   async generate({
     messages,
     maxOutputTokens,
@@ -270,6 +287,11 @@ const TokenPath = {
     } finally {
       if (idleTimer !== null) clearTimeout(idleTimer);
       externalSignal?.removeEventListener("abort", abortFromCaller);
+      // A thrown stream event (malformed JSON, an `error` frame, invalid done
+      // metadata) leaves the response body unread and the HTTP connection
+      // open. Nothing consumes this stream once generate has settled, so close
+      // it here; aborting a completed request is a no-op.
+      if (!controller.signal.aborted) controller.abort();
     }
   },
 
@@ -278,6 +300,15 @@ const TokenPath = {
   // TokenPath returns sparse COO arrays and token offset tables in Unicode
   // code-point coordinates. Validate the matrix before it reaches UI code and
   // adapt both offset tables to JavaScript's UTF-16 string coordinates.
+  /**
+   * @param {{
+   *   document?: string,
+   *   question?: string,
+   *   answer?: string,
+   *   threshold?: number,
+   *   signal?: AbortSignal,
+   * }} [options]
+   */
   async heatmap({ document, question, answer, threshold, signal } = {}) {
     if (
       typeof document !== "string" ||
@@ -431,6 +462,43 @@ const TokenPath = {
     return body || {};
   },
 };
+
+let warnedAboutBaseUrl = false;
+
+// A stored base URL is a developer convenience, never a routing instruction.
+// Accept only an exact allowlisted origin, ignoring a trailing slash, and
+// reject anything carrying a path, query, fragment, or userinfo.
+function normalizeBaseUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  let parsed;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.username || parsed.password) return null;
+  if (parsed.search || parsed.hash) return null;
+  if (parsed.pathname !== "/" && parsed.pathname !== "") return null;
+  const origin = `${parsed.protocol}//${parsed.host}`;
+  return TOKENPATH_ALLOWED_BASE_URLS.includes(origin) ? origin : null;
+}
+
+function allowedBaseUrl(value) {
+  if (value === undefined || value === null || value === "") {
+    return TOKENPATH_DEFAULT_BASE_URL;
+  }
+  const normalized = normalizeBaseUrl(value);
+  if (normalized) return normalized;
+  if (!warnedAboutBaseUrl) {
+    warnedAboutBaseUrl = true;
+    console.warn(
+      "[TokenPath] Ignoring an unsupported tokenpathBaseUrl; using " +
+        TOKENPATH_DEFAULT_BASE_URL +
+        "."
+    );
+  }
+  return TOKENPATH_DEFAULT_BASE_URL;
+}
 
 function normalizeGenerationMessages(messages) {
   if (!Array.isArray(messages) || messages.length === 0) {

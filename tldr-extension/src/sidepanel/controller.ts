@@ -1,9 +1,11 @@
 import { extractPdfText } from "@/pdf-text-extractor";
 import {
+  clearAll,
   deletePageChat,
   pageChatKey,
   pageContentSignificantlyChanged,
   readPageChat,
+  sameDocumentUrl,
   writePageChat,
 } from "@/chat-cache";
 
@@ -11,23 +13,34 @@ export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
 export type SummaryLength = "low" | "medium" | "high";
 export type SourceType = "page" | "chrome-pdf";
-export type CaptureMode = "selection" | "full-page" | "full-pdf";
-export type CaptureIntent = "tldr" | "simplify" | "ask";
+// "video-transcript" is a full-document capture whose document is the video's
+// subtitle transcript rather than the page's rendered text. Its highlight
+// route is still the content script — the frame owns the transcript-offset to
+// timestamp cue table and answers an attributed span by seeking the player —
+// so it stays a "page" SourceType.
+export type CaptureMode =
+  | "selection"
+  | "full-page"
+  | "full-pdf"
+  | "video-transcript";
+export type ContextSourceType = "selection" | "page" | "pdf" | "video";
+export type ContextStatus = "idle" | "reading" | "ready" | "error";
 
 export interface SelectionSeed {
   type?: string;
   captureId?: string | null;
   capturedAt?: number;
+  seededAt?: number;
   tabId?: number | null;
   windowId?: number | null;
   frameId?: number;
   captureMode?: CaptureMode;
-  intent?: CaptureIntent;
   sourceType?: SourceType;
   url?: string | null;
   text?: string;
   error?: string;
   truncated?: boolean;
+  transcriptUnavailable?: boolean;
 }
 
 export interface HighlightSource {
@@ -65,6 +78,7 @@ export interface PanelMessage {
   text: string;
   answerStatus?: AnswerStatus;
   attribution?: MessageAttribution;
+  incomplete?: boolean;
   source?: HighlightSource;
   link?: {
     label: string;
@@ -77,45 +91,57 @@ export interface PanelSnapshot {
   authError: string | null;
   busy: boolean;
   connected: boolean;
+  contextError: string | null;
   contextLabel: string;
+  contextStatus: ContextStatus;
   contextText: string;
   creditsText: string | null;
   hasContext: boolean;
   messages: PanelMessage[];
   notice: string | null;
   resolvedTheme: ResolvedTheme;
+  sourceType: ContextSourceType;
   summaryLength: SummaryLength;
   themePreference: ThemePreference;
-  tokenPathReady: boolean;
   toast: string | null;
+  toastSeq: number;
 }
 
-type SummaryRequest = TldrSummaryRequest;
-type AutomaticRequest = SummaryRequest & {
-  intent: Exclude<CaptureIntent, "ask">;
+// Every message of one context shares the same captured document, and that
+// document can be 400,000 characters. The cached record stores each distinct
+// document once and has its messages reference it by index.
+interface CachedMessageAttribution {
+  documentIndex: number;
+  question: string;
+  status: MessageAttribution["status"];
+  heatmap?: TldrHeatmap;
+  error?: string;
+}
+
+type CachedPanelMessage = Omit<PanelMessage, "attribution"> & {
+  attribution?: CachedMessageAttribution;
 };
 
 interface CachedPageChat {
-  version: 1;
+  version: 2;
   context: string;
   contextLabel: string;
   captureMode: CaptureMode;
   sourceType: SourceType;
+  documents: string[];
   history: Array<{ role: "user" | "assistant"; content: string }>;
-  messages: PanelMessage[];
+  messages: CachedPanelMessage[];
 }
 
+const CACHE_FORMAT_VERSION = 2;
 const THEME_KEY = "tldr-theme";
 const SUMMARY_LENGTH_KEY = "tldr-summary-length";
 const MAX_GENERATE_INPUT_CHARS = 420_000;
 const MAX_GENERATE_MESSAGES = 50;
 const CHAT_OUTPUT_TOKENS = 512;
-const SIMPLIFY_OUTPUT_TOKENS = 768;
-const SIMPLIFY_PROMPT =
-  "Rewrite and explain the given text in clear, simple language. Keep the " +
-  "explanation concise while preserving all facts, meaning, and " +
-  "qualifications. Do not add any information that is not present in the " +
-  "text. Return only the rewritten explanation.";
+// A capture the panel never consumed outlives the click that produced it. Two
+// minutes covers a slow side-panel open without replaying yesterday's page.
+const MAX_SEED_AGE_MS = 120_000;
 
 function websiteBaseUrl(pageUrl?: string | null) {
   if (!pageUrl || pageUrl.length > 16_384) return "the current webpage";
@@ -127,24 +153,6 @@ function websiteBaseUrl(pageUrl?: string | null) {
       : "the current webpage";
   } catch {
     return "the current webpage";
-  }
-}
-
-function samePdfDocumentUrl(
-  candidateUrl: string,
-  sourceUrl: string | null
-) {
-  if (!sourceUrl) return false;
-  try {
-    const candidate = new URL(candidateUrl);
-    const source = new URL(sourceUrl);
-    // Page/zoom anchors and our :~:text directive only change the native
-    // viewer's viewport. The PDF response itself is still the same source.
-    candidate.hash = "";
-    source.hash = "";
-    return candidate.href === source.href;
-  } catch {
-    return candidateUrl.split("#", 1)[0] === sourceUrl.split("#", 1)[0];
   }
 }
 
@@ -194,7 +202,6 @@ export class PanelController {
   private sourceBaseUrl = "the current webpage";
   private sourceType: SourceType = "page";
   private captureMode: CaptureMode = "selection";
-  private captureIntent: CaptureIntent = "tldr";
   private sourceUrl: string | null = null;
   private context = "";
   private history: Array<{
@@ -208,7 +215,6 @@ export class PanelController {
   private highlightEpoch = 0;
   private highlightedTarget: ActiveHighlight | null = null;
   private pendingPdfHighlight: ActiveHighlight | null = null;
-  private pendingAutoSummary: AutomaticRequest | null = null;
   private pendingSubmission: string | null = null;
   private messageSequence = 0;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -216,6 +222,7 @@ export class PanelController {
   private mediaQuery: MediaQueryList | null = null;
   private activeTurnController: AbortController | null = null;
   private activeTurnCleanup: (() => void) | null = null;
+  private activeTurnMessageId: string | null = null;
   private activePdfExtractionController: AbortController | null = null;
   private heatmapControllers = new Map<string, AbortController>();
   private navigationEpoch = 0;
@@ -229,17 +236,20 @@ export class PanelController {
       authError: null,
       busy: false,
       connected: false,
+      contextError: null,
       contextLabel: "Current page",
+      contextStatus: "idle",
       contextText: "",
       creditsText: null,
       hasContext: false,
       messages: [],
       notice: null,
       resolvedTheme,
+      sourceType: "page",
       summaryLength,
       themePreference,
-      tokenPathReady: false,
       toast: null,
+      toastSeq: 0,
     };
     this.applyTheme(resolvedTheme);
     this.watchSystemTheme();
@@ -286,7 +296,20 @@ export class PanelController {
       const stored = await chrome.storage.session.get(key);
       const seed = stored[key] as SelectionSeed | undefined;
       if (seed) {
-        seeded = this.applySeed(seed);
+        // The seed is keyed only by tab, so it can describe a document the tab
+        // has since left. Only a URL that is known on both sides can prove a
+        // mismatch; the age bound covers the rest, measured from the
+        // background's write time (seededAt) so a slow extraction is not
+        // penalized for the gap between click and write.
+        const liveUrl = tab?.url || null;
+        const seedTime = Number(seed.seededAt ?? seed.capturedAt);
+        const stale =
+          (Boolean(liveUrl) &&
+            Boolean(seed.url) &&
+            !sameDocumentUrl(seed.url, liveUrl)) ||
+          (Number.isFinite(seedTime) &&
+            Date.now() - seedTime > MAX_SEED_AGE_MS);
+        if (!stale) seeded = this.applySeed(seed);
         void chrome.storage.session.remove?.(key);
       }
     }
@@ -303,7 +326,6 @@ export class PanelController {
     }
 
     await authReady;
-    this.maybeRunAutoSummary();
   }
 
   connect = async (tokenPathKey: string) => {
@@ -313,26 +335,18 @@ export class PanelController {
     this.update({ authBusy: true, authError: null });
 
     try {
-      const savedTokenPath = await TokenPath.getAuth();
-      if (authEpoch !== this.authEpoch) return false;
-      const effectiveTokenPathKey =
-        cleanTokenPathKey || savedTokenPath.key || "";
-      if (!effectiveTokenPathKey) {
-        this.update({
-          authError: "Add a TokenPath API key.",
-        });
-        return false;
-      }
-
+      // The auth form is only reachable while disconnected, and its submit is
+      // disabled until a key is typed, so a blank key with nothing saved is
+      // unreachable. A saved-but-unverified key re-verifies through the same
+      // request as a freshly pasted one.
       if (cleanTokenPathKey) await TokenPath.setKey(cleanTokenPathKey);
       if (authEpoch !== this.authEpoch) return false;
       const creditsEpoch = this.beginCreditsObservation();
       const credits = await TokenPath.fetchCredits();
       if (authEpoch !== this.authEpoch) return false;
       this.updateCredits(credits, creditsEpoch);
-      this.setTokenPathReady(true);
+      this.setConnected(true);
       this.update({ authError: null });
-      this.maybeRunAutoSummary();
       return true;
     } catch (error) {
       if (authEpoch !== this.authEpoch) return false;
@@ -342,13 +356,13 @@ export class PanelController {
       ) {
         await TokenPath.clearKey().catch(() => undefined);
         if (authEpoch !== this.authEpoch) return false;
-        this.setTokenPathReady(false);
+        this.setConnected(false);
         this.update({
           authError:
             "The TokenPath key was rejected. Copy a fresh tpk_… key from platform.tokenpath.ai.",
         });
       } else {
-        this.setTokenPathReady(false);
+        this.setConnected(false);
         this.update({
           authError:
             error instanceof Error ? error.message : "Couldn't reach TokenPath.",
@@ -363,8 +377,11 @@ export class PanelController {
   disconnect = async () => {
     const authEpoch = ++this.authEpoch;
     this.cancelActiveWork();
-    this.setTokenPathReady(false);
+    this.setConnected(false);
     this.update({ authBusy: true, authError: null });
+    // Disconnecting removes the account's footprint on this machine, and the
+    // cached chats hold captured page and PDF text, not just the key.
+    await clearAll().catch(() => undefined);
     try {
       await TokenPath.clearKey();
     } catch {
@@ -399,16 +416,24 @@ export class PanelController {
     this.pendingSubmission = text;
     this.update({
       busy: true,
+      contextError: null,
       contextLabel: "Current page",
+      contextStatus: "reading",
       contextText: "Reading this page…",
       notice: null,
+      sourceType: "page",
     });
     const result = await chrome.runtime
       .sendMessage({ type: "capture-tab-for-chat", tabId: this.tabId })
       .catch(() => ({ ok: false }));
     if (result?.ok === false && this.pendingSubmission === text) {
       this.pendingSubmission = null;
-      this.update({ busy: false, contextText: "" });
+      this.update({
+        busy: false,
+        contextStatus: "error",
+        contextText: "",
+        contextError: "TokenPath couldn't access this page.",
+      });
       this.addMessage({
         kind: "error",
         role: "assistant",
@@ -457,11 +482,80 @@ export class PanelController {
     void this.clearActiveHighlight(fallback);
   };
 
+  // Stops the request in flight without touching the conversation or the
+  // captured context. Whatever the answer had already streamed stays visible,
+  // marked incomplete.
+  cancelTurn = () => {
+    const turnController = this.activeTurnController;
+    if (!turnController) return false;
+    const messageId = this.activeTurnMessageId;
+    // Dropping the cleanup is what separates a cancel from an invalidation:
+    // the question and its partial answer both survive.
+    this.activeTurnCleanup = null;
+    turnController.abort();
+    const message = this.snapshot.messages.find(
+      (candidate) => candidate.id === messageId
+    );
+    if (message) {
+      if (message.text.trim()) {
+        this.updateMessage(message.id, {
+          answerStatus: "unavailable",
+          attribution: undefined,
+          incomplete: true,
+        });
+      } else {
+        // An empty answer bubble carries nothing worth keeping.
+        this.removeMessage(message.id);
+      }
+    }
+    this.showToast("Stopped.");
+    return true;
+  };
+
+  // Runs the summary pathway against the live context using the persistent
+  // Short / Medium / Detailed preference.
+  runSummary = () => {
+    if (this.snapshot.busy) return false;
+    if (!this.snapshot.connected) {
+      this.showToast("Connect TokenPath to start chatting.");
+      return false;
+    }
+    if (!this.context || this.invalidated) {
+      // The only caller is the empty-state starter, which falls back to
+      // submit() and captures the page — a toast here would flash a failure
+      // over a path that is about to succeed.
+      return false;
+    }
+    const summary = TldrPanelLogic.buildSummaryRequest(
+      this.context,
+      this.snapshot.summaryLength
+    );
+    if (summary.skip) {
+      this.addMessage({
+        kind: "note",
+        role: "assistant",
+        text:
+          this.captureMode === "full-pdf"
+            ? "Already concise — ask anything about this PDF."
+            : this.captureMode === "video-transcript"
+              ? "Already concise — ask anything about this video."
+              : this.captureMode === "full-page"
+                ? "Already concise — ask anything about this page."
+                : "Already concise — ask anything about this selection.",
+      });
+      return true;
+    }
+    void this.runTurn(summary.prompt || "", {
+      echoUser: false,
+      maxOutputTokens: summary.maxOutputTokens,
+    });
+    return true;
+  };
+
   clearConversation = async () => {
     const key = pageChatKey(this.sourceUrl);
     if (key) await deletePageChat(key).catch(() => undefined);
     this.history = [];
-    this.pendingAutoSummary = null;
     this.cancelActiveWork();
     this.cancelHighlightAndClear();
     this.update({
@@ -518,15 +612,6 @@ export class PanelController {
       localStorage.setItem(SUMMARY_LENGTH_KEY, summaryLength);
     } catch {
       // The in-memory preference still applies for this panel session.
-    }
-    if (
-      this.pendingAutoSummary?.intent === "tldr" &&
-      this.context
-    ) {
-      this.pendingAutoSummary = {
-        ...TldrPanelLogic.buildSummaryRequest(this.context, summaryLength),
-        intent: "tldr",
-      };
     }
     this.update({ summaryLength });
   };
@@ -723,24 +808,26 @@ export class PanelController {
           : "selection"
         : seed.captureMode === "full-page"
           ? "full-page"
-          : "selection";
-    this.captureIntent =
-      seed.intent === "simplify" || seed.intent === "ask"
-        ? seed.intent
-        : "tldr";
+          : seed.captureMode === "video-transcript"
+            ? "video-transcript"
+            : "selection";
     this.sourceUrl = seed.url || null;
     this.sourceBaseUrl = websiteBaseUrl(seed.url);
     this.contextVersion++;
+    // A capture supersedes any navigation or tab activation still awaiting its
+    // own persist, which would otherwise resume and clobber this context.
+    this.navigationEpoch++;
     this.history = [];
-    this.pendingAutoSummary = null;
     const contextLabel =
       this.captureMode === "full-pdf"
         ? "Entire PDF"
-        : this.captureMode === "full-page"
-          ? "Entire page"
-          : this.sourceType === "chrome-pdf"
-            ? "Selected from PDF"
-            : "Selected from page";
+        : this.captureMode === "video-transcript"
+          ? "Video transcript"
+          : this.captureMode === "full-page"
+            ? "Entire page"
+            : this.sourceType === "chrome-pdf"
+              ? "Selected from PDF"
+              : "Selected from page";
 
     if (seed.error) {
       const pendingSubmission = this.pendingSubmission;
@@ -748,9 +835,12 @@ export class PanelController {
       this.context = "";
       this.update({
         busy: false,
+        contextError: "There’s no readable text on this page yet.",
         contextLabel,
+        contextStatus: "error",
         contextText: "",
         hasContext: false,
+        sourceType: this.contextSourceType(),
         messages: pendingSubmission
           ? [
               ...this.snapshot.messages,
@@ -776,22 +866,31 @@ export class PanelController {
       this.context = "";
       this.update({
         busy: false,
+        contextError: "No text was captured.",
         contextLabel,
+        contextStatus: "error",
         contextText: "No text was captured.",
         hasContext: false,
         messages: [],
         notice: null,
+        sourceType: this.contextSourceType(),
       });
       return true;
     }
 
-    this.activateContext(
-      seed.text,
-      contextLabel,
-      seed.truncated === true,
-      this.captureIntent
-    );
+    this.activateContext(seed.text, contextLabel, seed.truncated === true, {
+      transcriptUnavailable: seed.transcriptUnavailable === true,
+    });
     return true;
+  }
+
+  private contextSourceType(): ContextSourceType {
+    if (this.captureMode === "video-transcript") return "video";
+    return this.captureMode === "full-pdf"
+      ? "pdf"
+      : this.captureMode === "full-page"
+        ? "page"
+        : "selection";
   }
 
   private beginFullPdfCapture(contextLabel: string) {
@@ -800,11 +899,14 @@ export class PanelController {
       this.context = "";
       this.update({
         busy: false,
+        contextError: "The PDF URL is no longer available.",
         contextLabel,
+        contextStatus: "error",
         contextText: "The PDF URL is no longer available.",
         hasContext: false,
         messages: [],
         notice: null,
+        sourceType: this.contextSourceType(),
       });
       return;
     }
@@ -813,16 +915,18 @@ export class PanelController {
     this.activePdfExtractionController = extractionController;
     const captureId = this.captureId;
     const contextVersion = this.contextVersion;
-    const captureIntent = this.captureIntent;
     this.context = "";
     this.invalidated = false;
     this.update({
       busy: true,
+      contextError: null,
       contextLabel,
+      contextStatus: "reading",
       contextText: "Reading the full PDF…",
       hasContext: false,
       messages: [],
       notice: null,
+      sourceType: this.contextSourceType(),
     });
 
     void extractPdfText(sourceUrl, {
@@ -838,12 +942,7 @@ export class PanelController {
           return;
         }
         this.activePdfExtractionController = null;
-        this.activateContext(
-          text,
-          contextLabel,
-          truncated,
-          captureIntent
-        );
+        this.activateContext(text, contextLabel, truncated);
       })
       .catch((error: unknown) => {
         if (
@@ -856,16 +955,20 @@ export class PanelController {
         }
         this.activePdfExtractionController = null;
         this.context = "";
+        const contextError =
+          error instanceof Error
+            ? error.message
+            : "Couldn't read the text in this PDF.";
         this.update({
           busy: false,
+          contextError,
           contextLabel,
-          contextText:
-            error instanceof Error
-              ? error.message
-              : "Couldn't read the text in this PDF.",
+          contextStatus: "error",
+          contextText: contextError,
           hasContext: false,
           messages: [],
           notice: null,
+          sourceType: this.contextSourceType(),
         });
       });
   }
@@ -874,74 +977,79 @@ export class PanelController {
     text: string,
     contextLabel: string,
     truncated = false,
-    intent: CaptureIntent = this.captureIntent
+    { transcriptUnavailable = false }: { transcriptUnavailable?: boolean } = {}
   ) {
     this.context = text;
     this.invalidated = false;
+    const contextVersion = this.contextVersion;
     this.update({
       busy: false,
+      contextError: null,
       contextLabel,
+      contextStatus: "ready",
       contextText: text,
       hasContext: true,
       messages: [],
       notice: null,
+      sourceType: this.contextSourceType(),
     });
     const pendingSubmission = this.pendingSubmission;
     this.pendingSubmission = null;
-    if (intent === "ask") {
-      void this.restorePageChat(text, this.contextVersion, true).then(
-        (restored) => {
-          if (!restored) void this.persistCurrentPageChat();
-          if (pendingSubmission) {
-            void this.runTurn(pendingSubmission, { echoUser: true });
-          }
-        }
-      );
-    }
-    if (truncated) {
+    // Notes persist with the chat, so a re-capture restores them; match on a
+    // stable prefix (counts drift between captures of a dynamic page) instead
+    // of stacking a duplicate.
+    const addNoteOnce = (notePrefix: string, text: string) => {
+      if (
+        this.snapshot.messages.some(
+          (message) =>
+            message.kind === "note" && message.text.startsWith(notePrefix)
+        )
+      ) {
+        return;
+      }
+      this.addMessage({ kind: "note", role: "assistant", text });
+    };
+    const addTruncationNote = () => {
+      if (!truncated) return;
       const sourceName =
-        this.captureMode === "full-pdf" ? "PDF" : "page";
+        this.captureMode === "full-pdf"
+          ? "PDF"
+          : this.captureMode === "video-transcript"
+            ? "transcript"
+            : "page";
       const capturedCharacters = Array.from(text).length;
-      this.addMessage({
-        kind: "note",
-        role: "assistant",
-        text:
-          `This ${sourceName} is very long, so TokenPath is using its first ` +
-          `${capturedCharacters.toLocaleString()} characters.`,
-      });
-    }
+      const notePrefix = `This ${sourceName} is very long`;
+      addNoteOnce(
+        notePrefix,
+        `${notePrefix}, so TokenPath is using its first ` +
+          `${capturedCharacters.toLocaleString()} characters.`
+      );
+    };
+    // A video whose captions could not be read is captured as ordinary page
+    // text. Saying so is the difference between "attribution is broken" and
+    // "this video has no subtitles".
+    const addTranscriptFallbackNote = () => {
+      if (!transcriptUnavailable) return;
+      const notePrefix = "This video has no subtitles";
+      addNoteOnce(
+        notePrefix,
+        `${notePrefix} TokenPath can read, so it captured the page text ` +
+          "instead. Answers won't jump to a timestamp."
+      );
+    };
 
-    if (intent === "ask") return;
-    if (intent === "simplify") {
-      this.pendingAutoSummary = {
-        intent: "simplify",
-        maxOutputTokens: SIMPLIFY_OUTPUT_TOKENS,
-        prompt: SIMPLIFY_PROMPT,
-        skip: false,
-      };
-      this.maybeRunAutoSummary();
-      return;
-    }
-
-    const summary = TldrPanelLogic.buildSummaryRequest(
-      text,
-      this.snapshot.summaryLength
-    );
-    if (summary.skip) {
-      this.addMessage({
-        kind: "note",
-        role: "assistant",
-        text:
-          this.captureMode === "full-pdf"
-            ? "Already concise — ask anything about this PDF."
-            : this.captureMode === "full-page"
-              ? "Already concise — ask anything about this page."
-              : "Already concise — ask anything about this selection.",
-      });
-      return;
-    }
-    this.pendingAutoSummary = { ...summary, intent: "tldr" };
-    this.maybeRunAutoSummary();
+    // The restore replaces the whole message list, so the note has to wait for
+    // it. Adding the note first would leave it visible only until the cached
+    // chat arrived.
+    void this.restorePageChat(text, contextVersion, true).then((restored) => {
+      if (contextVersion !== this.contextVersion) return;
+      addTranscriptFallbackNote();
+      addTruncationNote();
+      if (!restored) void this.persistCurrentPageChat();
+      if (pendingSubmission) {
+        void this.runTurn(pendingSubmission, { echoUser: true });
+      }
+    });
   }
 
   private async initAuth() {
@@ -951,14 +1059,14 @@ export class PanelController {
     const tokenPathAuth = await TokenPath.getAuth();
     if (authEpoch !== this.authEpoch) return;
 
-    const tokenPathReady = Boolean(tokenPathAuth.key);
-    this.setTokenPathReady(tokenPathReady);
-    if (!tokenPathReady) return;
+    const connected = Boolean(tokenPathAuth.key);
+    this.setConnected(connected);
+    if (!connected) return;
 
     const creditsEpoch = this.beginCreditsObservation();
     void TokenPath.fetchCredits()
       .then((credits) => {
-        if (authEpoch === this.authEpoch && this.snapshot.tokenPathReady) {
+        if (authEpoch === this.authEpoch && this.snapshot.connected) {
           this.updateCredits(credits, creditsEpoch);
         }
       })
@@ -970,7 +1078,7 @@ export class PanelController {
         ) {
           await TokenPath.clearKey().catch(() => undefined);
           if (authEpoch !== this.authEpoch) return;
-          this.setTokenPathReady(false);
+          this.setConnected(false);
           this.update({
             authError:
               "Your saved TokenPath key was rejected — paste a new one.",
@@ -979,13 +1087,11 @@ export class PanelController {
       });
   }
 
-  private setTokenPathReady(tokenPathReady: boolean) {
+  private setConnected(connected: boolean) {
     this.update({
-      connected: tokenPathReady,
-      tokenPathReady,
-      creditsText: tokenPathReady ? this.snapshot.creditsText : null,
+      connected,
+      creditsText: connected ? this.snapshot.creditsText : null,
     });
-    if (tokenPathReady) this.maybeRunAutoSummary();
   }
 
   private beginCreditsObservation() {
@@ -1005,35 +1111,17 @@ export class PanelController {
     this.update({ creditsText: `${formatTokens(availableTokens)} tokens` });
   }
 
-  private maybeRunAutoSummary() {
-    if (
-      !this.snapshot.connected ||
-      this.snapshot.busy ||
-      !this.context ||
-      !this.pendingAutoSummary
-    ) {
-      return;
-    }
-    const summary = this.pendingAutoSummary;
-    this.pendingAutoSummary = null;
-    void this.runTurn(summary.prompt || "", {
-      echoUser: false,
-      summary,
-    });
-  }
-
   private async runTurn(
     userText: string,
     {
       echoUser,
-      summary = null,
+      maxOutputTokens = CHAT_OUTPUT_TOKENS,
     }: {
       echoUser: boolean;
-      summary?: AutomaticRequest | null;
+      maxOutputTokens?: number;
     }
   ) {
     if (!this.snapshot.connected) {
-      if (summary) this.pendingAutoSummary = summary;
       this.showToast("Connect TokenPath to start chatting.");
       return;
     }
@@ -1078,6 +1166,7 @@ export class PanelController {
       },
       text: "",
     });
+    this.activeTurnMessageId = assistant.id;
     const cleanupCancelledTurn = () => {
       if (contextVersion !== this.contextVersion) return;
       this.removeMessage(assistant.id);
@@ -1090,7 +1179,7 @@ export class PanelController {
     try {
       const result = await TokenPath.generate({
         messages: turn.messages,
-        maxOutputTokens: summary?.maxOutputTokens ?? CHAT_OUTPUT_TOKENS,
+        maxOutputTokens,
         signal: turnController.signal,
         onDelta: (_delta, accumulated) => {
           if (
@@ -1126,7 +1215,7 @@ export class PanelController {
       this.history.push({ role: "assistant", content: answer });
       if (
         turnAuthEpoch === this.authEpoch &&
-        this.snapshot.tokenPathReady &&
+        this.snapshot.connected &&
         result.creditsRemaining != null
       ) {
         this.updateCredits(result.creditsRemaining);
@@ -1149,8 +1238,11 @@ export class PanelController {
       ) {
         return;
       }
-      if (historyEntry) this.removeHistoryEntry(historyEntry);
-      this.removeMessage(assistant.id);
+      const partialAnswer =
+        error instanceof TokenPath.Error &&
+        typeof error.details?.partialAnswer === "string"
+          ? error.details.partialAnswer
+          : "";
       const failure = await this.generationFailureMessage(error);
       if (
         turnController.signal.aborted ||
@@ -1159,14 +1251,30 @@ export class PanelController {
       ) {
         return;
       }
+      if (partialAnswer.trim()) {
+        // The stream delivered real text before it broke. Keep it, marked
+        // incomplete, and report the failure alongside it. Attribution is
+        // deliberately skipped: a heatmap over a truncated answer would map
+        // text the model never finished.
+        this.updateMessage(assistant.id, {
+          answerStatus: "unavailable",
+          attribution: undefined,
+          incomplete: true,
+          text: partialAnswer,
+        });
+        this.addMessage({ ...failure, kind: "note" });
+        return;
+      }
+      if (historyEntry) this.removeHistoryEntry(historyEntry);
+      this.removeMessage(assistant.id);
       this.addMessage(failure);
     } finally {
       if (this.activeTurnController === turnController) {
         this.activeTurnController = null;
         this.activeTurnCleanup = null;
+        this.activeTurnMessageId = null;
         this.update({ busy: false });
         void this.persistCurrentPageChat();
-        this.maybeRunAutoSummary();
       }
     }
   }
@@ -1402,7 +1510,7 @@ export class PanelController {
         .then((credits) => {
           if (
             creditsAuthEpoch === this.authEpoch &&
-            this.snapshot.tokenPathReady
+            this.snapshot.connected
           ) {
             this.updateCredits(credits, creditsEpoch);
           }
@@ -1438,24 +1546,49 @@ export class PanelController {
     if (
       !key ||
       !this.context ||
+      // Disconnect wipes the local cache as part of removing the account's
+      // footprint; a disconnected panel must not write the in-memory chat
+      // straight back on dispose or tab switch.
+      !this.snapshot.connected ||
       this.snapshot.busy
     ) {
       return;
     }
+    const documents: string[] = [];
+    const documentIndexes = new Map<string, number>();
+    const messages = this.snapshot.messages.map((message) => {
+      const attribution = message.attribution;
+      let cachedAttribution: CachedMessageAttribution | undefined;
+      if (attribution) {
+        let documentIndex = documentIndexes.get(attribution.document);
+        if (documentIndex === undefined) {
+          documentIndex = documents.length;
+          documents.push(attribution.document);
+          documentIndexes.set(attribution.document, documentIndex);
+        }
+        cachedAttribution = {
+          documentIndex,
+          question: attribution.question,
+          status: attribution.status,
+          heatmap: attribution.heatmap,
+          error: attribution.error,
+        };
+      }
+      return {
+        ...message,
+        attribution: cachedAttribution,
+        source: message.source ? { ...message.source } : undefined,
+      };
+    });
     const value: CachedPageChat = {
-      version: 1,
+      version: CACHE_FORMAT_VERSION,
       context: this.context,
       contextLabel: this.snapshot.contextLabel,
       captureMode: this.captureMode,
       sourceType: this.sourceType,
+      documents,
       history: this.history.map((message) => ({ ...message })),
-      messages: this.snapshot.messages.map((message) => ({
-        ...message,
-        attribution: message.attribution
-          ? { ...message.attribution }
-          : undefined,
-        source: message.source ? { ...message.source } : undefined,
-      })),
+      messages,
     };
     await writePageChat(key, value).catch(() => undefined);
   }
@@ -1470,13 +1603,20 @@ export class PanelController {
     const record = await readPageChat<CachedPageChat>(key).catch(() => null);
     if (
       !record ||
-      record.value.version !== 1 ||
+      record.value.version !== CACHE_FORMAT_VERSION ||
       expectedContextVersion !== this.contextVersion
     ) {
       return false;
     }
 
     const cached = record.value;
+    // A fresh capture of a different mode — a selection over a saved
+    // full-page chat, or the reverse — is a new conversation subject, not
+    // evidence the page changed. Leave the saved record alone; it is only
+    // replaced once the user actually sends a turn from the new context.
+    if (hasFreshCapture && cached.captureMode !== this.captureMode) {
+      return false;
+    }
     if (
       capturedText &&
       pageContentSignificantlyChanged(cached.context, capturedText)
@@ -1503,27 +1643,45 @@ export class PanelController {
         return match ? Number(match[1]) : 0;
       })
     );
+    const documents = Array.isArray(cached.documents) ? cached.documents : [];
     let normalizedInterruptedAttribution = false;
-    const messages = cached.messages.map((message) => {
+    const messages: PanelMessage[] = cached.messages.map((message) => {
       const attributionWasInterrupted =
         message.kind === "answer" &&
         (message.answerStatus === "attributing" ||
           message.attribution?.status === "loading");
       if (attributionWasInterrupted) normalizedInterruptedAttribution = true;
+      const cachedAttribution = message.attribution;
+      // A record whose shared document is missing keeps its answer text; only
+      // its source map is lost, exactly like an interrupted attribution.
+      const document = cachedAttribution
+        ? documents[cachedAttribution.documentIndex]
+        : undefined;
+      const attributionIsUsable =
+        cachedAttribution != null && typeof document === "string";
       return {
         ...message,
-        answerStatus: attributionWasInterrupted
-          ? ("unavailable" as const)
-          : message.answerStatus,
-        attribution: message.attribution
-          ? attributionWasInterrupted
-            ? {
-                ...message.attribution,
-                error:
-                  "Source mapping was interrupted when you left this page.",
-                status: "error" as const,
-              }
-            : { ...message.attribution }
+        answerStatus:
+          attributionWasInterrupted ||
+          (cachedAttribution != null && !attributionIsUsable)
+            ? ("unavailable" as const)
+            : message.answerStatus,
+        attribution: attributionIsUsable
+          ? {
+              document: document as string,
+              question: cachedAttribution.question,
+              heatmap: cachedAttribution.heatmap,
+              ...(attributionWasInterrupted
+                ? {
+                    error:
+                      "Source mapping was interrupted when you left this page.",
+                    status: "error" as const,
+                  }
+                : {
+                    error: cachedAttribution.error,
+                    status: cachedAttribution.status,
+                  }),
+            }
           : undefined,
         source: message.source
           ? {
@@ -1544,11 +1702,14 @@ export class PanelController {
     });
     this.update({
       busy: false,
+      contextError: null,
       contextLabel: cached.contextLabel,
+      contextStatus: "ready",
       contextText: this.context,
       hasContext: true,
       messages,
       notice: null,
+      sourceType: this.contextSourceType(),
     });
     if (normalizedInterruptedAttribution) {
       void this.persistCurrentPageChat();
@@ -1578,7 +1739,7 @@ export class PanelController {
 
   private async rejectSavedTokenPathKey(authError: string) {
     const authEpoch = ++this.authEpoch;
-    this.setTokenPathReady(false);
+    this.setConnected(false);
     this.update({ authBusy: true, authError });
     try {
       await TokenPath.clearKey();
@@ -1596,7 +1757,7 @@ export class PanelController {
       const credits = await TokenPath.fetchCredits();
       if (
         authEpoch === this.authEpoch &&
-        this.snapshot.tokenPathReady
+        this.snapshot.connected
       ) {
         this.updateCredits(credits, creditsEpoch);
       }
@@ -1698,7 +1859,11 @@ export class PanelController {
       this.update({
         busy: false,
         ...(wasExtractingPdf && !this.context
-          ? { contextText: "PDF reading was cancelled." }
+          ? {
+              contextError: "PDF reading was cancelled.",
+              contextStatus: "error" as const,
+              contextText: "PDF reading was cancelled.",
+            }
           : {}),
       });
     }
@@ -1716,12 +1881,11 @@ export class PanelController {
     });
     chrome.tabs.onUpdated.addListener((id, changeInfo) => {
       if (id !== this.tabId || !changeInfo.url) return;
-      if (
-        this.sourceType === "chrome-pdf" &&
-        samePdfDocumentUrl(changeInfo.url, this.sourceUrl)
-      ) {
-        return;
-      }
+      // A fragment-only change is scroll position, not navigation: a plain
+      // "#section" anchor, our own ":~:text=" attribution directive, and the
+      // native PDF viewer's #page/#zoom parameters all leave the captured
+      // document — and therefore the chat — intact.
+      if (sameDocumentUrl(changeInfo.url, this.sourceUrl)) return;
       void this.handlePageNavigation(changeInfo.url);
     });
     chrome.tabs.onRemoved.addListener((id) => {
@@ -1739,19 +1903,22 @@ export class PanelController {
     this.invalidated = true;
     this.context = "";
     this.history = [];
-    this.pendingAutoSummary = null;
     this.contextVersion++;
     this.tabId = tabId;
     this.windowId = windowId;
     this.frameId = 0;
     this.captureId = null;
+    this.captureMode = "selection";
     this.update({
       busy: false,
+      contextError: null,
       contextLabel: "Current page",
+      contextStatus: "idle",
       contextText: "",
       hasContext: false,
       messages: [],
       notice: null,
+      sourceType: "page",
     });
 
     const tab = await chrome.tabs.get(tabId).catch(() => null);
@@ -1797,15 +1964,17 @@ export class PanelController {
     this.invalidated = true;
     this.context = "";
     this.history = [];
-    this.pendingAutoSummary = null;
     this.pendingSubmission = null;
     this.update({
       busy: false,
+      contextError: null,
       contextLabel: "Current page",
+      contextStatus: "idle",
       contextText: "",
       hasContext: false,
       messages: [],
       notice: null,
+      sourceType: "page",
     });
   }
 
@@ -1813,7 +1982,6 @@ export class PanelController {
     this.invalidated = true;
     this.context = "";
     this.history = [];
-    this.pendingAutoSummary = null;
     this.contextVersion++;
     this.highlightEpoch++;
     const pendingPdfHighlight = this.pendingPdfHighlight;
@@ -1836,17 +2004,22 @@ export class PanelController {
     this.cancelActiveWork();
     this.update({
       busy: false,
+      contextError: reason || null,
       contextLabel: "Current page",
+      contextStatus: reason ? "error" : "idle",
       contextText: reason,
       hasContext: false,
       messages: [],
       notice: null,
+      sourceType: "page",
     });
   }
 
   private showToast(text: string) {
     if (this.toastTimer) clearTimeout(this.toastTimer);
-    this.update({ toast: text });
+    // The sequence number lets the view re-announce a repeated identical
+    // toast, which an unchanged text node would silently swallow.
+    this.update({ toast: text, toastSeq: this.snapshot.toastSeq + 1 });
     this.toastTimer = setTimeout(() => {
       this.toastTimer = null;
       this.update({ toast: null });
