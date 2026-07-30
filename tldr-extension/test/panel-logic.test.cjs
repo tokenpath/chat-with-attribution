@@ -31,6 +31,45 @@ const large = Logic.buildSummaryRequest(textWithWords(500));
 assert.strictEqual(large.prompt, lowSummary.prompt);
 console.log("PASS: low/medium/high summary prompts and headroom stay distinct");
 
+// A video transcript gets a higher headroom tier at every length: even a
+// "brief" summary of an hour of speech overruns a page-sized ceiling and stops
+// mid-sentence. The prompts are identical — only the ceiling moves — and the
+// tiers stay ordered, so Short remains genuinely shorter than Detailed.
+const videoLow = Logic.buildSummaryRequest(textWithWords(25), "low", "video");
+const videoMedium = Logic.buildSummaryRequest(
+  textWithWords(25),
+  "medium",
+  "video"
+);
+const videoHigh = Logic.buildSummaryRequest(textWithWords(25), "high", "video");
+assert.strictEqual(videoLow.maxOutputTokens, 1_024);
+assert.strictEqual(videoMedium.maxOutputTokens, 1_536);
+assert.strictEqual(videoHigh.maxOutputTokens, 2_048);
+assert.ok(videoLow.maxOutputTokens < videoMedium.maxOutputTokens);
+assert.ok(videoMedium.maxOutputTokens < videoHigh.maxOutputTokens);
+assert.strictEqual(videoLow.prompt, lowSummary.prompt);
+assert.strictEqual(videoHigh.prompt, highSummary.prompt);
+// Every video tier clears the page tier it corresponds to.
+assert.ok(videoLow.maxOutputTokens > lowSummary.maxOutputTokens);
+assert.ok(videoMedium.maxOutputTokens > mediumSummary.maxOutputTokens);
+assert.ok(videoHigh.maxOutputTokens > highSummary.maxOutputTokens);
+// An unknown or absent source kind is a page.
+assert.strictEqual(
+  Logic.buildSummaryRequest(textWithWords(25), "low", "page").maxOutputTokens,
+  512
+);
+assert.strictEqual(
+  Logic.buildSummaryRequest(textWithWords(25), "low", undefined)
+    .maxOutputTokens,
+  512
+);
+// A transcript short enough to be already concise still skips generation.
+assert.strictEqual(
+  Logic.buildSummaryRequest("A very short transcript.", "low", "video").skip,
+  true
+);
+console.log("PASS: video transcripts get a higher, still-ordered headroom tier");
+
 const cjk = Logic.buildSummaryRequest("这是一个用于验证没有空格的长文本摘要行为并确保模型不会返回比原始选择更长内容的测试段落它还包含更多字符以超过短文本阈值");
 assert.strictEqual(cjk.skip, false);
 assert.strictEqual(cjk.prompt, lowSummary.prompt);
@@ -124,7 +163,13 @@ const betaSpan = Logic.resolveHeatmapSpan(
   heatmapDocument,
   "the beta value"
 );
-assert.deepStrictEqual(betaSpan, { start: 6, end: 10, confidence: 0.9 });
+assert.deepStrictEqual(betaSpan, {
+  start: 6,
+  end: 10,
+  confidence: 0.9,
+  contextStart: 6,
+  contextEnd: 10,
+});
 const valueSpan = Logic.resolveHeatmapSpan(
   heatmap,
   9,
@@ -529,8 +574,75 @@ assert.deepStrictEqual(
     emojiDocument,
     "🎓"
   ),
-  { start: 2, end: 4, confidence: 0.8 }
+  { start: 2, end: 4, confidence: 0.8, contextStart: 2, contextEnd: 4 }
 );
 console.log("PASS: heatmap resolution uses browser UTF-16 offsets around emoji");
+
+// The supported neighbourhood: the same aggregation and threshold, grown with
+// a looser gap tolerance. It describes the passage a claim was drawn from —
+// nothing quotes it, so a wider bound cannot mis-cite; a video seek uses it to
+// start playback where the discussion begins.
+const passageDocument =
+  "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu";
+const passageOffsets = [];
+for (let cursor = 0; cursor < passageDocument.length; ) {
+  const next = passageDocument.indexOf(" ", cursor);
+  const end = next === -1 ? passageDocument.length : next;
+  passageOffsets.push([cursor, end]);
+  cursor = end + 1;
+}
+// Peak on "theta" (token 7) with real but weaker support running back to
+// "gamma" (token 2) across a two-token dip the exact span refuses to bridge.
+const passageHeatmap = {
+  row: [0, 0, 0, 0, 0],
+  col: [2, 3, 6, 7, 8],
+  data: [0.4, 0.35, 0.5, 0.9, 0.4],
+  shape: [1, passageOffsets.length],
+  documentOffsets: passageOffsets,
+  answerOffsets: [[0, 5]],
+};
+const passage = Logic.resolveHeatmapSpan(
+  passageHeatmap,
+  0,
+  5,
+  passageDocument,
+  "claim",
+  0.25,
+  1
+);
+// The cited span stops at the gap the tight tolerance will not cross.
+assert.strictEqual(
+  passageDocument.slice(passage.start, passage.end),
+  "eta theta iota"
+);
+// The neighbourhood reaches back over it to where the support actually starts.
+assert.strictEqual(
+  passageDocument.slice(passage.contextStart, passage.contextEnd),
+  "gamma delta epsilon zeta eta theta iota"
+);
+// It is always a superset of the cited span.
+assert.ok(passage.contextStart <= passage.start);
+assert.ok(passage.contextEnd >= passage.end);
+// Unsupported tokens beyond the looser tolerance are still excluded.
+assert.ok(!passageDocument.slice(passage.contextStart).startsWith("alpha"));
+assert.ok(
+  !passageDocument
+    .slice(passage.contextStart, passage.contextEnd)
+    .includes("kappa")
+);
+// A tighter context tolerance collapses the neighbourhood onto the span.
+const noExpansion = Logic.resolveHeatmapSpan(
+  passageHeatmap,
+  0,
+  5,
+  passageDocument,
+  "claim",
+  0.25,
+  1,
+  0
+);
+assert.strictEqual(noExpansion.contextStart, noExpansion.start);
+assert.strictEqual(noExpansion.contextEnd, noExpansion.end);
+console.log("PASS: the supported neighbourhood widens without moving the citation");
 
 console.log("\nAll panel-logic assertions passed.");

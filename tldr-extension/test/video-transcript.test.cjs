@@ -55,6 +55,7 @@ for (const name of [
   "hasCaptionTracks",
   "normalizedYouTubeSearch",
   "playerResponseFrom",
+  "seekStartMsForSpan",
   "timestampToMs",
   "transcriptPanelParams",
   "transcriptSegmentsFrom",
@@ -486,6 +487,97 @@ test("every character of a built transcript maps back to its own cue", () => {
       );
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Where playback starts
+// ---------------------------------------------------------------------------
+
+// Ten seconds of speech per cue makes the arithmetic readable.
+const EPISODE = build(
+  Array.from({ length: 20 }, (_, index) =>
+    cue(index * 10_000, `line ${String(index).padStart(2, "0")} of the show`)
+  )
+);
+const episodeCue = (index) => EPISODE.cues[index];
+const seekMs = hooks.seekStartMsForSpan;
+
+test("with no supported neighbourhood the seek is the cited cue, less pre-roll", () => {
+  // 60s cue, 2s pre-roll.
+  assert.strictEqual(seekMs(EPISODE.cues, episodeCue(6)), 58_000);
+  assert.strictEqual(
+    seekMs(EPISODE.cues, episodeCue(6), undefined, undefined),
+    58_000
+  );
+  // An unusable or inverted range is the same as none at all.
+  assert.strictEqual(seekMs(EPISODE.cues, episodeCue(6), null, null), 58_000);
+  assert.strictEqual(seekMs(EPISODE.cues, episodeCue(6), 400, 10), 58_000);
+  assert.strictEqual(seekMs(EPISODE.cues, episodeCue(6), 1.5, 40), 58_000);
+  // Pre-roll never runs past the start of the video.
+  assert.strictEqual(seekMs(EPISODE.cues, episodeCue(0)), 0);
+  assert.strictEqual(seekMs(EPISODE.cues, episodeCue(0), 0, 5), 0);
+});
+
+test("a supported passage starts playback where the discussion begins", () => {
+  const cited = episodeCue(6);
+  // The passage runs from cue 3 through the cited cue.
+  const passage = seekMs(
+    EPISODE.cues,
+    cited,
+    episodeCue(3).start,
+    cited.end
+  );
+  assert.strictEqual(passage, 28_000); // 30s cue, less 2s pre-roll.
+  // One cue back is one cue back, not a jump to the start of the passage list.
+  assert.strictEqual(
+    seekMs(EPISODE.cues, cited, episodeCue(5).start, cited.end),
+    48_000
+  );
+});
+
+test("a neighbourhood at or after the citation never pushes playback later", () => {
+  const cited = episodeCue(6);
+  // A range that begins inside the cited cue leaves the seek where it was.
+  assert.strictEqual(seekMs(EPISODE.cues, cited, cited.start, cited.end), 58_000);
+  // A range entirely after it is ignored: the seek is never moved forward.
+  assert.strictEqual(
+    seekMs(EPISODE.cues, cited, episodeCue(9).start, episodeCue(11).end),
+    58_000
+  );
+});
+
+test("the lead-in is bounded to sixty seconds before the cited moment", () => {
+  const cited = episodeCue(15); // 150s.
+  // A passage starting 40s earlier is used in full.
+  assert.strictEqual(
+    seekMs(EPISODE.cues, cited, episodeCue(11).start, cited.end),
+    108_000
+  );
+  // A passage starting 150s earlier is clamped to exactly 60s of lead.
+  const clamped = seekMs(EPISODE.cues, cited, episodeCue(0).start, cited.end);
+  assert.strictEqual(clamped, 90_000);
+  assert.strictEqual(cited.tStartMs - clamped, 60_000);
+  // The bound holds however wide the range is.
+  assert.strictEqual(
+    seekMs(EPISODE.cues, cited, 0, EPISODE.text.length),
+    90_000
+  );
+  // Early in a video the clamp still cannot go negative.
+  assert.strictEqual(
+    seekMs(EPISODE.cues, episodeCue(2), 0, EPISODE.text.length),
+    0
+  );
+});
+
+test("a range covering the whole episode still cites from its own cue", () => {
+  // Two different citations inside one wide supported range keep their own
+  // seek targets: the neighbourhood widens the lead-in, it does not replace
+  // the citation.
+  const wide = [0, EPISODE.text.length];
+  assert.notStrictEqual(
+    seekMs(EPISODE.cues, episodeCue(8), ...wide),
+    seekMs(EPISODE.cues, episodeCue(15), ...wide)
+  );
 });
 
 // ---------------------------------------------------------------------------

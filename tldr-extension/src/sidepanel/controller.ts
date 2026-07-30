@@ -139,6 +139,17 @@ const SUMMARY_LENGTH_KEY = "tldr-summary-length";
 const MAX_GENERATE_INPUT_CHARS = 420_000;
 const MAX_GENERATE_MESSAGES = 50;
 const CHAT_OUTPUT_TOKENS = 512;
+// An answer about an hour of speech cites and qualifies more than an answer
+// about a page, and a cut-off answer is worse than a long one.
+const VIDEO_CHAT_OUTPUT_TOKENS = 1_024;
+// Tokenizer counts can disagree with the sampler's stop by one, so treat "one
+// short of the ceiling" as having reached it.
+const OUTPUT_LIMIT_TOLERANCE_TOKENS = 1;
+const SUMMARY_LENGTH_LABELS: Record<SummaryLength, string> = {
+  low: "Short",
+  medium: "Medium",
+  high: "Detailed",
+};
 // A capture the panel never consumed outlives the click that produced it. Two
 // minutes covers a slow side-panel open without replaying yesterday's page.
 const MAX_SEED_AGE_MS = 120_000;
@@ -528,7 +539,8 @@ export class PanelController {
     }
     const summary = TldrPanelLogic.buildSummaryRequest(
       this.context,
-      this.snapshot.summaryLength
+      this.snapshot.summaryLength,
+      this.summarySourceKind()
     );
     if (summary.skip) {
       this.addMessage({
@@ -661,7 +673,10 @@ export class PanelController {
       resolved.start,
       resolved.end,
       message.source,
-      message.attribution.document
+      message.attribution.document,
+      // Recomputed from the cached heatmap on every click, so a chat restored
+      // from a record saved before this existed behaves identically.
+      { contextStart: resolved.contextStart, contextEnd: resolved.contextEnd }
     );
   };
 
@@ -669,7 +684,12 @@ export class PanelController {
     start: number,
     end: number,
     source: HighlightSource,
-    documentText = this.context
+    documentText = this.context,
+    // The wider passage that supports the same selection. Only a video
+    // transcript uses it, to start playback where the discussion begins
+    // rather than mid-sentence on the cited phrase; the cited span itself is
+    // always [start, end).
+    supportedRange: { contextStart?: number; contextEnd?: number } = {}
   ) => {
     if (
       source.tabId == null ||
@@ -718,6 +738,8 @@ export class PanelController {
                 type: "highlight",
                 start,
                 end,
+                contextStart: supportedRange.contextStart,
+                contextEnd: supportedRange.contextEnd,
                 document: documentText,
                 captureId: source.captureId,
                 highlightId,
@@ -882,6 +904,17 @@ export class PanelController {
       transcriptUnavailable: seed.transcriptUnavailable === true,
     });
     return true;
+  }
+
+  /** Which output-headroom tier this context's summaries and answers use. */
+  private summarySourceKind() {
+    return this.captureMode === "video-transcript" ? "video" : "page";
+  }
+
+  private chatOutputTokens() {
+    return this.captureMode === "video-transcript"
+      ? VIDEO_CHAT_OUTPUT_TOKENS
+      : CHAT_OUTPUT_TOKENS;
   }
 
   private contextSourceType(): ContextSourceType {
@@ -1115,7 +1148,7 @@ export class PanelController {
     userText: string,
     {
       echoUser,
-      maxOutputTokens = CHAT_OUTPUT_TOKENS,
+      maxOutputTokens,
     }: {
       echoUser: boolean;
       maxOutputTokens?: number;
@@ -1125,6 +1158,9 @@ export class PanelController {
       this.showToast("Connect TokenPath to start chatting.");
       return;
     }
+    // The summary pathway passes its length tier; an ordinary chat turn takes
+    // the headroom this context calls for.
+    const outputTokens = maxOutputTokens ?? this.chatOutputTokens();
 
     const historyEntry = echoUser
       ? ({ role: "user", content: userText } as const)
@@ -1179,7 +1215,7 @@ export class PanelController {
     try {
       const result = await TokenPath.generate({
         messages: turn.messages,
-        maxOutputTokens,
+        maxOutputTokens: outputTokens,
         signal: turnController.signal,
         onDelta: (_delta, accumulated) => {
           if (
@@ -1229,6 +1265,17 @@ export class PanelController {
         },
         text: answer,
       });
+      // The answer stopped because it ran out of room, not because the model
+      // was done. Unlike a Stop or a broken stream, every word of it is real
+      // text the model wrote, so it stays a normal answer and is still
+      // attributed — the note only explains why it may end mid-thought.
+      if (this.reachedOutputLimit(result.usage, outputTokens)) {
+        this.addMessage({
+          kind: "note",
+          role: "assistant",
+          text: this.outputLimitNoteText(echoUser),
+        });
+      }
       void this.loadHeatmap(assistant.id, contextVersion);
     } catch (error) {
       if (
@@ -1277,6 +1324,36 @@ export class PanelController {
         void this.persistCurrentPageChat();
       }
     }
+  }
+
+  // TokenPath's terminal event carries no finish reason, so the only evidence
+  // that generation was cut short is that it produced every token it was
+  // allowed.
+  private reachedOutputLimit(
+    usage: { output_tokens?: number } | undefined,
+    requestedTokens: number
+  ) {
+    const produced = usage?.output_tokens;
+    return (
+      Number.isInteger(produced) &&
+      Number.isInteger(requestedTokens) &&
+      requestedTokens > 0 &&
+      (produced as number) >= requestedTokens - OUTPUT_LIMIT_TOLERANCE_TOKENS
+    );
+  }
+
+  private outputLimitNoteText(echoUser: boolean) {
+    if (echoUser) {
+      return (
+        "This answer reached its output limit, so it may end abruptly. " +
+        "Ask a narrower question, or ask for the rest."
+      );
+    }
+    const label = SUMMARY_LENGTH_LABELS[this.snapshot.summaryLength];
+    return (
+      `This summary reached the ${label} output limit, so it may end ` +
+      "abruptly. Choose a longer length, or ask for the rest."
+    );
   }
 
   private async generationFailureMessage(

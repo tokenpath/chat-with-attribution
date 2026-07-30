@@ -5638,6 +5638,9 @@ if (deterministicFail > 0) process.exitCode = 1;
     cue.text.replace(/\s+/g, " ")
   ).join(" ");
   const ATTRIBUTED = "altitude lowers the boiling point";
+  // The cue where the topic starts being discussed, two cues before the words
+  // that are actually cited.
+  const PASSAGE_ANCHOR = "water boils";
   const ANSWER =
     "The host explains that altitude lowers the boiling point because " +
     "atmospheric pressure drops.";
@@ -5895,11 +5898,14 @@ if (deterministicFail > 0) process.exitCode = 1;
         captured.resp?.text
       );
 
+      // With no supported-neighbourhood data — an older cached message, or a
+      // selection with no wider support — the seek is the cited cue itself,
+      // less the pre-roll that keeps its first words from being clipped.
       const seeked = await attribute(page, ATTRIBUTED);
       videoCheck(
-        "an attributed span seeks the player to its cue's timestamp",
+        "an attributed span seeks the player to its cue, less the pre-roll",
         seeked.resp?.ok === true &&
-          near(seeked.currentTime, 42) &&
+          near(seeked.currentTime, 40) &&
           seeked.indicator === "TokenPath source · 0:42",
         seeked
       );
@@ -5907,11 +5913,52 @@ if (deterministicFail > 0) process.exitCode = 1;
       const spanning = await attribute(page, "degrees altitude lowers");
       videoCheck(
         "a span crossing two cues seeks to the earlier one",
-        spanning.resp?.ok === true && near(spanning.currentTime, 12),
+        spanning.resp?.ok === true && near(spanning.currentTime, 10),
         spanning
       );
 
-      const before = spanning.currentTime;
+      // Given the wider passage the same heatmap supports, playback starts
+      // where the discussion begins rather than mid-sentence on the phrase —
+      // while the indicator keeps naming the cited moment.
+      const passageStart = TRANSCRIPT.indexOf(PASSAGE_ANCHOR);
+      const expanded = await attribute(page, ATTRIBUTED, {
+        contextStart: passageStart,
+        contextEnd: TRANSCRIPT.indexOf(ATTRIBUTED) + ATTRIBUTED.length,
+      });
+      videoCheck(
+        "a supported passage starts playback where the discussion begins",
+        expanded.resp?.ok === true &&
+          near(expanded.currentTime, 10) &&
+          expanded.indicator === "TokenPath source · 0:42 · from 0:10",
+        expanded
+      );
+
+      // The cited cue is 61s in and the passage covers the whole transcript,
+      // so the lead-in is clamped to exactly sixty seconds rather than
+      // seeking to the very start of the video.
+      const clamped = await attribute(page, "thanks for listening", {
+        contextStart: 0,
+        contextEnd: TRANSCRIPT.length,
+      });
+      videoCheck(
+        "an over-wide passage is clamped to a sixty-second lead-in",
+        clamped.resp?.ok === true && near(clamped.currentTime, 1),
+        clamped
+      );
+
+      // A neighbourhood that does not precede the citation cannot push
+      // playback later than the cited cue.
+      const forward = await attribute(page, "Welcome back", {
+        contextStart: TRANSCRIPT.indexOf(ATTRIBUTED),
+        contextEnd: TRANSCRIPT.length,
+      });
+      videoCheck(
+        "a later neighbourhood never moves the seek forward",
+        forward.resp?.ok === true && near(forward.currentTime, 0),
+        forward
+      );
+
+      const before = forward.currentTime;
       const missed = await send(page, {
         type: "highlight",
         start: TRANSCRIPT.length + 40,
@@ -6100,7 +6147,7 @@ if (deterministicFail > 0) process.exitCode = 1;
       });
       videoCheck(
         "a reloaded watch page rebuilds its cue table on demand",
-        recovered.resp?.ok === true && near(recovered.currentTime, 42),
+        recovered.resp?.ok === true && near(recovered.currentTime, 40),
         recovered
       );
       await page.close();
@@ -6135,7 +6182,7 @@ if (deterministicFail > 0) process.exitCode = 1;
       const panel = await videoBrowser.newPage();
       await panel.setViewportSize({ width: 360, height: 720 });
       await panel.addInitScript(
-        ({ transcript, answer, attributed, watchUrl }) => {
+        ({ transcript, answer, attributed, passageAnchor, watchUrl }) => {
           const runtimeListeners = [];
           const tabUpdatedListeners = [];
           const localStore = { tokenpathKey: "tpk_video" };
@@ -6143,6 +6190,8 @@ if (deterministicFail > 0) process.exitCode = 1;
           window.__videoAnswer = answer;
           window.__videoSent = [];
           window.__videoRequests = [];
+          // Flipped on to make the next answer exhaust its output budget.
+          window.__videoExhaustOutput = false;
           window.__videoRuntimeListeners = runtimeListeners;
           window.__videoTabUpdatedListeners = tabUpdatedListeners;
 
@@ -6218,6 +6267,11 @@ if (deterministicFail > 0) process.exitCode = 1;
             }
             window.__videoRequests.push({ path, request });
             if (path.endsWith("/v1/generate")) {
+              // The terminal event carries no finish reason, so "the answer was
+              // cut off" is only visible as output_tokens reaching the ceiling.
+              const outputTokens = window.__videoExhaustOutput
+                ? request.max_output_tokens
+                : 18;
               return new Response(
                 "event: done\ndata: " +
                   JSON.stringify({
@@ -6225,7 +6279,7 @@ if (deterministicFail > 0) process.exitCode = 1;
                     model: "google/gemini-3.1-flash-lite",
                     usage: {
                       input_tokens: 60,
-                      output_tokens: 18,
+                      output_tokens: outputTokens,
                       billed_tokens: 55,
                     },
                     credits_remaining: 8_800,
@@ -6238,21 +6292,60 @@ if (deterministicFail > 0) process.exitCode = 1;
               );
             }
             if (path.endsWith("/v1/attributions/heatmap")) {
-              // Two aligned tokens — the smallest shape the panel derives an
-              // attributed phrase from — over the same words in the answer and
-              // in the transcript.
+              // Two aligned tokens over the cited phrase — the smallest shape
+              // the panel derives an attributed phrase from — plus a third,
+              // weaker cell on an earlier passage. That cell is far enough
+              // away that the citation refuses to reach it, but near enough
+              // that the supported-neighbourhood pass does: it is where the
+              // topic starts being discussed.
               const half = Math.floor(attributed.length / 2);
               const answerStart = request.answer.indexOf(attributed);
               const documentStart = request.document.indexOf(attributed);
+              const passageStart = request.document.indexOf(passageAnchor);
               const token = (text, from, to) => [
                 codePointOffset(text, from),
                 codePointOffset(text, to),
               ];
+              // Document tokens in document order: the supporting passage's
+              // opening words, eight unsupported filler tokens spanning the
+              // gap, then the two halves of the cited phrase.
+              const documentTokens = [
+                token(
+                  request.document,
+                  passageStart,
+                  passageStart + passageAnchor.length
+                ),
+              ];
+              const gapStart = passageStart + passageAnchor.length;
+              const fillerCount = 8;
+              const fillerWidth = Math.max(
+                1,
+                Math.floor((documentStart - gapStart) / fillerCount)
+              );
+              for (let index = 0; index < fillerCount; index++) {
+                const from = gapStart + index * fillerWidth;
+                documentTokens.push(
+                  token(
+                    request.document,
+                    from,
+                    Math.min(documentStart, from + fillerWidth)
+                  )
+                );
+              }
+              documentTokens.push(
+                token(request.document, documentStart, documentStart + half),
+                token(
+                  request.document,
+                  documentStart + half,
+                  documentStart + attributed.length
+                )
+              );
+              const citedColumn = documentTokens.length - 2;
               return responseJson({
-                row: [0, 1],
-                col: [0, 1],
-                data: [0.97, 0.93],
-                shape: [2, 2],
+                row: [0, 1, 0],
+                col: [citedColumn, citedColumn + 1, 0],
+                data: [0.97, 0.93, 0.5],
+                shape: [2, documentTokens.length],
                 answer_offsets: [
                   token(request.answer, answerStart, answerStart + half),
                   token(
@@ -6261,14 +6354,7 @@ if (deterministicFail > 0) process.exitCode = 1;
                     answerStart + attributed.length
                   ),
                 ],
-                document_offsets: [
-                  token(request.document, documentStart, documentStart + half),
-                  token(
-                    request.document,
-                    documentStart + half,
-                    documentStart + attributed.length
-                  ),
-                ],
+                document_offsets: documentTokens,
               });
             }
             return responseJson({}, 404);
@@ -6278,6 +6364,7 @@ if (deterministicFail > 0) process.exitCode = 1;
           transcript: TRANSCRIPT,
           answer: ANSWER,
           attributed: ATTRIBUTED,
+          passageAnchor: PASSAGE_ANCHOR,
           watchUrl: WATCH_URL,
         }
       );
@@ -6344,6 +6431,8 @@ if (deterministicFail > 0) process.exitCode = 1;
           answer:
             document.querySelector("[data-answer-content]")?.textContent || "",
           heatmapDocument: heatmap?.request?.document || "",
+          maxOutputTokens: generation?.request?.max_output_tokens,
+          messages: document.getElementById("messages")?.textContent || "",
           systemIncludesTranscript: (generation?.request?.messages || []).some(
             (message) =>
               message.role === "system" &&
@@ -6357,6 +6446,20 @@ if (deterministicFail > 0) process.exitCode = 1;
           summarised.heatmapDocument === TRANSCRIPT &&
           summarised.systemIncludesTranscript,
         summarised
+      );
+      // Short on a transcript gets the video headroom tier: an hour of speech
+      // summarised even briefly overruns a page-sized ceiling and stops
+      // mid-sentence.
+      videoCheck(
+        "a transcript summary gets the video output headroom",
+        summarised.maxOutputTokens === 1_024,
+        summarised.maxOutputTokens
+      );
+      // Nothing hit that ceiling, so nothing says it did.
+      videoCheck(
+        "an answer inside its output budget carries no limit note",
+        !summarised.messages.includes("reached"),
+        summarised.messages
       );
 
       await panel.locator(".answer-sources-toggle").click();
@@ -6378,13 +6481,87 @@ if (deterministicFail > 0) process.exitCode = 1;
         highlightMessage
       );
 
+      // The citation stays the exact phrase; the supported passage travels
+      // beside it and reaches back to where the topic starts being discussed.
+      videoCheck(
+        "the panel derives the supported passage from the cached heatmap",
+        highlightMessage?.contextStart === TRANSCRIPT.indexOf(PASSAGE_ANCHOR) &&
+          highlightMessage.contextStart < highlightMessage.start &&
+          highlightMessage.contextEnd >= highlightMessage.end,
+        highlightMessage
+      );
+
       // The panel's own message, unmodified, into the real content script.
       const seeked = await send(contentFixture.page, highlightMessage);
       videoCheck(
-        "that message seeks the live player to the cue that was cited",
-        seeked.resp?.ok === true && near(seeked.currentTime, 42),
+        "that message starts playback at the beginning of the discussion",
+        seeked.resp?.ok === true &&
+          near(seeked.currentTime, 10) &&
+          seeked.indicator === "TokenPath source · 0:42 · from 0:10",
         seeked
       );
+
+      // An answer that spends its whole output budget was cut off by the
+      // ceiling, not finished. It stays a normal, attributed answer — every
+      // word of it is real text — with a note explaining why it may stop
+      // mid-thought.
+      const heatmapsBeforeLimit = await panel.evaluate(
+        () =>
+          window.__videoRequests.filter((item) =>
+            item.path.endsWith("/v1/attributions/heatmap")
+          ).length
+      );
+      await panel.evaluate(() => {
+        window.__videoExhaustOutput = true;
+      });
+      await panel.locator("#input").fill("What else did they cover?");
+      await panel.locator("#send").click();
+      await panel.waitForFunction(
+        (before) =>
+          document
+            .getElementById("messages")
+            ?.textContent?.includes("reached its output limit") &&
+          // The note lands as soon as the answer is final; attribution is
+          // still running behind it and must finish, not be skipped.
+          document.querySelectorAll('[data-answer-status="ready"]').length ===
+            2 &&
+          window.__videoRequests.filter((item) =>
+            item.path.endsWith("/v1/attributions/heatmap")
+          ).length ===
+            before + 1,
+        heatmapsBeforeLimit
+      );
+      const limited = await panel.evaluate(() => {
+        const generation = window.__videoRequests
+          .filter((item) => item.path.endsWith("/v1/generate"))
+          .at(-1);
+        return {
+          answers: document.querySelectorAll("[data-answer-content]").length,
+          maxOutputTokens: generation?.request?.max_output_tokens,
+          messages: document.getElementById("messages")?.textContent || "",
+          ready: document.querySelectorAll('[data-answer-status="ready"]')
+            .length,
+          incomplete:
+            document.getElementById("messages")?.textContent?.includes(
+              "Answer incomplete"
+            ) === true,
+        };
+      });
+      videoCheck(
+        "an answer that exhausts its output budget says so and stays attributed",
+        limited.messages.includes("reached its output limit") &&
+          limited.answers === 2 &&
+          limited.ready === 2 &&
+          // Deliberately not the aborted/partial state: that one skips
+          // attribution, this one keeps it.
+          limited.incomplete === false &&
+          // A chat turn on a transcript gets the video chat headroom.
+          limited.maxOutputTokens === 1_024,
+        limited
+      );
+      await panel.evaluate(() => {
+        window.__videoExhaustOutput = false;
+      });
 
       // A `t=` share link is the same video: the chat must survive it, while
       // a different `v=` is a different document and starts fresh.

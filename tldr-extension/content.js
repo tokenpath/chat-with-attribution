@@ -46,6 +46,12 @@
   const TRANSCRIPT_CLIENT_VERSION_FALLBACK = "2.20260729.00.00";
   const SEEK_INDICATOR_ID = "tokenpath-transcript-seek-indicator";
   const SEEK_INDICATOR_MS = 2_400;
+  // Land a moment before the passage begins so its first words are not clipped.
+  const SEEK_PREROLL_MS = 2_000;
+  // However wide the supporting passage is, never start playback further than
+  // this before the cited moment: a topic discussed across a long stretch
+  // would otherwise seek minutes away from the phrase that was clicked.
+  const MAX_SEEK_LEAD_MS = 60_000;
 
   // The live Range snapshotted at contextmenu time (before the menu click can
   // collapse the visible selection).
@@ -235,7 +241,12 @@
         // A transcript capture resolves to a caption cue and seeks the player.
         // There is no DOM range to paint, and no cue means no citation.
         if (!foreignCapture && extraction?.videoTranscript) {
-          const seeked = seekToTranscriptSpan(msg.start, msg.end);
+          const seeked = seekToTranscriptSpan(
+            msg.start,
+            msg.end,
+            msg.contextStart,
+            msg.contextEnd
+          );
           if (seeked) activeHighlightId = messageHighlightId(msg);
           sendResponse({ ok: seeked });
           break;
@@ -249,7 +260,12 @@
             .then((restored) => {
               if (!isActiveInstance()) return;
               const ok = restored
-                ? seekToTranscriptSpan(msg.start, msg.end)
+                ? seekToTranscriptSpan(
+                    msg.start,
+                    msg.end,
+                    msg.contextStart,
+                    msg.contextEnd
+                  )
                 : highlightFromCachedDocument(cachedDocument, msg);
               if (ok) activeHighlightId = messageHighlightId(msg);
               respond(sendResponse, { ok });
@@ -1534,7 +1550,36 @@
     return start - previous.end <= candidate.start - end ? previous : candidate;
   }
 
-  function seekToTranscriptSpan(rawStart, rawEnd) {
+  // The cited span answers "which words support this"; the seek answers "where
+  // does this get discussed". They are not the same moment. Given the wider
+  // supported range the panel resolved from the same heatmap, start playback at
+  // the beginning of that passage instead of mid-sentence on the exact phrase.
+  // With no expansion data — a chat restored from an older record, or a
+  // selection with no wider support — the exact cue is used unchanged.
+  function seekStartMsForSpan(cues, exactCue, contextStart, contextEnd) {
+    const exactMs = exactCue.tStartMs;
+    let startMs = exactMs;
+    if (
+      Number.isInteger(contextStart) &&
+      Number.isInteger(contextEnd) &&
+      contextEnd > contextStart
+    ) {
+      // Cues tile the transcript, so the earliest cue overlapping the
+      // supported range IS the start of the contiguous neighbourhood; a gap
+      // wide enough to break contiguity is a gap the panel's own threshold
+      // already refused to bridge.
+      const opening = findCueForSpan(cues, contextStart, contextEnd);
+      if (opening && opening.tStartMs < startMs) startMs = opening.tStartMs;
+    }
+    // Pre-roll, then the hard lead bound — applied to the final time rather
+    // than by picking a different cue, so the bound holds exactly.
+    return Math.max(
+      0,
+      Math.max(startMs - SEEK_PREROLL_MS, exactMs - MAX_SEEK_LEAD_MS)
+    );
+  }
+
+  function seekToTranscriptSpan(rawStart, rawEnd, contextStart, contextEnd) {
     if (!extraction?.videoTranscript || !extraction.cues?.length) return false;
     if (extraction.routeKey && extraction.routeKey !== currentRouteKey()) {
       return false;
@@ -1544,7 +1589,13 @@
     if (!cue) return false;
     const video = playerVideoElement();
     if (!video) return false;
-    const seconds = cue.tStartMs / 1_000;
+    const seekMs = seekStartMsForSpan(
+      extraction.cues,
+      cue,
+      contextStart,
+      contextEnd
+    );
+    const seconds = seekMs / 1_000;
     if (!Number.isFinite(seconds)) return false;
     try {
       video.currentTime = Math.max(0, seconds);
@@ -1555,7 +1606,9 @@
     // from. Starting audio the user did not ask for is worse than landing
     // paused on the right moment.
     scrollPlayerIntoView(video);
-    showSeekIndicator(video, cue.tStartMs);
+    // The indicator names the cited moment, not the playhead: the citation is
+    // the exact phrase's cue however far back playback was started.
+    showSeekIndicator(video, cue.tStartMs, seekMs);
     return true;
   }
 
@@ -1590,7 +1643,7 @@
   // confirmation is a small element of our own, removed after a moment. Its
   // only dynamic content is a timestamp formatted from a number, and every
   // style is a literal: no page-controlled string reaches HTML or CSS.
-  function showSeekIndicator(video, tStartMs) {
+  function showSeekIndicator(video, citedMs, playFromMs = citedMs) {
     removeSeekIndicator();
     const host = document.body || document.documentElement;
     if (!host) return;
@@ -1598,7 +1651,15 @@
       const element = document.createElement("div");
       element.id = SEEK_INDICATOR_ID;
       element.setAttribute("role", "status");
-      element.textContent = `TokenPath source · ${formatTimestamp(tStartMs)}`;
+      // Both values are formatted from numbers we computed. When playback was
+      // moved back to the start of the passage, say so rather than leaving the
+      // playhead apparently disagreeing with the cited timestamp.
+      const leadIn =
+        citedMs - playFromMs > SEEK_PREROLL_MS
+          ? ` · from ${formatTimestamp(playFromMs)}`
+          : "";
+      element.textContent =
+        `TokenPath source · ${formatTimestamp(citedMs)}${leadIn}`;
       const rect = video.getBoundingClientRect();
       const top = Math.round(
         Math.max(12, Math.min(window.innerHeight - 56, rect.top + 16))
@@ -2710,6 +2771,7 @@
       normalizedYouTubeSearch,
       playerResponseFrom,
       resolveRangeFromMap,
+      seekStartMsForSpan,
       timestampToMs,
       transcriptPanelParams,
       transcriptSegmentsFrom,

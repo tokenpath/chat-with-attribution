@@ -29,7 +29,8 @@ interface TldrPanelLogicApi {
   ): TldrAnswerAttributionPhrase[];
   buildSummaryRequest(
     text: string,
-    length?: TldrSummaryLength
+    length?: TldrSummaryLength,
+    sourceKind?: "page" | "video"
   ): TldrSummaryRequest;
   truncateCodePoints(text: string, maxCodePoints: number): string;
   resolveHeatmapSpan(
@@ -39,11 +40,15 @@ interface TldrPanelLogicApi {
     document?: string | null,
     answer?: string | null,
     relativeThreshold?: number,
-    maxGap?: number
+    maxGap?: number,
+    contextMaxGap?: number
   ): {
     start: number;
     end: number;
     confidence: number;
+    /** The wider supported passage; always contains [start, end). */
+    contextStart: number;
+    contextEnd: number;
   } | null;
   codePointToUtf16Map(text: string): number[];
   codePointOffsetToUtf16(map: number[], offset: number): number;

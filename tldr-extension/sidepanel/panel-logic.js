@@ -2,9 +2,15 @@
 
 const TldrPanelLogic = (() => {
   const SHORT_SELECTION_WORDS = 24;
+  // `maxOutputTokens` is headroom, not a target — the prompt controls length.
+  // A video transcript is the one source that routinely needs more of it: even
+  // a "brief" summary of an hour of speech produces structured output that
+  // runs past a page-sized ceiling and stops mid-sentence. The video tiers stay
+  // ordered, so Short is still genuinely shorter than Medium and Detailed.
   const SUMMARY_LENGTHS = {
     low: {
       maxOutputTokens: 512,
+      videoMaxOutputTokens: 1_024,
       prompt:
         "Write a brief summary of the given text. Aim for 2-3 concise " +
         "sentences, or an equivalently compact list or table when structured " +
@@ -12,6 +18,7 @@ const TldrPanelLogic = (() => {
     },
     medium: {
       maxOutputTokens: 768,
+      videoMaxOutputTokens: 1_536,
       prompt:
         "Write a moderately detailed summary of the given text. Aim for 4-6 " +
         "concise sentences, or an equivalently sized list or table when " +
@@ -19,7 +26,8 @@ const TldrPanelLogic = (() => {
         "supporting details.",
     },
     high: {
-      maxOutputTokens: 1024,
+      maxOutputTokens: 1_024,
+      videoMaxOutputTokens: 2_048,
       prompt:
         "Write a detailed summary of the given text. Aim for 8-12 concise " +
         "sentences, or an equivalently detailed list or table when structured " +
@@ -64,7 +72,7 @@ const TldrPanelLogic = (() => {
     };
   }
 
-  function buildSummaryRequest(text, length = "low") {
+  function buildSummaryRequest(text, length = "low", sourceKind = "page") {
     const source = measure(text);
     const shortLimit = source.characterMode ? 48 : SHORT_SELECTION_WORDS;
     if (source.units <= shortLimit) {
@@ -79,7 +87,10 @@ const TldrPanelLogic = (() => {
           : SUMMARY_LENGTHS.low;
     return {
       skip: false,
-      maxOutputTokens: config.maxOutputTokens,
+      maxOutputTokens:
+        sourceKind === "video"
+          ? config.videoMaxOutputTokens
+          : config.maxOutputTokens,
       prompt: config.prompt + SUMMARY_PROMPT_SUFFIX,
     };
   }
@@ -191,7 +202,8 @@ const TldrPanelLogic = (() => {
     document = null,
     answer = null,
     relativeThreshold = 0.25,
-    maxGap = 3
+    maxGap = 3,
+    contextMaxGap = 12
   ) {
     if (
       !heatmap ||
@@ -259,11 +271,11 @@ const TldrPanelLogic = (() => {
       token >= 0 &&
       token < documentTokenCount &&
       (documentScores.get(token) || 0) >= threshold;
-    const grow = (anchor, step) => {
+    const grow = (anchor, step, gap = maxGap) => {
       let edge = anchor;
       while (true) {
         let jump = null;
-        for (let distance = 1; distance <= maxGap + 1; distance++) {
+        for (let distance = 1; distance <= gap + 1; distance++) {
           const candidate = edge + step * distance;
           if (aboveThreshold(candidate)) {
             jump = candidate;
@@ -277,6 +289,12 @@ const TldrPanelLogic = (() => {
 
     const startToken = grow(peak, -1);
     const endToken = grow(peak, 1);
+    // The same aggregation, grown with a looser gap tolerance, describes the
+    // wider passage that supports this selection rather than the exact words
+    // to cite. Nothing quotes it — a video seek uses it to start playback at
+    // the beginning of the discussion instead of mid-sentence on the phrase.
+    const contextStartToken = grow(startToken, -1, contextMaxGap);
+    const contextEndToken = grow(endToken, 1, contextMaxGap);
     const perTokenMass = new Map();
     for (const [answerIndex, documentIndex, mass] of contributions) {
       if (documentIndex < startToken || documentIndex > endToken) continue;
@@ -324,6 +342,10 @@ const TldrPanelLogic = (() => {
       start: charStart,
       end: charEnd,
       confidence: Math.round(confidence * 1_000_000) / 1_000_000,
+      // Always a superset of [start, end): the cited span never falls outside
+      // the passage it was cited from, even after a verbatim snap moved it.
+      contextStart: Math.min(charStart, documentOffsets[contextStartToken][0]),
+      contextEnd: Math.max(charEnd, documentOffsets[contextEndToken][1]),
     };
   }
 
