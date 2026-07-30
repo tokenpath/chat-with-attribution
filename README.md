@@ -21,9 +21,10 @@ scrolls to the source text that most strongly supports it.
 2. Open `chrome://extensions`.
 3. Enable **Developer mode**.
 4. Choose **Load unpacked** and select `tldr-extension/`.
-5. Click the TokenPath toolbar icon to open the panel for the active tab, then
-   ask a question or use the **Summarize** starter. To chat about one passage
-   instead, select it first, right-click, and choose **Chat with TokenPath**.
+5. Click the TokenPath toolbar icon to capture the active page and immediately
+   generate a short, attributed bullet-point TL;DR. Ask follow-up questions in
+   the composer. To chat about one passage instead, select it first,
+   right-click, and choose **Chat with TokenPath**.
 
 On first use, paste a TokenPath API key from
 [platform.tokenpath.ai](https://platform.tokenpath.ai). The same key covers
@@ -58,8 +59,8 @@ explanations, privacy checks, and reviewer instructions are in
 
 ## Chat behavior
 
-A capture never starts a turn by itself: the panel shows what it captured and
-waits.
+The toolbar icon is the one-click TL;DR path. Context-menu captures show what
+they captured and wait for a question or the **Summarize** starter.
 
 - The empty chat offers one **Summarize** starter, which runs the length-aware
   summary pathway against the captured source. The **Short / Medium /
@@ -67,6 +68,10 @@ waits.
   and its output headroom (512 / 768 / 1024 tokens), so length is directed by
   the model rather than enforced with a sentence-cutting cap. Short is the
   default and the choice persists locally.
+- The small settings control beside **Disconnect** opens the summary
+  instructions editor. A custom prompt is stored locally and replaces the
+  default instructions for future one-click TL;DRs; **Reset** restores the
+  built-in prompt.
 - Sources of 24 whitespace-delimited words or fewer are already concise, so the
   summary pathway skips generation and shows an “Already concise” note instead;
   the starter is hidden while that note shows. Whitespace-free CJK prose is

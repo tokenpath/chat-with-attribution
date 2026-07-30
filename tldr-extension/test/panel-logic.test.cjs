@@ -15,17 +15,31 @@ const lowSummary = Logic.buildSummaryRequest(textWithWords(25), "low");
 const mediumSummary = Logic.buildSummaryRequest(textWithWords(25), "medium");
 const highSummary = Logic.buildSummaryRequest(textWithWords(25), "high");
 assert.deepStrictEqual(defaultSummary, lowSummary);
+assert.strictEqual(lowSummary.prompt, Logic.defaultSummaryPrompt("low"));
 assert.strictEqual(lowSummary.skip, false);
 assert.strictEqual(lowSummary.maxOutputTokens, 512);
 assert.strictEqual(mediumSummary.maxOutputTokens, 768);
 assert.strictEqual(highSummary.maxOutputTokens, 1024);
-assert.match(lowSummary.prompt, /Aim for 2-3 concise sentences/);
+assert.match(lowSummary.prompt, /2-4 concise Markdown bullet points/);
+assert.match(lowSummary.prompt, /most important takeaway first/);
 assert.match(mediumSummary.prompt, /Aim for 4-6 concise sentences/);
 assert.match(highSummary.prompt, /Aim for 8-12 concise sentences/);
 for (const request of [lowSummary, mediumSummary, highSummary]) {
   assert.match(request.prompt, /Finish the summary cleanly/);
   assert.match(request.prompt, /Do not add a title/);
 }
+const customPrompt = Logic.buildSummaryRequest(
+  textWithWords(25),
+  "low",
+  "page",
+  "  Explain this for a product manager in exactly three bullets.  "
+);
+assert.strictEqual(
+  customPrompt.prompt,
+  "Explain this for a product manager in exactly three bullets."
+);
+assert.strictEqual(customPrompt.maxOutputTokens, 512);
+console.log("PASS: a custom summary prompt replaces the default instructions");
 
 const large = Logic.buildSummaryRequest(textWithWords(500));
 assert.strictEqual(large.prompt, lowSummary.prompt);

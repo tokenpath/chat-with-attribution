@@ -918,6 +918,153 @@
   flex: none;
 }
 
+.product-footer-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.summary-prompt-menu {
+  position: relative;
+  flex: none;
+}
+
+.summary-prompt-trigger {
+  position: relative;
+  color: var(--muted-foreground);
+}
+
+.summary-prompt-trigger:hover {
+  color: var(--foreground);
+}
+
+.summary-prompt-custom-dot {
+  position: absolute;
+  top: 0.18rem;
+  right: 0.16rem;
+  display: none;
+  width: 0.3rem;
+  height: 0.3rem;
+  border: 1px solid var(--background);
+  border-radius: 999px;
+  background: var(--positive);
+}
+
+.summary-prompt-trigger[data-custom="true"] .summary-prompt-custom-dot {
+  display: block;
+}
+
+.summary-prompt-popover {
+  position: fixed;
+  z-index: 60;
+  right: 0.75rem;
+  bottom: 3.35rem;
+  display: grid;
+  width: min(22rem, calc(100vw - 1.5rem));
+  max-height: calc(100vh - 6rem);
+  overflow: auto;
+  gap: 0.75rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.65rem;
+  background: var(--popover);
+  box-shadow: 0 18px 48px rgb(18 16 25 / 18%);
+  color: var(--popover-foreground);
+  padding: 1rem;
+}
+
+.summary-prompt-popover::before {
+  position: absolute;
+  inset: 0.25rem 0.9rem auto;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--tp-purple) 0%,
+    var(--tp-purple) 50%,
+    var(--tp-green) 50%,
+    var(--tp-green) 100%
+  );
+  content: "";
+}
+
+.summary-prompt-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-top: 0.2rem;
+}
+
+.summary-prompt-title {
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.summary-prompt-heading p {
+  margin: 0.18rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.summary-prompt-badge {
+  flex: none;
+  border: 1px solid
+    color-mix(in srgb, var(--positive) 30%, var(--border));
+  border-radius: 999px;
+  background: var(--positive-soft);
+  padding: 0.08rem 0.38rem;
+  color: var(--positive);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.summary-prompt-popover textarea {
+  width: 100%;
+  min-height: 8.5rem;
+  resize: vertical;
+  border: 1px solid var(--input);
+  border-radius: 0.45rem;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  padding: 0.65rem 0.7rem;
+}
+
+.summary-prompt-popover textarea:hover {
+  border-color: var(--border-strong);
+}
+
+.summary-prompt-popover textarea:focus {
+  border-color: var(--ring);
+  outline: 2px solid color-mix(in srgb, var(--ring) 18%, transparent);
+  outline-offset: 1px;
+}
+
+.summary-prompt-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.summary-prompt-actions > span {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+}
+
+.summary-prompt-actions > div {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
 .disconnect-button {
   min-height: 1.75rem;
   flex: none;

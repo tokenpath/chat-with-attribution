@@ -898,6 +898,63 @@ function recordDeterministic(good) {
             document.getElementById("context")?.clientWidth,
       };
     });
+    await page.locator("#summary-prompt-settings").click();
+    await page.waitForSelector("#summary-prompt-popover");
+    const defaultPromptEditor = await page.evaluate(() => {
+      const popover = document.getElementById("summary-prompt-popover");
+      const input = document.getElementById("summary-prompt-input");
+      const rect = popover?.getBoundingClientRect();
+      return {
+        defaultVisible:
+          input?.value.includes("2-4 concise Markdown bullet points"),
+        fitsNarrowPanel:
+          !!rect &&
+          rect.left >= 0 &&
+          rect.right <= window.innerWidth &&
+          rect.top >= 0 &&
+          rect.bottom <= window.innerHeight,
+      };
+    });
+    if (process.env.TLDR_PANEL_SCREENSHOT_PREFIX) {
+      await page.screenshot({
+        path: `${process.env.TLDR_PANEL_SCREENSHOT_PREFIX}-prompt.png`,
+      });
+    }
+    const customSummaryPrompt =
+      "Explain the source for a product manager in exactly three bullets.";
+    await page.locator("#summary-prompt-input").fill(customSummaryPrompt);
+    await page.locator("#summary-prompt-save").click();
+    await page.waitForFunction(
+      (expected) =>
+        localStorage.getItem("tldr-summary-prompt") === expected &&
+        !document.getElementById("summary-prompt-popover"),
+      customSummaryPrompt
+    );
+    const customPromptSaved = await page.evaluate(
+      (expected) =>
+        localStorage.getItem("tldr-summary-prompt") === expected &&
+        document
+          .getElementById("summary-prompt-settings")
+          ?.getAttribute("aria-label")
+          ?.includes("custom prompt active") === true,
+      customSummaryPrompt
+    );
+    await page.locator("#summary-prompt-settings").click();
+    await page.locator("#summary-prompt-reset").click();
+    await page.waitForFunction(
+      () =>
+        localStorage.getItem("tldr-summary-prompt") === null &&
+        document
+          .getElementById("summary-prompt-input")
+          ?.value.includes("2-4 concise Markdown bullet points")
+    );
+    const defaultPromptRestored = await page.evaluate(
+      () =>
+        document
+          .getElementById("summary-prompt-settings")
+          ?.getAttribute("aria-label") === "Summary prompt settings"
+    );
+    await page.locator("#summary-prompt-settings").click();
     const savedSummaryLength = await page.evaluate(() =>
       localStorage.getItem("tldr-summary-length")
     );
@@ -1107,6 +1164,10 @@ function recordDeterministic(good) {
       panelResult.cta?.rel.includes("noopener") &&
       panelResult.cta?.rel.includes("noreferrer") &&
       panelResult.ctaDoesNotOverlapDisconnect &&
+      defaultPromptEditor.defaultVisible &&
+      defaultPromptEditor.fitsNarrowPanel &&
+      customPromptSaved &&
+      defaultPromptRestored &&
       disconnectPending &&
       disconnectSettled &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: light")) &&
@@ -1145,9 +1206,9 @@ function recordDeterministic(good) {
         "Short/Medium/Detailed" &&
       panelResult.summaryLengthSelected === "Short" &&
       savedSummaryLength === null &&
-      summaryPrompt?.includes("Aim for 2-3 concise sentences") &&
+      summaryPrompt?.includes("2-4 concise Markdown bullet points") &&
       opaqueOriginGeneration.userPrompt?.includes(
-        "Aim for 2-3 concise sentences"
+        "2-4 concise Markdown bullet points"
       ) &&
       !("document" in generationBody) &&
       !("question" in generationBody) &&
@@ -1981,7 +2042,9 @@ function recordDeterministic(good) {
       result.answer.includes("durable scheduling improvement") &&
       result.generationCount === 1 &&
       result.generationHasNewerText &&
-      result.generationUserPrompt.includes("Aim for 2-3 concise sentences") &&
+      result.generationUserPrompt.includes(
+        "2-4 concise Markdown bullet points"
+      ) &&
       result.generationUserPrompt.includes(
         "Do not add a title, a 'TL;DR:' label"
       ) &&
@@ -2153,7 +2216,8 @@ function recordDeterministic(good) {
               .reverse()
               .find((message) => message.role === "user")?.content || "";
           return doneStream(
-            question.includes("summary of the given text")
+            question.includes("summary of the given text") ||
+              question.includes("TL;DR of the given text")
               ? summaryAnswer
               : askAnswer
           );
@@ -2198,6 +2262,48 @@ function recordDeterministic(good) {
         document.getElementById("summarize-starter") &&
         document.getElementById("input")?.disabled === false
     );
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "toolbar-summary-seed",
+        capturedAt: 9,
+        tabId: 411,
+        windowId: 23,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "tldr",
+        sourceType: "page",
+        url: "https://docs.example/toolbar-summary",
+        text: window.__intentSummarySource,
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length === 1 &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length === 1
+    );
+    const toolbarSummary = await page.evaluate(() => {
+      const generation = window.__intentRequests.find((item) =>
+        item.path.endsWith("/v1/generate")
+      );
+      const messages = generation?.request?.messages || [];
+      const prompt =
+        [...messages]
+          .reverse()
+          .find((message) => message.role === "user")?.content || "";
+      window.__intentRequests.length = 0;
+      return {
+        answer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        prompt,
+      };
+    });
     await page.evaluate(() => {
       window.__intentRuntimeListeners[0]?.({
         type: "selection-captured",
@@ -2705,6 +2811,8 @@ function recordDeterministic(good) {
     );
 
     const good =
+      toolbarSummary.answer.includes("simpler workflow") &&
+      toolbarSummary.prompt.includes("2-4 concise Markdown bullet points") &&
       captureSpentNothing &&
       savedSummaryLength === "medium" &&
       summaryResult.prompt.includes(
@@ -2752,8 +2860,8 @@ function recordDeterministic(good) {
       interruptedMappingRecovered;
     console.log("\n### Capture starter side-panel fixture");
     console.log(
-      `  [capture waits + length-aware summary + ask on submit] ${good ? "PASS" : "FAIL"}` +
-        ` — idleCapture=${captureSpentNothing}, summary=${savedSummaryLength}/${summaryResult.maxOutputTokens}, ` +
+      `  [toolbar auto-summary + capture waits + ask on submit] ${good ? "PASS" : "FAIL"}` +
+        ` — toolbar=${toolbarSummary.prompt.includes("2-4 concise Markdown bullet points")}, idleCapture=${captureSpentNothing}, summary=${savedSummaryLength}/${summaryResult.maxOutputTokens}, ` +
         `concise=${conciseState.requestCount}/${conciseState.starterHidden}, ` +
         `askIdle=${askReadyState.generateCount}/${askReadyState.heatmapCount}, ` +
         `ask=${askResult.maxOutputTokens}`

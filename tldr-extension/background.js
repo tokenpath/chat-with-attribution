@@ -89,17 +89,19 @@ chrome.runtime.onInstalled.addListener(() => {
 // service-worker startup also migrates the legacy standalone TLDR item.
 void ensureContextMenus();
 
-// The toolbar icon is a primary entry point: open an empty attributed chat.
-// Page capture is deferred until the user asks a question or clicks Summarize.
+// The toolbar icon is the one-click TLDR entry point: capture the complete
+// active page (or PDF), open the panel, and start the automatic summary.
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: false })
   .catch(() => {});
 
 chrome.action.onClicked.addListener((tab) => {
   if (!tab || tab.id == null) return;
-  chrome.sidePanel.open({ tabId: tab.id }).catch((error) => {
-    console.error("[TokenPath] sidePanel.open failed:", error);
-  });
+  return captureAndOpen(
+    "tldr",
+    { frameId: 0, forceFullPage: true },
+    tab
+  );
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {

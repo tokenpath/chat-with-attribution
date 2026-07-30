@@ -12,9 +12,10 @@ const TldrPanelLogic = (() => {
       maxOutputTokens: 512,
       videoMaxOutputTokens: 1_024,
       prompt:
-        "Write a brief summary of the given text. Aim for 2-3 concise " +
-        "sentences, or an equivalently compact list or table when structured " +
-        "formatting is clearer. Include only the most important points.",
+        "Write a very short TL;DR of the given text as 2-4 concise Markdown " +
+        "bullet points. Put the most important takeaway first, keep each " +
+        "bullet to one sentence when possible, and include only the points " +
+        "someone needs to understand the source quickly.",
     },
     medium: {
       maxOutputTokens: 768,
@@ -38,6 +39,16 @@ const TldrPanelLogic = (() => {
   const SUMMARY_PROMPT_SUFFIX =
     " Finish the summary cleanly. Do not add a title, a 'TL;DR:' label, a " +
     "preamble, an explanation, or a closing comment.";
+
+  function defaultSummaryPrompt(length = "low") {
+    const config =
+      length === "medium"
+        ? SUMMARY_LENGTHS.medium
+        : length === "high"
+          ? SUMMARY_LENGTHS.high
+          : SUMMARY_LENGTHS.low;
+    return config.prompt + SUMMARY_PROMPT_SUFFIX;
+  }
 
   function words(text) {
     return String(text || "").trim().match(/\S+/g) || [];
@@ -72,7 +83,12 @@ const TldrPanelLogic = (() => {
     };
   }
 
-  function buildSummaryRequest(text, length = "low", sourceKind = "page") {
+  function buildSummaryRequest(
+    text,
+    length = "low",
+    sourceKind = "page",
+    customPrompt = null
+  ) {
     const source = measure(text);
     const shortLimit = source.characterMode ? 48 : SHORT_SELECTION_WORDS;
     if (source.units <= shortLimit) {
@@ -91,7 +107,10 @@ const TldrPanelLogic = (() => {
         sourceKind === "video"
           ? config.videoMaxOutputTokens
           : config.maxOutputTokens,
-      prompt: config.prompt + SUMMARY_PROMPT_SUFFIX,
+      prompt:
+        typeof customPrompt === "string" && customPrompt.trim()
+          ? customPrompt.trim()
+          : defaultSummaryPrompt(length),
     };
   }
 
@@ -572,6 +591,7 @@ const TldrPanelLogic = (() => {
     SHORT_SELECTION_WORDS,
     buildAnswerAttributionPhrases,
     buildSummaryRequest,
+    defaultSummaryPrompt,
     truncateCodePoints,
     codePointToUtf16Map,
     codePointOffsetToUtf16,

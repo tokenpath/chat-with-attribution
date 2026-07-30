@@ -12,6 +12,7 @@ import {
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
 export type SummaryLength = "low" | "medium" | "high";
+export type CaptureIntent = "tldr" | "simplify" | "ask";
 export type SourceType = "page" | "chrome-pdf";
 // "video-transcript" is a full-document capture whose document is the video's
 // subtitle transcript rather than the page's rendered text. Its highlight
@@ -35,6 +36,7 @@ export interface SelectionSeed {
   windowId?: number | null;
   frameId?: number;
   captureMode?: CaptureMode;
+  intent?: CaptureIntent;
   sourceType?: SourceType;
   url?: string | null;
   text?: string;
@@ -102,6 +104,8 @@ export interface PanelSnapshot {
   resolvedTheme: ResolvedTheme;
   sourceType: ContextSourceType;
   summaryLength: SummaryLength;
+  summaryPrompt: string;
+  summaryPromptCustomized: boolean;
   themePreference: ThemePreference;
   toast: string | null;
   toastSeq: number;
@@ -136,6 +140,8 @@ interface CachedPageChat {
 const CACHE_FORMAT_VERSION = 2;
 const THEME_KEY = "tldr-theme";
 const SUMMARY_LENGTH_KEY = "tldr-summary-length";
+const SUMMARY_PROMPT_KEY = "tldr-summary-prompt";
+export const SUMMARY_PROMPT_MAX_CHARS = 2000;
 const MAX_GENERATE_INPUT_CHARS = 420_000;
 const MAX_GENERATE_MESSAGES = 50;
 const CHAT_OUTPUT_TOKENS = 512;
@@ -191,6 +197,24 @@ function readSummaryLength(): SummaryLength {
   return "low";
 }
 
+function readSummaryPrompt(summaryLength: SummaryLength) {
+  try {
+    const stored = localStorage.getItem(SUMMARY_PROMPT_KEY)?.trim();
+    if (stored) {
+      return {
+        prompt: stored.slice(0, SUMMARY_PROMPT_MAX_CHARS),
+        customized: true,
+      };
+    }
+  } catch {
+    // The default remains available if local storage is unavailable.
+  }
+  return {
+    prompt: TldrPanelLogic.defaultSummaryPrompt(summaryLength),
+    customized: false,
+  };
+}
+
 function systemTheme(): ResolvedTheme {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches
     ? "dark"
@@ -213,6 +237,7 @@ export class PanelController {
   private sourceBaseUrl = "the current webpage";
   private sourceType: SourceType = "page";
   private captureMode: CaptureMode = "selection";
+  private autoSummaryRequested = false;
   private sourceUrl: string | null = null;
   private context = "";
   private history: Array<{
@@ -242,6 +267,7 @@ export class PanelController {
     const themePreference = readThemePreference();
     const resolvedTheme = resolveTheme(themePreference);
     const summaryLength = readSummaryLength();
+    const summaryPrompt = readSummaryPrompt(summaryLength);
     this.snapshot = {
       authBusy: false,
       authError: null,
@@ -258,6 +284,8 @@ export class PanelController {
       resolvedTheme,
       sourceType: "page",
       summaryLength,
+      summaryPrompt: summaryPrompt.prompt,
+      summaryPromptCustomized: summaryPrompt.customized,
       themePreference,
       toast: null,
       toastSeq: 0,
@@ -337,6 +365,7 @@ export class PanelController {
     }
 
     await authReady;
+    this.maybeRunAutoSummary();
   }
 
   connect = async (tokenPathKey: string) => {
@@ -358,6 +387,7 @@ export class PanelController {
       this.updateCredits(credits, creditsEpoch);
       this.setConnected(true);
       this.update({ authError: null });
+      this.maybeRunAutoSummary();
       return true;
     } catch (error) {
       if (authEpoch !== this.authEpoch) return false;
@@ -540,7 +570,8 @@ export class PanelController {
     const summary = TldrPanelLogic.buildSummaryRequest(
       this.context,
       this.snapshot.summaryLength,
-      this.summarySourceKind()
+      this.summarySourceKind(),
+      this.snapshot.summaryPrompt
     );
     if (summary.skip) {
       this.addMessage({
@@ -568,6 +599,7 @@ export class PanelController {
     const key = pageChatKey(this.sourceUrl);
     if (key) await deletePageChat(key).catch(() => undefined);
     this.history = [];
+    this.autoSummaryRequested = false;
     this.cancelActiveWork();
     this.cancelHighlightAndClear();
     this.update({
@@ -625,7 +657,46 @@ export class PanelController {
     } catch {
       // The in-memory preference still applies for this panel session.
     }
-    this.update({ summaryLength });
+    this.update({
+      summaryLength,
+      summaryPrompt: this.snapshot.summaryPromptCustomized
+        ? this.snapshot.summaryPrompt
+        : TldrPanelLogic.defaultSummaryPrompt(summaryLength),
+    });
+  };
+
+  saveSummaryPrompt = (prompt: string) => {
+    const cleanPrompt = prompt
+      .trim()
+      .slice(0, SUMMARY_PROMPT_MAX_CHARS);
+    if (!cleanPrompt) return false;
+    try {
+      localStorage.setItem(SUMMARY_PROMPT_KEY, cleanPrompt);
+    } catch {
+      // The custom prompt still applies for the lifetime of this panel.
+    }
+    this.update({
+      summaryPrompt: cleanPrompt,
+      summaryPromptCustomized: true,
+    });
+    this.showToast("Summary prompt saved.");
+    return true;
+  };
+
+  resetSummaryPrompt = () => {
+    const summaryPrompt = TldrPanelLogic.defaultSummaryPrompt(
+      this.snapshot.summaryLength
+    );
+    try {
+      localStorage.removeItem(SUMMARY_PROMPT_KEY);
+    } catch {
+      // Reset still applies for the lifetime of this panel.
+    }
+    this.update({
+      summaryPrompt,
+      summaryPromptCustomized: false,
+    });
+    this.showToast("Default summary prompt restored.");
   };
 
   onAnswerSelection = async (
@@ -817,6 +888,7 @@ export class PanelController {
 
     this.cancelHighlightAndClear();
     this.cancelActiveWork();
+    this.autoSummaryRequested = seed.intent === "tldr";
     this.captureId = seed.captureId || null;
     this.capturedAt = Number(seed.capturedAt) || Date.now();
     this.tabId = seed.tabId ?? this.tabId;
@@ -852,6 +924,7 @@ export class PanelController {
               : "Selected from page";
 
     if (seed.error) {
+      this.autoSummaryRequested = false;
       const pendingSubmission = this.pendingSubmission;
       this.pendingSubmission = null;
       this.context = "";
@@ -885,6 +958,7 @@ export class PanelController {
       return true;
     }
     if (!seed.text) {
+      this.autoSummaryRequested = false;
       this.context = "";
       this.update({
         busy: false,
@@ -929,6 +1003,7 @@ export class PanelController {
   private beginFullPdfCapture(contextLabel: string) {
     const sourceUrl = this.sourceUrl;
     if (!sourceUrl) {
+      this.autoSummaryRequested = false;
       this.context = "";
       this.update({
         busy: false,
@@ -987,6 +1062,7 @@ export class PanelController {
           return;
         }
         this.activePdfExtractionController = null;
+        this.autoSummaryRequested = false;
         this.context = "";
         const contextError =
           error instanceof Error
@@ -1071,6 +1147,16 @@ export class PanelController {
       );
     };
 
+    // A toolbar TLDR is an explicit request for a fresh one-click result, not
+    // a request to reopen the page's cached conversation.
+    if (this.autoSummaryRequested) {
+      addTranscriptFallbackNote();
+      addTruncationNote();
+      void this.persistCurrentPageChat();
+      this.maybeRunAutoSummary();
+      return;
+    }
+
     // The restore replaces the whole message list, so the note has to wait for
     // it. Adding the note first would leave it visible only until the cached
     // chat arrived.
@@ -1082,7 +1168,22 @@ export class PanelController {
       if (pendingSubmission) {
         void this.runTurn(pendingSubmission, { echoUser: true });
       }
+      this.maybeRunAutoSummary();
     });
+  }
+
+  private maybeRunAutoSummary() {
+    if (
+      !this.autoSummaryRequested ||
+      !this.snapshot.connected ||
+      this.snapshot.busy ||
+      !this.context ||
+      this.invalidated
+    ) {
+      return;
+    }
+    this.autoSummaryRequested = false;
+    this.runSummary();
   }
 
   private async initAuth() {
@@ -1125,6 +1226,7 @@ export class PanelController {
       connected,
       creditsText: connected ? this.snapshot.creditsText : null,
     });
+    if (connected) this.maybeRunAutoSummary();
   }
 
   private beginCreditsObservation() {
@@ -2041,6 +2143,7 @@ export class PanelController {
     this.invalidated = true;
     this.context = "";
     this.history = [];
+    this.autoSummaryRequested = false;
     this.pendingSubmission = null;
     this.update({
       busy: false,
@@ -2059,6 +2162,7 @@ export class PanelController {
     this.invalidated = true;
     this.context = "";
     this.history = [];
+    this.autoSummaryRequested = false;
     this.contextVersion++;
     this.highlightEpoch++;
     const pendingPdfHighlight = this.pendingPdfHighlight;

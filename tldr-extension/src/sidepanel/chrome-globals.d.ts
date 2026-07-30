@@ -30,8 +30,10 @@ interface TldrPanelLogicApi {
   buildSummaryRequest(
     text: string,
     length?: TldrSummaryLength,
-    sourceKind?: "page" | "video"
+    sourceKind?: "page" | "video",
+    customPrompt?: string | null
   ): TldrSummaryRequest;
+  defaultSummaryPrompt(length?: TldrSummaryLength): string;
   truncateCodePoints(text: string, maxCodePoints: number): string;
   resolveHeatmapSpan(
     heatmap: TldrHeatmap,
