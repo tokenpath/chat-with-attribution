@@ -23,8 +23,8 @@ TokenPath adds an attributed chat to webpages and searchable PDFs.
 Click the TokenPath toolbar icon to chat about the page you are on, or select a
 passage, right-click, and choose **Chat with TokenPath** to chat about just that
 text. Nothing is generated automatically: the panel shows what it captured and
-waits. Type your question, or use the one-click **Summarize** starter, with a
-Short / Medium / Detailed control for how much detail you want.
+waits. Type your question, or use the one-click **Summarize** starter, which
+answers with three short bullet points you can follow up on.
 
 After TokenPath answers, click any underlined phrase — or open the answer's
 **Sources** list, or select any words in the answer. The extension maps that

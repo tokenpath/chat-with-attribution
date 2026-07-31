@@ -11,7 +11,6 @@ import {
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
-export type SummaryLength = "low" | "medium" | "high";
 export type SourceType = "page" | "chrome-pdf";
 // "video-transcript" is a full-document capture whose document is the video's
 // subtitle transcript rather than the page's rendered text. Its highlight
@@ -101,7 +100,6 @@ export interface PanelSnapshot {
   notice: string | null;
   resolvedTheme: ResolvedTheme;
   sourceType: ContextSourceType;
-  summaryLength: SummaryLength;
   themePreference: ThemePreference;
   toast: string | null;
   toastSeq: number;
@@ -135,21 +133,16 @@ interface CachedPageChat {
 
 const CACHE_FORMAT_VERSION = 2;
 const THEME_KEY = "tldr-theme";
-const SUMMARY_LENGTH_KEY = "tldr-summary-length";
 const MAX_GENERATE_INPUT_CHARS = 420_000;
 const MAX_GENERATE_MESSAGES = 50;
-const CHAT_OUTPUT_TOKENS = 512;
-// An answer about an hour of speech cites and qualifies more than an answer
-// about a page, and a cut-off answer is worse than a long one.
-const VIDEO_CHAT_OUTPUT_TOKENS = 1_024;
+// TokenPath caps `max_output_tokens` at 2048 and bills generation from the
+// input text alone, so a smaller ceiling buys nothing and only risks cutting an
+// answer off. Every turn — summary or question, page, PDF, selection, or video
+// transcript — asks for the whole ceiling.
+const CHAT_OUTPUT_TOKENS = 2_048;
 // Tokenizer counts can disagree with the sampler's stop by one, so treat "one
 // short of the ceiling" as having reached it.
 const OUTPUT_LIMIT_TOLERANCE_TOKENS = 1;
-const SUMMARY_LENGTH_LABELS: Record<SummaryLength, string> = {
-  low: "Short",
-  medium: "Medium",
-  high: "Detailed",
-};
 // A capture the panel never consumed outlives the click that produced it. Two
 // minutes covers a slow side-panel open without replaying yesterday's page.
 const MAX_SEED_AGE_MS = 120_000;
@@ -177,18 +170,6 @@ function readThemePreference(): ThemePreference {
     // The panel can still follow the OS theme if storage is unavailable.
   }
   return "system";
-}
-
-function readSummaryLength(): SummaryLength {
-  try {
-    const stored = localStorage.getItem(SUMMARY_LENGTH_KEY);
-    if (stored === "low" || stored === "medium" || stored === "high") {
-      return stored;
-    }
-  } catch {
-    // The default remains available if local storage is unavailable.
-  }
-  return "low";
 }
 
 function systemTheme(): ResolvedTheme {
@@ -241,7 +222,6 @@ export class PanelController {
   constructor() {
     const themePreference = readThemePreference();
     const resolvedTheme = resolveTheme(themePreference);
-    const summaryLength = readSummaryLength();
     this.snapshot = {
       authBusy: false,
       authError: null,
@@ -257,7 +237,6 @@ export class PanelController {
       notice: null,
       resolvedTheme,
       sourceType: "page",
-      summaryLength,
       themePreference,
       toast: null,
       toastSeq: 0,
@@ -523,8 +502,7 @@ export class PanelController {
     return true;
   };
 
-  // Runs the summary pathway against the live context using the persistent
-  // Short / Medium / Detailed preference.
+  // Runs the summary pathway against the live context.
   runSummary = () => {
     if (this.snapshot.busy) return false;
     if (!this.snapshot.connected) {
@@ -537,11 +515,7 @@ export class PanelController {
       // over a path that is about to succeed.
       return false;
     }
-    const summary = TldrPanelLogic.buildSummaryRequest(
-      this.context,
-      this.snapshot.summaryLength,
-      this.summarySourceKind()
-    );
+    const summary = TldrPanelLogic.buildSummaryRequest(this.context);
     if (summary.skip) {
       this.addMessage({
         kind: "note",
@@ -610,22 +584,6 @@ export class PanelController {
     }
     this.applyTheme(resolvedTheme);
     this.update({ themePreference, resolvedTheme });
-  };
-
-  setSummaryLength = (summaryLength: SummaryLength) => {
-    if (
-      summaryLength !== "low" &&
-      summaryLength !== "medium" &&
-      summaryLength !== "high"
-    ) {
-      return;
-    }
-    try {
-      localStorage.setItem(SUMMARY_LENGTH_KEY, summaryLength);
-    } catch {
-      // The in-memory preference still applies for this panel session.
-    }
-    this.update({ summaryLength });
   };
 
   onAnswerSelection = async (
@@ -906,17 +864,6 @@ export class PanelController {
     return true;
   }
 
-  /** Which output-headroom tier this context's summaries and answers use. */
-  private summarySourceKind() {
-    return this.captureMode === "video-transcript" ? "video" : "page";
-  }
-
-  private chatOutputTokens() {
-    return this.captureMode === "video-transcript"
-      ? VIDEO_CHAT_OUTPUT_TOKENS
-      : CHAT_OUTPUT_TOKENS;
-  }
-
   private contextSourceType(): ContextSourceType {
     if (this.captureMode === "video-transcript") return "video";
     return this.captureMode === "full-pdf"
@@ -1158,9 +1105,9 @@ export class PanelController {
       this.showToast("Connect TokenPath to start chatting.");
       return;
     }
-    // The summary pathway passes its length tier; an ordinary chat turn takes
-    // the headroom this context calls for.
-    const outputTokens = maxOutputTokens ?? this.chatOutputTokens();
+    // Both paths land on the same ceiling; the summary pathway simply names
+    // the one it built its prompt against.
+    const outputTokens = maxOutputTokens ?? CHAT_OUTPUT_TOKENS;
 
     const historyEntry = echoUser
       ? ({ role: "user", content: userText } as const)
@@ -1342,17 +1289,13 @@ export class PanelController {
     );
   }
 
+  // The ceiling is TokenPath's own maximum, so there is no longer room to
+  // offer, only a narrower question or a continuation.
   private outputLimitNoteText(echoUser: boolean) {
-    if (echoUser) {
-      return (
-        "This answer reached its output limit, so it may end abruptly. " +
-        "Ask a narrower question, or ask for the rest."
-      );
-    }
-    const label = SUMMARY_LENGTH_LABELS[this.snapshot.summaryLength];
+    const subject = echoUser ? "This answer" : "This summary";
     return (
-      `This summary reached the ${label} output limit, so it may end ` +
-      "abruptly. Choose a longer length, or ask for the rest."
+      `${subject} reached the maximum answer length, so it may end ` +
+      "abruptly. Ask a narrower question, or ask for the rest."
     );
   }
 

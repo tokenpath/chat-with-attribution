@@ -79,8 +79,10 @@ heatmap → phrase click, **Sources** list, or arbitrary answer selection →
 source-offset highlight. It covers:
 
 - side-panel bootstrap while `/credits` never resolves; a capture that waits
-  instead of generating; the **Summarize** starter and the persisted Short /
-  Medium / Detailed length driving the requested detail and generation headroom;
+  instead of generating; the **Summarize** starter sending the one 3-bullet
+  prompt and the single 2048-token ceiling that every generation path uses,
+  with no length control anywhere in the panel and nothing persisting the
+  preference key it used to write;
   the already-concise note suppressing the starter; a messages-only TokenPath
   `/v1/generate` request, split named SSE events, one TokenPath heatmap per
   answer, and reuse of that heatmap across different answer selections; exact

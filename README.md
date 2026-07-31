@@ -61,12 +61,15 @@ explanations, privacy checks, and reviewer instructions are in
 A capture never starts a turn by itself: the panel shows what it captured and
 waits.
 
-- The empty chat offers one **Summarize** starter, which runs the length-aware
-  summary pathway against the captured source. The **Short / Medium /
-  Detailed** control in the composer footer sets that summary's requested detail
-  and its output headroom (512 / 768 / 1024 tokens), so length is directed by
-  the model rather than enforced with a sentence-cutting cap. Short is the
-  default and the choice persists locally.
+- The empty chat offers one **Summarize** starter, which runs the summary
+  pathway against the captured source. Every summary asks for the same thing:
+  exactly three one-sentence Markdown bullets, most important first. There is
+  no length control — every generation path, summary or ordinary question,
+  page, PDF, selection, or video transcript, requests TokenPath's maximum
+  output ceiling of 2048 tokens. Generation is billed from the input text, so
+  the headroom costs nothing and concision is the prompt's job rather than a
+  sentence-cutting cap's. An answer that still reaches the ceiling keeps its
+  attribution and carries a note saying it may end abruptly.
 - Sources of 24 whitespace-delimited words or fewer are already concise, so the
   summary pathway skips generation and shows an “Already concise” note instead;
   the starter is hidden while that note shows. Whitespace-free CJK prose is
@@ -252,8 +255,8 @@ tldr-extension/
 │   │                          # attributed phrases), source-copy, utils
 │   └── components/
 │       ├── panel/             # panel-header, auth-panel, source-card,
-│       │                      # composer, summary-length-control,
-│       │                      # answer-response, chat-message, error-boundary
+│       │                      # composer, answer-response, chat-message,
+│       │                      # error-boundary
 │       ├── ai-elements/       # adapted Vercel AI Elements source
 │       └── ui/                # local shadcn-style primitives
 └── sidepanel/

@@ -6,7 +6,6 @@ import {
   PromptInputSubmit,
   PromptInputTextarea,
 } from "@/components/ai-elements/prompt-input";
-import { SummaryLengthControl } from "@/components/panel/summary-length-control";
 import type { PanelController, PanelSnapshot } from "@/controller";
 import { composerPlaceholder } from "@/lib/source-copy";
 
@@ -48,12 +47,7 @@ export function Composer({
           ref={textareaRef}
           value={input}
         />
-        <PromptInputFooter className="justify-between">
-          <SummaryLengthControl
-            disabled={snapshot.busy}
-            onChange={controller.setSummaryLength}
-            value={snapshot.summaryLength}
-          />
+        <PromptInputFooter className="justify-end">
           <PromptInputSubmit
             aria-label={canStop ? "Stop generating" : "Send message"}
             disabled={

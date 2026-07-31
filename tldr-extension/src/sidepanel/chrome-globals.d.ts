@@ -13,8 +13,6 @@ interface TldrSummaryRequest {
   prompt?: string;
 }
 
-type TldrSummaryLength = "low" | "medium" | "high";
-
 interface TldrAnswerAttributionPhrase {
   start: number;
   end: number;
@@ -27,11 +25,7 @@ interface TldrPanelLogicApi {
     answer: string,
     minimumMass?: number
   ): TldrAnswerAttributionPhrase[];
-  buildSummaryRequest(
-    text: string,
-    length?: TldrSummaryLength,
-    sourceKind?: "page" | "video"
-  ): TldrSummaryRequest;
+  buildSummaryRequest(text: string): TldrSummaryRequest;
   truncateCodePoints(text: string, maxCodePoints: number): string;
   resolveHeatmapSpan(
     heatmap: TldrHeatmap,

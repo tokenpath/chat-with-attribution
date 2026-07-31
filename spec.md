@@ -71,7 +71,7 @@ supporting source range, and scrolls there in the live page or PDF.
   renders the dismissible notice and announcement regions.
 - **`src/sidepanel/components/panel/`** holds those components — `panel-header`
   (theme, credits, clear highlight, clear chat), `auth-panel`, `source-card`,
-  `composer` (with `summary-length-control`), `answer-response` (attributed
+  `composer`, `answer-response` (attributed
   phrases, the **Sources** list, incomplete/unavailable states), `chat-message`,
   and `error-boundary`.
 - **`src/sidepanel/lib/answer-highlights.ts`** and
@@ -212,22 +212,32 @@ the model call and post an “Already concise” note naming the source kind
 CJK-dominant sources are measured by characters (48) rather than whitespace
 tokens, so multi-paragraph CJK prose is not mistaken for a one-word selection.
 
-Longer sources use the persisted Short / Medium / Detailed preference, exposed
-as a `radiogroup` with roving focus in the composer footer and stored in
-`localStorage`:
+Longer sources all get the same request. `buildSummaryRequest` takes only the
+captured text and returns one prompt and one ceiling; there is no length
+preference, no persisted setting, and no per-source tier:
 
-- Short (default, `low`): about 2–3 concise sentences, 512 tokens of headroom.
-- Medium: about 4–6 concise sentences, 768 tokens of headroom.
-- Detailed (`high`): about 8–12 concise sentences, 1024 tokens of headroom.
+- The prompt asks for exactly 3 concise Markdown bullet points, most important
+  takeaway first, one sentence each, covering only what someone needs to
+  understand the source quickly. "Exactly 3" rather than a range: a range makes
+  models drift to its upper bound and makes the 360px panel's height jump
+  between summaries. The suffix forbids a title, a `TL;DR:` label, a preamble,
+  an explanation, or a closing comment, and asks the model to finish cleanly.
+- The ceiling is 2048 output tokens — TokenPath's own `max_output_tokens`
+  maximum — for every generation path: summaries and ordinary chat turns,
+  page, PDF, selection, and video transcript alike. Generation is billed from
+  the input text, so a lower ceiling saves nothing and only risks stopping an
+  answer mid-sentence.
 
-The prompt allows an equivalently sized list or table when structured formatting
-is clearer, and forbids a title, label, preamble, explanation, or closing
-comment. These token values are generous ceilings rather than target lengths;
-the prompt controls concision without cutting off a sentence. The terminal
-`done.answer` is preserved unchanged for display, history, and attribution.
-There is no client-side clipping or extractive fallback. Document and
-conversation limits are counted by Unicode code point so truncation does not
-split surrogate pairs.
+The ceiling is headroom, not a target length; the prompt controls concision
+without cutting off a sentence. An answer that produces every token it was
+allowed is treated as cut short and gets a note saying it reached the maximum
+answer length and suggesting a narrower question or asking for the rest. That
+answer is still a normal, attributed answer — every word is text the model
+wrote — unlike the aborted and mid-stream-failure paths, which keep their
+partial text but are deliberately left unattributed. The terminal `done.answer`
+is preserved unchanged for display, history, and attribution. There is no
+client-side clipping or extractive fallback. Document and conversation limits
+are counted by Unicode code point so truncation does not split surrogate pairs.
 
 ## Streaming generation and just-in-time heatmap attribution
 

@@ -76,7 +76,7 @@ The request is deliberately messages-only apart from its output ceiling:
 
 ```json
 {
-  "max_output_tokens": 512,
+  "max_output_tokens": 2048,
   "messages": [
     {
       "role": "system",
@@ -124,11 +124,16 @@ panel's **Summarize** starter. A capture by itself makes no request.
 
 For the summary pathway, sources of 24 words or fewer make no request at all
 (CJK-dominant text uses a 48-character cutoff); the panel posts an “Already
-concise” note instead. Longer sources use the persisted Short / Medium /
-Detailed preference: Short requests about 2–3 sentences with
-`max_output_tokens: 512`, Medium 4–6 with `768`, and Detailed 8–12 with `1024`.
-The ceilings leave completion headroom; prompt wording controls the intended
-length. The client does not clip or replace the result: the exact terminal
+concise” note instead. Every longer source gets the same request: a prompt
+asking for exactly 3 one-sentence Markdown bullet points, most important first,
+and `max_output_tokens: 2048`. That ceiling is TokenPath's maximum and is what
+every generation path sends — summaries and ordinary questions alike — because
+generation is billed from the input text, so a lower ceiling saves nothing and
+only risks stopping mid-sentence. The ceiling leaves completion headroom;
+prompt wording controls the intended length. An answer that produces every
+token it was allowed gets a note saying it reached the maximum answer length,
+and stays attributed. The client does not clip or replace the result: the exact
+terminal
 `done.answer` is used for the UI, conversation history, and heatmap request.
 
 Cancellation is not always discarding. Navigation, a newer capture, or

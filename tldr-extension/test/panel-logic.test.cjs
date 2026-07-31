@@ -10,69 +10,41 @@ for (const count of [1, 10, 24]) {
 }
 console.log("PASS: already-short selections skip model summarization");
 
-const defaultSummary = Logic.buildSummaryRequest(textWithWords(25));
-const lowSummary = Logic.buildSummaryRequest(textWithWords(25), "low");
-const mediumSummary = Logic.buildSummaryRequest(textWithWords(25), "medium");
-const highSummary = Logic.buildSummaryRequest(textWithWords(25), "high");
-assert.deepStrictEqual(defaultSummary, lowSummary);
-assert.strictEqual(lowSummary.skip, false);
-assert.strictEqual(lowSummary.maxOutputTokens, 512);
-assert.strictEqual(mediumSummary.maxOutputTokens, 768);
-assert.strictEqual(highSummary.maxOutputTokens, 1024);
-assert.match(lowSummary.prompt, /Aim for 2-3 concise sentences/);
-assert.match(mediumSummary.prompt, /Aim for 4-6 concise sentences/);
-assert.match(highSummary.prompt, /Aim for 8-12 concise sentences/);
-for (const request of [lowSummary, mediumSummary, highSummary]) {
-  assert.match(request.prompt, /Finish the summary cleanly/);
-  assert.match(request.prompt, /Do not add a title/);
-}
+// One prompt, one ceiling. TokenPath caps `max_output_tokens` at 2048 and
+// bills generation from the input text alone, so every summary asks for the
+// whole ceiling; concision is the prompt's job, not the ceiling's.
+const summary = Logic.buildSummaryRequest(textWithWords(25));
+assert.strictEqual(summary.skip, false);
+assert.strictEqual(summary.maxOutputTokens, 2_048);
+assert.match(summary.prompt, /exactly 3 concise Markdown bullet points/);
+assert.match(summary.prompt, /most important takeaway first/);
+assert.match(summary.prompt, /one sentence/);
+assert.match(summary.prompt, /Finish the summary cleanly/);
+assert.match(summary.prompt, /Do not add a title/);
+// "exactly 3" is deliberate: a range makes models drift to its upper bound and
+// makes the panel's height jump between summaries.
+assert.doesNotMatch(summary.prompt, /2-4|2-3|4-6|8-12/);
 
+// The request no longer varies by length tier or by source kind — a video
+// transcript, a page, and a long CJK article all get the same prompt and the
+// same ceiling.
 const large = Logic.buildSummaryRequest(textWithWords(500));
-assert.strictEqual(large.prompt, lowSummary.prompt);
-console.log("PASS: low/medium/high summary prompts and headroom stay distinct");
-
-// A video transcript gets a higher headroom tier at every length: even a
-// "brief" summary of an hour of speech overruns a page-sized ceiling and stops
-// mid-sentence. The prompts are identical — only the ceiling moves — and the
-// tiers stay ordered, so Short remains genuinely shorter than Detailed.
-const videoLow = Logic.buildSummaryRequest(textWithWords(25), "low", "video");
-const videoMedium = Logic.buildSummaryRequest(
-  textWithWords(25),
-  "medium",
-  "video"
+assert.deepStrictEqual(large, summary);
+const transcript = Logic.buildSummaryRequest(
+  `Transcript. ${textWithWords(400)}`
 );
-const videoHigh = Logic.buildSummaryRequest(textWithWords(25), "high", "video");
-assert.strictEqual(videoLow.maxOutputTokens, 1_024);
-assert.strictEqual(videoMedium.maxOutputTokens, 1_536);
-assert.strictEqual(videoHigh.maxOutputTokens, 2_048);
-assert.ok(videoLow.maxOutputTokens < videoMedium.maxOutputTokens);
-assert.ok(videoMedium.maxOutputTokens < videoHigh.maxOutputTokens);
-assert.strictEqual(videoLow.prompt, lowSummary.prompt);
-assert.strictEqual(videoHigh.prompt, highSummary.prompt);
-// Every video tier clears the page tier it corresponds to.
-assert.ok(videoLow.maxOutputTokens > lowSummary.maxOutputTokens);
-assert.ok(videoMedium.maxOutputTokens > mediumSummary.maxOutputTokens);
-assert.ok(videoHigh.maxOutputTokens > highSummary.maxOutputTokens);
-// An unknown or absent source kind is a page.
-assert.strictEqual(
-  Logic.buildSummaryRequest(textWithWords(25), "low", "page").maxOutputTokens,
-  512
-);
-assert.strictEqual(
-  Logic.buildSummaryRequest(textWithWords(25), "low", undefined)
-    .maxOutputTokens,
-  512
-);
+assert.strictEqual(transcript.maxOutputTokens, summary.maxOutputTokens);
+assert.strictEqual(transcript.prompt, summary.prompt);
 // A transcript short enough to be already concise still skips generation.
 assert.strictEqual(
-  Logic.buildSummaryRequest("A very short transcript.", "low", "video").skip,
+  Logic.buildSummaryRequest("A very short transcript.").skip,
   true
 );
-console.log("PASS: video transcripts get a higher, still-ordered headroom tier");
+console.log("PASS: every summary uses one 2048-token ceiling and one prompt");
 
 const cjk = Logic.buildSummaryRequest("这是一个用于验证没有空格的长文本摘要行为并确保模型不会返回比原始选择更长内容的测试段落它还包含更多字符以超过短文本阈值");
 assert.strictEqual(cjk.skip, false);
-assert.strictEqual(cjk.prompt, lowSummary.prompt);
+assert.strictEqual(cjk.prompt, summary.prompt);
 console.log("PASS: long CJK selections do not bypass summarization");
 
 // A CJK article has no word spaces, so its paragraph breaks are the only
@@ -81,9 +53,9 @@ const cjkParagraph = "这是一个用于验证中文文章摘要行为的段落"
 const cjkArticle = Array.from({ length: 10 }, () => cjkParagraph).join("\n");
 assert.ok(cjkArticle.length > 4_000);
 assert.ok(cjkArticle.trim().match(/\S+/g).length <= Logic.SHORT_SELECTION_WORDS);
-const cjkArticleSummary = Logic.buildSummaryRequest(cjkArticle, "medium");
+const cjkArticleSummary = Logic.buildSummaryRequest(cjkArticle);
 assert.strictEqual(cjkArticleSummary.skip, false);
-assert.strictEqual(cjkArticleSummary.maxOutputTokens, 768);
+assert.strictEqual(cjkArticleSummary.maxOutputTokens, 2_048);
 
 // Japanese and Korean use the same character-aware path.
 for (const long of [

@@ -383,7 +383,7 @@ function recordDeterministic(good) {
             selected.answer,
             // Exercise controller finalization too: transient deltas may differ
             // from the terminal `done.answer`, which owns the canonical result.
-            question.includes("summary of the given text")
+            question.includes("Summarize the given text")
               ? "Temporary streamed draft."
               : selected.answer
           );
@@ -540,14 +540,10 @@ function recordDeterministic(good) {
         contextVisible: context?.getClientRects().length === 1,
         hasButton:
           toggle instanceof HTMLButtonElement && toggle.type === "button",
-        // The Short/Medium/Detailed control belongs to the composer, never to
-        // the source card.
-        composerHasSummaryControl: !!document.querySelector(
-          ".composer-dock #summary-length"
-        ),
-        sourceCardHasSummaryControl: !!document.querySelector(
-          "#context #summary-length"
-        ),
+        // The Short/Medium/Detailed control is gone from the whole panel:
+        // length is a conversational choice, not a permanent widget in a
+        // 360px composer.
+        hasSummaryLengthControl: !!document.querySelector("#summary-length"),
       };
     });
     const sourceStaysCollapsedWithoutLegacyControls = await page.evaluate(
@@ -822,15 +818,7 @@ function recordDeterministic(good) {
           (message) => message.role === "assistant"
         )?.content,
         generation,
-        sourceCardHasSummaryControl: !!document.querySelector(
-          "#context #summary-length"
-        ),
-        summaryLengthOptions: [
-          ...document.querySelectorAll('#summary-length [role="radio"]'),
-        ].map((option) => option.textContent),
-        summaryLengthSelected:
-          document.querySelector('#summary-length [aria-checked="true"]')
-            ?.textContent || "",
+        hasSummaryLengthControl: !!document.querySelector("#summary-length"),
         hasTokenPathWordmark:
           document.querySelector(".tokenpath-wordmark")?.textContent ===
             "tokenpath" &&
@@ -898,6 +886,8 @@ function recordDeterministic(good) {
             document.getElementById("context")?.clientWidth,
       };
     });
+    // The removed control took its persistence with it: nothing writes the
+    // old preference key any more.
     const savedSummaryLength = await page.evaluate(() =>
       localStorage.getItem("tldr-summary-length")
     );
@@ -1026,9 +1016,7 @@ function recordDeterministic(good) {
         context: context?.textContent || "",
         hidden: card?.hidden,
         hasToggle: !!document.getElementById("context-toggle"),
-        summaryInSourceCard: !!document.querySelector(
-          "#context #summary-length"
-        ),
+        hasSummaryLengthControl: !!document.querySelector("#summary-length"),
         visible: context?.getClientRects().length === 1,
       };
     });
@@ -1054,8 +1042,7 @@ function recordDeterministic(good) {
       collapsedSourceState.ariaExpanded === "false" &&
       collapsedSourceState.contextHidden === true &&
       collapsedSourceState.contextVisible === false &&
-      collapsedSourceState.sourceCardHasSummaryControl === false &&
-      collapsedSourceState.composerHasSummaryControl === true &&
+      collapsedSourceState.hasSummaryLengthControl === false &&
       collapsedSourceState.cardHeight <= 52 &&
       sourceStaysCollapsedWithoutLegacyControls &&
       expandedSourceState.ariaExpanded === "true" &&
@@ -1068,7 +1055,7 @@ function recordDeterministic(good) {
       sourceErrorState.context === "" &&
       sourceErrorState.hidden === true &&
       sourceErrorState.hasToggle === false &&
-      sourceErrorState.summaryInSourceCard === false &&
+      sourceErrorState.hasSummaryLengthControl === false &&
       !sourceErrorState.visible &&
       firstHeatmapCount === 1 &&
       cachedHeatmapCount === 1 &&
@@ -1140,21 +1127,22 @@ function recordDeterministic(good) {
       ) &&
       !opaqueOriginGeneration.systemPrompt?.includes("news.example") &&
       !opaqueOriginGeneration.systemPrompt?.includes("/Users/private") &&
-      panelResult.sourceCardHasSummaryControl === false &&
-      panelResult.summaryLengthOptions.join("/") ===
-        "Short/Medium/Detailed" &&
-      panelResult.summaryLengthSelected === "Short" &&
+      panelResult.hasSummaryLengthControl === false &&
       savedSummaryLength === null &&
-      summaryPrompt?.includes("Aim for 2-3 concise sentences") &&
+      summaryPrompt?.includes(
+        "exactly 3 concise Markdown bullet points"
+      ) &&
+      summaryPrompt?.includes("Finish the summary cleanly") &&
       opaqueOriginGeneration.userPrompt?.includes(
-        "Aim for 2-3 concise sentences"
+        "exactly 3 concise Markdown bullet points"
       ) &&
       !("document" in generationBody) &&
       !("question" in generationBody) &&
       !("model" in generationBody) &&
       !("stream" in generationBody) &&
-      generationBody.max_output_tokens === 512 &&
-      opaqueOriginGeneration.maxOutputTokens === 512 &&
+      // One ceiling everywhere, and it is TokenPath's own maximum.
+      generationBody.max_output_tokens === 2_048 &&
+      opaqueOriginGeneration.maxOutputTokens === 2_048 &&
       firstMessage?.type === "highlight" &&
       firstMessage?.start === expectedFable &&
       firstMessage?.end === expectedFable + 7 &&
@@ -1181,7 +1169,7 @@ function recordDeterministic(good) {
         ` — waited=${capturedWithoutTurn}, calls=${firstHeatmapCount}/${cachedHeatmapCount}, frame=${firstOptions?.frameId}, ` +
         `source=${firstMessage?.start}/${secondMessage?.start}, markdown=${panelResult.hasMarkdownHeading}/${panelResult.hasMarkdownStrong}, ` +
         `canonical=${panelResult.autoHeatmapAnswer === panelResult.canonicalSummary}/${panelResult.followupHistoryAnswer === panelResult.canonicalSummary}, ` +
-        `length=${panelResult.summaryLengthSelected}/${savedSummaryLength}, output=${generationBody.max_output_tokens}/${opaqueOriginGeneration.maxOutputTokens}, ` +
+        `lengthControl=${panelResult.hasSummaryLengthControl}/${savedSummaryLength}, output=${generationBody.max_output_tokens}/${opaqueOriginGeneration.maxOutputTokens}, ` +
         `sourceCard=${collapsedSourceState.cardHeight.toFixed(0)}px/${expandedSourceState.contextVisible}/${replacementSourceCollapsed}/${sourceErrorState.visible}, ` +
         `brand=${panelResult.hasTokenPathWordmark}/${panelResult.hasTokenRail}, ` +
         `cta=${panelResult.cta?.text}/${panelResult.ctaDoesNotOverlapDisconnect}, ` +
@@ -1981,7 +1969,9 @@ function recordDeterministic(good) {
       result.answer.includes("durable scheduling improvement") &&
       result.generationCount === 1 &&
       result.generationHasNewerText &&
-      result.generationUserPrompt.includes("Aim for 2-3 concise sentences") &&
+      result.generationUserPrompt.includes(
+        "exactly 3 concise Markdown bullet points"
+      ) &&
       result.generationUserPrompt.includes(
         "Do not add a title, a 'TL;DR:' label"
       ) &&
@@ -2153,7 +2143,7 @@ function recordDeterministic(good) {
               .reverse()
               .find((message) => message.role === "user")?.content || "";
           return doneStream(
-            question.includes("summary of the given text")
+            question.includes("Summarize the given text")
               ? summaryAnswer
               : askAnswer
           );
@@ -2223,10 +2213,11 @@ function recordDeterministic(good) {
     const captureSpentNothing = await page.evaluate(
       () => window.__intentRequests.length === 0
     );
-    // Summaries follow the persistent Short/Medium/Detailed preference.
-    await page
-      .locator('#summary-length [role="radio"]', { hasText: "Medium" })
-      .click();
+    // There is no length control left to choose from, and nothing writes the
+    // preference key it used to persist.
+    const summaryLengthControlCount = await page.evaluate(
+      () => document.querySelectorAll("#summary-length").length
+    );
     const savedSummaryLength = await page.evaluate(() =>
       localStorage.getItem("tldr-summary-length")
     );
@@ -2706,15 +2697,18 @@ function recordDeterministic(good) {
 
     const good =
       captureSpentNothing &&
-      savedSummaryLength === "medium" &&
+      summaryLengthControlCount === 0 &&
+      savedSummaryLength === null &&
       summaryResult.prompt.includes(
-        "Write a moderately detailed summary of the given text"
+        "Summarize the given text as exactly 3 concise Markdown bullet points"
       ) &&
-      summaryResult.prompt.includes("Aim for 4-6") &&
+      summaryResult.prompt.includes(
+        "Put the single most important takeaway first"
+      ) &&
       summaryResult.prompt.includes(
         "Do not add a title, a 'TL;DR:' label"
       ) &&
-      summaryResult.maxOutputTokens === 768 &&
+      summaryResult.maxOutputTokens === 2_048 &&
       summaryResult.label === "Entire page" &&
       summaryResult.systemIncludesContext &&
       summaryResult.document ===
@@ -2733,7 +2727,8 @@ function recordDeterministic(good) {
       askReadyState.placeholder === "Ask about the page…" &&
       askReadyState.truncationNote &&
       askResult.question === explicitQuestion &&
-      askResult.maxOutputTokens === 512 &&
+      // An ordinary question shares the summary's ceiling.
+      askResult.maxOutputTokens === 2_048 &&
       askResult.systemIncludesContext &&
       askResult.document ===
         (await page.evaluate(() => window.__intentAskSource)) &&
@@ -2752,8 +2747,8 @@ function recordDeterministic(good) {
       interruptedMappingRecovered;
     console.log("\n### Capture starter side-panel fixture");
     console.log(
-      `  [capture waits + length-aware summary + ask on submit] ${good ? "PASS" : "FAIL"}` +
-        ` — idleCapture=${captureSpentNothing}, summary=${savedSummaryLength}/${summaryResult.maxOutputTokens}, ` +
+      `  [capture waits + 3-bullet summary + ask on submit] ${good ? "PASS" : "FAIL"}` +
+        ` — idleCapture=${captureSpentNothing}, summary=${summaryLengthControlCount}/${savedSummaryLength}/${summaryResult.maxOutputTokens}, ` +
         `concise=${conciseState.requestCount}/${conciseState.starterHidden}, ` +
         `askIdle=${askReadyState.generateCount}/${askReadyState.heatmapCount}, ` +
         `ask=${askResult.maxOutputTokens}`
@@ -3479,9 +3474,8 @@ function recordDeterministic(good) {
     );
     const busyState = await page.evaluate(() => ({
       inputDisabled: document.getElementById("input")?.disabled,
-      lengthDisabled: [
-        ...document.querySelectorAll('#summary-length [role="radio"]'),
-      ].every((option) => option.disabled),
+      // The composer footer holds the submit button and nothing else now.
+      hasLengthControl: !!document.querySelector("#summary-length"),
       sendDisabled: document.getElementById("send")?.disabled,
       sendLabel: document.getElementById("send")?.getAttribute("aria-label"),
     }));
@@ -3518,7 +3512,7 @@ function recordDeterministic(good) {
       busyState.inputDisabled === false &&
       busyState.sendLabel === "Stop generating" &&
       busyState.sendDisabled === false &&
-      busyState.lengthDisabled === true &&
+      busyState.hasLengthControl === false &&
       draftWhileBusy === "Drafted while the answer streams." &&
       stoppedState.answer === "Partial answer that never finishes" &&
       stoppedState.incomplete &&
@@ -6447,12 +6441,12 @@ if (deterministicFail > 0) process.exitCode = 1;
           summarised.systemIncludesTranscript,
         summarised
       );
-      // Short on a transcript gets the video headroom tier: an hour of speech
-      // summarised even briefly overruns a page-sized ceiling and stops
-      // mid-sentence.
+      // A transcript summary asks for the same ceiling as every other source:
+      // TokenPath's maximum, since generation is billed from the input text
+      // and a smaller ceiling only risks stopping mid-sentence.
       videoCheck(
-        "a transcript summary gets the video output headroom",
-        summarised.maxOutputTokens === 1_024,
+        "a transcript summary gets the full output ceiling",
+        summarised.maxOutputTokens === 2_048,
         summarised.maxOutputTokens
       );
       // Nothing hit that ceiling, so nothing says it did.
@@ -6520,7 +6514,7 @@ if (deterministicFail > 0) process.exitCode = 1;
         (before) =>
           document
             .getElementById("messages")
-            ?.textContent?.includes("reached its output limit") &&
+            ?.textContent?.includes("reached the maximum answer length") &&
           // The note lands as soon as the answer is final; attribution is
           // still running behind it and must finish, not be skipped.
           document.querySelectorAll('[data-answer-status="ready"]').length ===
@@ -6549,14 +6543,17 @@ if (deterministicFail > 0) process.exitCode = 1;
       });
       videoCheck(
         "an answer that exhausts its output budget says so and stays attributed",
-        limited.messages.includes("reached its output limit") &&
+        limited.messages.includes("reached the maximum answer length") &&
+          // The note can no longer offer a longer length — there isn't one.
+          !limited.messages.includes("Choose a longer length") &&
+          limited.messages.includes("Ask a narrower question") &&
           limited.answers === 2 &&
           limited.ready === 2 &&
           // Deliberately not the aborted/partial state: that one skips
           // attribution, this one keeps it.
           limited.incomplete === false &&
-          // A chat turn on a transcript gets the video chat headroom.
-          limited.maxOutputTokens === 1_024,
+          // A chat turn shares the one ceiling.
+          limited.maxOutputTokens === 2_048,
         limited
       );
       await panel.evaluate(() => {

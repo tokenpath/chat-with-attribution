@@ -3,38 +3,19 @@
 const TldrPanelLogic = (() => {
   const SHORT_SELECTION_WORDS = 24;
   // `maxOutputTokens` is headroom, not a target — the prompt controls length.
-  // A video transcript is the one source that routinely needs more of it: even
-  // a "brief" summary of an hour of speech produces structured output that
-  // runs past a page-sized ceiling and stops mid-sentence. The video tiers stay
-  // ordered, so Short is still genuinely shorter than Medium and Detailed.
-  const SUMMARY_LENGTHS = {
-    low: {
-      maxOutputTokens: 512,
-      videoMaxOutputTokens: 1_024,
-      prompt:
-        "Write a brief summary of the given text. Aim for 2-3 concise " +
-        "sentences, or an equivalently compact list or table when structured " +
-        "formatting is clearer. Include only the most important points.",
-    },
-    medium: {
-      maxOutputTokens: 768,
-      videoMaxOutputTokens: 1_536,
-      prompt:
-        "Write a moderately detailed summary of the given text. Aim for 4-6 " +
-        "concise sentences, or an equivalently sized list or table when " +
-        "structured formatting is clearer. Cover the main point and important " +
-        "supporting details.",
-    },
-    high: {
-      maxOutputTokens: 1_024,
-      videoMaxOutputTokens: 2_048,
-      prompt:
-        "Write a detailed summary of the given text. Aim for 8-12 concise " +
-        "sentences, or an equivalently detailed list or table when structured " +
-        "formatting is clearer. Cover the important claims, supporting " +
-        "details, qualifications, and conclusions.",
-    },
-  };
+  // TokenPath's `/v1/generate` caps `max_output_tokens` at 2048 and bills
+  // generation from the input text alone, so a lower ceiling saves nothing and
+  // only risks cutting an answer off mid-sentence. Every generation path —
+  // summaries and ordinary turns, page, PDF, selection, or video transcript —
+  // asks for the whole ceiling.
+  const SUMMARY_MAX_OUTPUT_TOKENS = 2_048;
+  // "exactly 3", not "2-4": a range makes models drift to the upper bound and
+  // makes the 360px panel's height jump between summaries.
+  const SUMMARY_PROMPT =
+    "Summarize the given text as exactly 3 concise Markdown bullet points. " +
+    "Put the single most important takeaway first. Keep each bullet to one " +
+    "sentence. Include only what someone needs to understand the source " +
+    "quickly.";
   const SUMMARY_PROMPT_SUFFIX =
     " Finish the summary cleanly. Do not add a title, a 'TL;DR:' label, a " +
     "preamble, an explanation, or a closing comment.";
@@ -72,26 +53,17 @@ const TldrPanelLogic = (() => {
     };
   }
 
-  function buildSummaryRequest(text, length = "low", sourceKind = "page") {
+  function buildSummaryRequest(text) {
     const source = measure(text);
     const shortLimit = source.characterMode ? 48 : SHORT_SELECTION_WORDS;
     if (source.units <= shortLimit) {
       return { skip: true };
     }
 
-    const config =
-      length === "medium"
-        ? SUMMARY_LENGTHS.medium
-        : length === "high"
-          ? SUMMARY_LENGTHS.high
-          : SUMMARY_LENGTHS.low;
     return {
       skip: false,
-      maxOutputTokens:
-        sourceKind === "video"
-          ? config.videoMaxOutputTokens
-          : config.maxOutputTokens,
-      prompt: config.prompt + SUMMARY_PROMPT_SUFFIX,
+      maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+      prompt: SUMMARY_PROMPT + SUMMARY_PROMPT_SUFFIX,
     };
   }
 
