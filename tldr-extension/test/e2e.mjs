@@ -7793,6 +7793,31 @@ if (deterministicFail > 0) process.exitCode = 1;
       { requests: requestsAfterRestore.length, labels: restored.labels }
     );
 
+    // A chat restored without a capture cannot send a turn until the page is
+    // captured again. Re-seed the same document — an "ask" capture, so it
+    // still spends nothing — so the composer below has a live context.
+    await page.evaluate(() => {
+      window.__followUpRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "follow-up-seed-recapture",
+        capturedAt: 15,
+        tabId: 77,
+        windowId: 5,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "ask",
+        sourceType: "page",
+        url: window.__followUpTabUrl,
+        text: window.__followUpSource,
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll("[data-answer-content]").length === 3 &&
+        document.querySelectorAll(".follow-up-chip").length === 2
+    );
+
     // 5. Settings: turning follow-ups off hides the row entirely.
     await page.locator("#settings-toggle").click();
     await page.waitForFunction(() => document.getElementById("settings"));
@@ -7841,6 +7866,39 @@ if (deterministicFail > 0) process.exitCode = 1;
         suggestionsOff.focus === "settings-toggle",
       suggestionsOff
     );
+
+    // With the setting off the tail is not sent at all, so the answer is not
+    // asked to produce one — and a model that volunteers a block anyway still
+    // never renders it.
+    await page.locator("#input").fill("What is the rollback window?");
+    await page.locator("#send").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll('[data-answer-status="ready"]').length === 4
+    );
+    const offTurn = await generateRequests();
+    const offTurnState = await page.evaluate(() => ({
+      chips: document.querySelectorAll(".follow-up-chip").length,
+      answers: [...document.querySelectorAll("[data-answer-content]")].map(
+        (node) => node.textContent || ""
+      ),
+    }));
+    followUpCheck(
+      "follow-ups off sends no tail and still never renders a stray block",
+      offTurn.length === 1 &&
+        offTurn[0].messages?.at(-1)?.content ===
+          "What is the rollback window?" &&
+        offTurnState.chips === 0 &&
+        offTurnState.answers.every((text) => !text.includes("SUGGESTIONS")),
+      {
+        outgoing: offTurn[0]?.messages?.at(-1)?.content,
+        chips: offTurnState.chips,
+      }
+    );
+    // Everything below counts requests made from here on.
+    await page.evaluate(() => {
+      window.__followUpRequests.length = 0;
+    });
 
     // 6. Automatic summaries off: a toolbar capture waits, and the ladder's
     //    first rung becomes the chip the starter would otherwise duplicate.
