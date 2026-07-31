@@ -82,6 +82,12 @@ function phraseKey(phrase: TldrAnswerAttributionPhrase) {
   return `${phrase.start}:${phrase.end}`;
 }
 
+// Highlighting a PDF source costs a viewer reload, because Chrome applies a
+// text-fragment directive only while the document loads. Dragging or nudging a
+// selection fires this path once per adjustment, so a PDF source waits for the
+// range to settle; a page highlight is cheap and stays immediate.
+const PDF_SELECTION_SETTLE_MS = 400;
+
 function phraseLabel(answer: string, phrase: TldrAnswerAttributionPhrase) {
   const text = answer
     .slice(phrase.start, phrase.end)
@@ -181,6 +187,37 @@ export function AnswerResponse({
     if (!range) return;
     void controller.onAnswerSelection(message.id, range.start, range.end);
   }, [controller, message.answerStatus, message.id, message.text]);
+  const isPdfSource = message.source?.sourceType === "chrome-pdf";
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (settleTimer.current) clearTimeout(settleTimer.current);
+    },
+    []
+  );
+  // `defer` waits one frame so the browser has committed the selection the
+  // pointer just finished making. The trailing PDF timer subsumes that.
+  const requestLocateSelection = useCallback(
+    (defer: boolean) => {
+      if (settleTimer.current) {
+        clearTimeout(settleTimer.current);
+        settleTimer.current = null;
+      }
+      if (isPdfSource) {
+        settleTimer.current = setTimeout(() => {
+          settleTimer.current = null;
+          locateSelection();
+        }, PDF_SELECTION_SETTLE_MS);
+        return;
+      }
+      if (defer) {
+        requestAnimationFrame(locateSelection);
+        return;
+      }
+      locateSelection();
+    },
+    [isPdfSource, locateSelection]
+  );
   const phraseAtPoint = useCallback(
     (clientX: number, clientY: number) => {
       const offset = mapper.current?.offsetAtPoint(clientX, clientY);
@@ -242,7 +279,7 @@ export function AnswerResponse({
           if (!phrase) return;
           revealPhrase(phrase);
         }}
-        onKeyUp={locateSelection}
+        onKeyUp={() => requestLocateSelection(false)}
         onPointerLeave={() => updateHoveredPhrase(null)}
         onPointerMove={(event) => {
           if (
@@ -258,7 +295,7 @@ export function AnswerResponse({
         }}
         onPointerUp={(event) => {
           if (event.button !== 0) return;
-          requestAnimationFrame(locateSelection);
+          requestLocateSelection(true);
         }}
         ref={answerRoot}
       >

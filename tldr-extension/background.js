@@ -29,12 +29,17 @@ const PDF_FRAGMENT_CONTEXT_CHARS = 64;
 const PDF_FRAGMENT_EDGE_CHARS = 96;
 const PDF_FRAGMENT_FULL_TARGET_CHARS = 240;
 const PDF_URL_COMMIT_TIMEOUT_MS = 5000;
+// The last PDF URL this worker applied to a tab, per tab. It lives in
+// chrome.storage.session rather than a Map because MV3 suspends this worker
+// after ~30 seconds of idle: an in-memory record is almost always gone by the
+// time the user clicks the next attribution, and its loss makes an unchanged
+// fragment reload the PDF all over again.
+const PDF_APPLIED_URL_PREFIX = "pdfApplied:";
 let captureSequence = 0;
 let contextMenuEnsurePromise = null;
 let legacyMenuMigrationPromise = null;
 const latestCaptureByTab = new Map();
 const latestPdfOperationByTab = new Map();
-const lastAppliedPdfUrlByTab = new Map();
 
 function runContextMenuOperation(method, args) {
   return new Promise((resolve) => {
@@ -102,6 +107,15 @@ chrome.action.onClicked.addListener((tab) => {
     { frameId: 0, forceFullPage: true },
     tab
   );
+});
+
+// A closed tab can never be navigated again, and its id will be reused. Drop
+// the per-tab PDF bookkeeping with it so a recycled id cannot inherit a stale
+// "already applied" URL.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  latestCaptureByTab.delete(tabId);
+  latestPdfOperationByTab.delete(tabId);
+  void forgetAppliedPdfUrl(tabId);
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -424,19 +438,22 @@ async function highlightPdfSource(message) {
     return { ok: false, error: "The PDF source range is no longer available." };
   }
   const operationId = beginPdfOperation(tabId);
-  const tabState = await currentPdfTabState(tabId, pdfUrl);
+  const showsPdf = await pdfTabStillShows(tabId, pdfUrl);
   if (!isCurrentPdfOperation(tabId, operationId)) return { ok: false };
-  if (!tabState.matches) {
-    lastAppliedPdfUrlByTab.delete(tabId);
+  if (!showsPdf) {
+    await forgetAppliedPdfUrl(tabId);
     return { ok: false, error: "The tab is no longer showing that PDF." };
   }
 
   const targetUrl = withTextFragment(pdfUrl, textFragment);
-  if (
-    sameUrl(lastAppliedPdfUrlByTab.get(tabId), targetUrl) &&
-    (!tabState.url || sameUrl(tabState.url, targetUrl))
-  ) {
-    return { ok: true };
+  // Compare against what this worker last applied, never against the tab's
+  // live URL: Chrome strips the `:~:` directive from both location.href and
+  // tabs.url as soon as it consumes it, so a live-URL comparison can never
+  // match and every repeat click would reload the PDF again.
+  if (sameUrl(await readAppliedPdfUrl(tabId), targetUrl)) {
+    return isCurrentPdfOperation(tabId, operationId)
+      ? { ok: true }
+      : { ok: false };
   }
   const didReload = await navigatePdfAndReload(
     tabId,
@@ -446,41 +463,85 @@ async function highlightPdfSource(message) {
   if (!didReload || !isCurrentPdfOperation(tabId, operationId)) {
     return { ok: false };
   }
-  lastAppliedPdfUrlByTab.set(tabId, targetUrl);
+  await writeAppliedPdfUrl(tabId, targetUrl);
   return { ok: true };
 }
 
+// Clearing has two very different costs, so it has two modes.
+//
+// The default mode only rewrites the tab's URL in place: the directive leaves
+// the address bar, but the highlight PDFium already painted stays on screen
+// until the PDF's next natural load. This is what every implicit clear uses —
+// closing the panel, replacing a capture, clearing the chat — because none of
+// those is a request to reload the user's document, and reloading resets the
+// viewer to page 1.
+//
+// `reload: true` is reserved for the explicit "Clear highlight" button. Chrome
+// exposes no way to unpaint a text fragment other than loading the document
+// again, so an explicit user request to clear is allowed to cost one reload —
+// and only that request.
 async function clearPdfSourceHighlight(message) {
   const tabId = validTabId(message?.tabId);
   const pdfUrl = validPdfUrl(message?.url);
   if (tabId == null || !pdfUrl) return { ok: false };
+  const unpaint = message?.reload === true;
   const operationId = beginPdfOperation(tabId);
-  const tabState = await currentPdfTabState(tabId, pdfUrl);
+  const showsPdf = await pdfTabStillShows(tabId, pdfUrl);
   if (!isCurrentPdfOperation(tabId, operationId)) return { ok: false };
-  if (!tabState.matches) {
-    lastAppliedPdfUrlByTab.delete(tabId);
+  if (!showsPdf) {
+    await forgetAppliedPdfUrl(tabId);
     return { ok: false };
   }
 
   const targetUrl = withoutTextFragment(pdfUrl);
-  if (
-    sameUrl(lastAppliedPdfUrlByTab.get(tabId), targetUrl) &&
-    (!tabState.url || sameUrl(tabState.url, targetUrl))
-  ) {
-    return { ok: true };
+  if (!unpaint && sameUrl(await readAppliedPdfUrl(tabId), targetUrl)) {
+    return isCurrentPdfOperation(tabId, operationId)
+      ? { ok: true }
+      : { ok: false };
   }
+  if (!isCurrentPdfOperation(tabId, operationId)) return { ok: false };
   // If the capture URL did not contain a text fragment, the controller only
-  // calls this after a successful PDF highlight, whose current tab URL does.
-  const didReload = await navigatePdfAndReload(
-    tabId,
-    targetUrl,
-    operationId
-  );
-  if (!didReload || !isCurrentPdfOperation(tabId, operationId)) {
+  // calls this after a successful PDF highlight, whose applied URL does.
+  const applied = unpaint
+    ? await navigatePdfAndReload(tabId, targetUrl, operationId)
+    : await replacePdfTabUrl(tabId, targetUrl);
+  if (!applied || !isCurrentPdfOperation(tabId, operationId)) {
     return { ok: false };
   }
-  lastAppliedPdfUrlByTab.set(tabId, targetUrl);
+  await writeAppliedPdfUrl(tabId, targetUrl);
   return { ok: true };
+}
+
+function appliedPdfUrlKey(tabId) {
+  return PDF_APPLIED_URL_PREFIX + tabId;
+}
+
+async function readAppliedPdfUrl(tabId) {
+  try {
+    const key = appliedPdfUrlKey(tabId);
+    const stored = await chrome.storage.session.get(key);
+    const value = stored?.[key];
+    return typeof value === "string" ? value : null;
+  } catch {
+    // An unreadable record only costs one redundant reload; never a wrong one.
+    return null;
+  }
+}
+
+async function writeAppliedPdfUrl(tabId, url) {
+  try {
+    await chrome.storage.session.set({ [appliedPdfUrlKey(tabId)]: url });
+  } catch {
+    // Same fail-open trade as reading: the highlight itself already landed.
+  }
+}
+
+async function forgetAppliedPdfUrl(tabId) {
+  try {
+    await chrome.storage.session.remove?.(appliedPdfUrlKey(tabId));
+  } catch {
+    // Nothing to do: the record is only ever used as a same-URL short-circuit.
+  }
 }
 
 function cancelPdfSourceOperation(message) {
@@ -508,14 +569,15 @@ function validPdfUrl(value) {
   }
 }
 
-async function currentPdfTabState(tabId, pdfUrl) {
+// Whether the tab is still showing the PDF resource the panel captured,
+// ignoring fragments. Identity only: neither Chrome API reports a live
+// `:~:text=` directive back, so this can never say whether a highlight is
+// currently painted.
+async function pdfTabStillShows(tabId, pdfUrl) {
   try {
     const tab = await chrome.tabs.get(tabId);
     if (typeof tab?.url === "string" && tab.url) {
-      return {
-        matches: samePdfResourceUrl(tab.url, pdfUrl),
-        url: tab.url,
-      };
+      return samePdfResourceUrl(tab.url, pdfUrl);
     }
   } catch {
     // Fall through to an activeTab-scoped probe.
@@ -529,23 +591,17 @@ async function currentPdfTabState(tabId, pdfUrl) {
         url: location.href,
       }),
     });
-    const match = Array.isArray(results)
-      ? results.find(
+    return Array.isArray(results)
+      ? results.some(
           (entry) =>
             entry?.result?.contentType === "application/pdf" &&
             samePdfResourceUrl(entry.result.url, pdfUrl)
         )
-      : null;
-    return {
-      matches: Boolean(match),
-      // Text-fragment directives are intentionally hidden from location.href.
-      // Treat this URL as identity-only, not proof that the directive is live.
-      url: null,
-    };
+      : false;
   } catch {
     // If Chrome revoked activeTab after a real navigation, failing closed is
     // essential: a stale side panel must never navigate back to the old PDF.
-    return { matches: false, url: null };
+    return false;
   }
 }
 
@@ -722,8 +778,49 @@ function isCurrentPdfOperation(tabId, operationId) {
   return latestPdfOperationByTab.get(tabId) === operationId;
 }
 
+// Rewrites the PDF tab's own URL in place, without loading anything.
+//
+// Chrome's native viewer renders the PDF inside an ordinary, scriptable
+// top-level HTML document (no embed, no subframes, and no viewer API), so an
+// ISOLATED-world injection can call history.replaceState on it: zero loads and
+// zero session-history entries, where chrome.tabs.update costs one Back entry
+// per fragment change. The directive only takes effect on the next load, which
+// is why the callers that want a visible highlight follow this with a reload.
+async function replacePdfTabUrl(tabId, targetUrl) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (url) => {
+        history.replaceState(null, "", url);
+        return true;
+      },
+      args: [targetUrl],
+    });
+    return (
+      Array.isArray(results) &&
+      results.some((entry) => entry?.result === true)
+    );
+  } catch {
+    // Restricted contexts (a revoked activeTab, a policy-blocked tab) cannot
+    // be injected. The caller decides whether the operation is worth a real
+    // navigation instead.
+    return false;
+  }
+}
+
 async function navigatePdfAndReload(tabId, targetUrl, operationId) {
   if (!isCurrentPdfOperation(tabId, operationId)) return false;
+  const replaced = await replacePdfTabUrl(tabId, targetUrl);
+  if (!isCurrentPdfOperation(tabId, operationId)) return false;
+  if (replaced) {
+    // One load total, and the Back button still goes where the user expects.
+    await chrome.tabs.reload(tabId);
+    return true;
+  }
+
+  // Fallback for tabs that cannot be injected: navigate to the fragment URL,
+  // wait for it to commit, then reload. Same single visible load, but it does
+  // grow the tab's Back history by one entry.
   const committed = observeCommittedTabUrl(tabId, targetUrl);
   try {
     await chrome.tabs.update(tabId, { url: targetUrl });
@@ -738,6 +835,8 @@ async function navigatePdfAndReload(tabId, targetUrl, operationId) {
   return true;
 }
 
+// Only the chrome.tabs.update fallback above needs this: a fragment
+// replacement resolves when the injection returns, with nothing to wait for.
 function observeCommittedTabUrl(tabId, targetUrl) {
   let settled = false;
   let canObserveUrl = false;

@@ -135,14 +135,20 @@ turn only when you ask: the panel shows what it captured and waits.
    worker converts the same resolved range into a contextual `#:~:text=`
    directive; Chrome's native viewer reloads once, then highlights and scrolls
    to that text, preserving ordinary page/zoom anchors. Closing the side panel
-   clears the highlight it owns.
+   leaves a PDF highlight where it is and only cleans the URL; the "Clear
+   highlight" button is what removes it.
 
 PDF capture and attribution require a top-level, text-searchable PDF opened
 directly in Chrome's native viewer, at most 50 MiB and 400,000 Unicode
 characters. Embedded PDFs, image-only scans, and files the extension cannot
 fetch are unsupported. Clicking an attribution reloads the PDF (normally from
-cache) because Chrome applies text-fragment highlights only during viewer load,
-and each fragment change lands in the tab's Back history.
+cache) because Chrome applies text-fragment highlights only during viewer load;
+the panel says so once per session rather than letting the reload look like a
+bug. That is the only reload. The worker rewrites the tab's URL in place, so
+fragment changes no longer land in the tab's Back history, and closing the
+panel, hiding it, or switching tabs does not touch the PDF at all. The single
+exception is the explicit "Clear highlight" button, because Chrome cannot
+unpaint a text fragment without loading the document again.
 
 Full-page HTML capture uses at most the first 400,000 UTF-16 characters of
 rendered text in the originating frame. It excludes hidden/script/style text and

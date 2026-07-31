@@ -1236,6 +1236,8 @@ function recordDeterministic(good) {
       const codePointOffset = (text, utf16Offset) =>
         Array.from(text.slice(0, utf16Offset)).length;
       const tabUpdatedListeners = [];
+      const tabActivatedListeners = [];
+      const runtimeListeners = [];
       const localStore = { tokenpathKey: "tpk_pdf" };
 
       window.__pdfAnswer = answer;
@@ -1246,14 +1248,28 @@ function recordDeterministic(good) {
       window.__pdfRuntimeMessages = [];
       window.__pdfTabMessages = [];
       window.__pdfTabUpdatedListeners = tabUpdatedListeners;
+      window.__pdfTabActivatedListeners = tabActivatedListeners;
+      window.__pdfRuntimeListeners = runtimeListeners;
       window.chrome = {
         tabs: {
           async query() {
             return [{ id: 91, windowId: 12, url: sourceUrl }];
           },
+          async get(tabId) {
+            return {
+              id: tabId,
+              url: tabId === 91 ? sourceUrl : "https://example.com/other",
+              windowId: 12,
+            };
+          },
           async sendMessage(...args) {
             window.__pdfTabMessages.push(args);
             return { ok: true };
+          },
+          onActivated: {
+            addListener(listener) {
+              tabActivatedListeners.push(listener);
+            },
           },
           onUpdated: {
             addListener(listener) {
@@ -1276,7 +1292,11 @@ function recordDeterministic(good) {
             }
             return { ok: true };
           },
-          onMessage: { addListener() {} },
+          onMessage: {
+            addListener(listener) {
+              runtimeListeners.push(listener);
+            },
+          },
         },
         storage: {
           local: {
@@ -1429,6 +1449,42 @@ function recordDeterministic(good) {
           (message) => message.type === "highlight-pdf-source"
         ) || null
     );
+    // The reload is unavoidable, so the panel says so once instead of letting
+    // the founder's "it refreshes" surprise happen silently.
+    const reloadNoticeShown = await page
+      .waitForFunction(
+        () =>
+          document.getElementById("toast")?.textContent ===
+          "Chrome reloads the PDF to highlight a source."
+      )
+      .then(() => true)
+      .catch(() => false);
+
+    // Nudging a selection fires pointerup repeatedly. Each one used to cost a
+    // reload; a trailing settle window collapses them into the range the user
+    // stopped on.
+    const beforeNudges = await page.evaluate(
+      () =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "highlight-pdf-source"
+        ).length
+    );
+    await page.evaluate(() => {
+      const root = document.querySelector("[data-answer-content]");
+      for (let index = 0; index < 3; index++) {
+        root.dispatchEvent(
+          new PointerEvent("pointerup", { bubbles: true, button: 0 })
+        );
+      }
+    });
+    await page.waitForTimeout(900);
+    const nudgeHighlights = await page.evaluate(
+      (count) =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "highlight-pdf-source"
+        ).length - count,
+      beforeNudges
+    );
 
     await page.evaluate(() => {
       const url =
@@ -1442,6 +1498,34 @@ function recordDeterministic(good) {
     const samePdfStayedValid = await page.evaluate(
       () => document.getElementById("notice")?.hidden === true
     );
+
+    // Occluding the side panel is not a request to touch the PDF. Clearing
+    // here used to navigate the tab, which reloaded the document and threw the
+    // viewer back to page 1 every time the panel lost visibility.
+    const clearCountBeforeHide = await page.evaluate(() => {
+      const count = window.__pdfRuntimeMessages.filter(
+        (message) => message.type === "clear-pdf-source-highlight"
+      ).length;
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "hidden",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      return count;
+    });
+    await page.waitForTimeout(20);
+    const clearsWhileHidden = await page.evaluate((count) => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "visible",
+      });
+      document.dispatchEvent(new Event("visibilitychange"));
+      return (
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "clear-pdf-source-highlight"
+        ).length - count
+      );
+    }, clearCountBeforeHide);
 
     const clearCountBefore = await page.evaluate(
       () =>
@@ -1490,8 +1574,10 @@ function recordDeterministic(good) {
     });
     await page.waitForTimeout(0);
 
-    // Closing the side panel clears an owned PDF fragment through the
-    // background worker before the panel document disappears.
+    // Closing the side panel hands the owned fragment to the background worker
+    // before the panel document disappears — but only to clean the URL. The
+    // clear carries no reload request, so the PDF the user is reading stays
+    // exactly where it is and keeps its highlight until its next load.
     await selectPdfAnswer();
     const closeClearCountBefore = await page.evaluate(
       () =>
@@ -1586,14 +1672,20 @@ function recordDeterministic(good) {
         expectedStart + "durable efficiency gain".length &&
       result.tabMessageCount === 0 &&
       samePdfStayedValid &&
+      reloadNoticeShown &&
+      nudgeHighlights === 1 &&
+      clearsWhileHidden === 0 &&
       clearMessage?.type === "clear-pdf-source-highlight" &&
       clearMessage?.tabId === 91 &&
       clearMessage?.url ===
         "https://docs.example/reports/process.pdf#page=3" &&
+      // The button is the only clear allowed to reload the viewer.
+      clearMessage?.reload === true &&
       closeClearMessage?.type === "clear-pdf-source-highlight" &&
       closeClearMessage?.tabId === 91 &&
       closeClearMessage?.url ===
         "https://docs.example/reports/process.pdf#page=3" &&
+      closeClearMessage?.reload === false &&
       result.clearCount === clearCountAtNavigation &&
       result.clearCount === 3 &&
       result.cancelCount === 1 &&
@@ -1607,10 +1699,104 @@ function recordDeterministic(good) {
         `range=${firstHighlight?.start}/${firstHighlight?.end}, ` +
         `samePdf=${samePdfStayedValid}, clears=${result.clearCount}, ` +
         `preclear=${clearCountBeforeAttribution}, ` +
+        `notice=${reloadNoticeShown}, nudges=${nudgeHighlights}, ` +
+        `hiddenClears=${clearsWhileHidden}, ` +
         `cancels=${result.cancelCount}, ` +
         `tabMessages=${result.tabMessageCount}`
     );
     recordDeterministic(good);
+
+    // Switching tabs must leave the PDF alone as well. Re-seed the panel, own
+    // a fragment again, then activate a different tab: the panel drops the
+    // highlight and invalidates the pending operation without ever asking the
+    // worker to clear — a clear would navigate a tab the user just left.
+    await page.evaluate(
+      ({ source, sourceUrl }) => {
+        window.__pdfRuntimeListeners[0]?.({
+          type: "selection-captured",
+          captureId: "pdf-seed-2",
+          capturedAt: Date.now(),
+          tabId: 91,
+          windowId: 12,
+          frameId: 0,
+          sourceType: "chrome-pdf",
+          url: sourceUrl,
+          text: source,
+          error: null,
+        });
+      },
+      {
+        source:
+          "Quarterly analysis compares the baseline and revised process " +
+          "across three facilities. After controlled trials and independent " +
+          "checks, the report confirms a durable efficiency gain for every " +
+          "monitored production line. Follow-up measurements remained stable.",
+        sourceUrl: "https://docs.example/reports/process.pdf#page=3",
+      }
+    );
+    // The chat for this PDF is still cached from the turn above, so the panel
+    // may restore it instead of offering the starter again.
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') ||
+        document.getElementById("summarize-starter")
+    );
+    const needsTurn = await page.evaluate(
+      () => !document.querySelector('[data-answer-status="ready"]')
+    );
+    if (needsTurn) {
+      await page.locator("#summarize-starter").click();
+      await page.waitForFunction(() =>
+        document.querySelector('[data-answer-status="ready"]')
+      );
+    }
+    await selectPdfAnswer();
+    const switchCounts = await page.evaluate(() => ({
+      clears: window.__pdfRuntimeMessages.filter(
+        (message) => message.type === "clear-pdf-source-highlight"
+      ).length,
+      cancels: window.__pdfRuntimeMessages.filter(
+        (message) => message.type === "cancel-pdf-source-operation"
+      ).length,
+    }));
+    await page.evaluate(() => {
+      for (const listener of window.__pdfTabActivatedListeners) {
+        listener({ tabId: 555, windowId: 12 });
+      }
+    });
+    await page.waitForFunction(
+      (count) =>
+        window.__pdfRuntimeMessages.filter(
+          (message) => message.type === "cancel-pdf-source-operation"
+        ).length > count,
+      switchCounts.cancels
+    );
+    await page.waitForTimeout(50);
+    const afterSwitch = await page.evaluate(
+      (counts) => ({
+        clears:
+          window.__pdfRuntimeMessages.filter(
+            (message) => message.type === "clear-pdf-source-highlight"
+          ).length - counts.clears,
+        cancels:
+          window.__pdfRuntimeMessages.filter(
+            (message) => message.type === "cancel-pdf-source-operation"
+          ).length - counts.cancels,
+        messageCount:
+          document.querySelectorAll("[data-answer-content]").length,
+      }),
+      switchCounts
+    );
+    const switchGood =
+      afterSwitch.clears === 0 &&
+      afterSwitch.cancels === 1 &&
+      afterSwitch.messageCount === 0;
+    console.log(
+      `  [tab switch leaves the PDF untouched] ${switchGood ? "PASS" : "FAIL"}` +
+        ` — clears=${afterSwitch.clears}, cancels=${afterSwitch.cancels}, ` +
+        `messages=${afterSwitch.messageCount}`
+    );
+    recordDeterministic(switchGood);
   } catch (error) {
     console.log(
       `\n### Native PDF side-panel fixture\n  FAIL — ${String(error.message).split("\n")[0]}`

@@ -415,7 +415,7 @@ highlight can still be cleared even though the frame holds no capture ID.
 | panel → content frame | `highlight` | `captureId`, `highlightId`, `start`, `end`, cached `document` for reload recovery, targeted `frameId` |
 | panel → content frame | `clear-highlight` | `captureId`, optional owning `highlightId`, targeted `frameId` |
 | panel → background | `highlight-pdf-source` | PDF tab/URL, canonical document, resolved `start` and `end` |
-| panel → background | `clear-pdf-source-highlight` | PDF tab/URL |
+| panel → background | `clear-pdf-source-highlight` | PDF tab/URL, and `reload` — true only for the explicit Clear button |
 | panel → background | `cancel-pdf-source-operation` | PDF tab ID whose pending navigation must be invalidated |
 
 ## Native PDF attribution
@@ -426,12 +426,35 @@ builds a standard PDF text fragment with bounded prefix/suffix context. Long
 spans use separate bounded start and end text, preventing unbounded navigation
 URLs. Fragment grammar punctuation is percent-encoded.
 
-Chrome's PDF viewer recognizes `#:~:text=` only during viewer load. The worker
-therefore updates the existing PDF tab, waits for that navigation to commit,
-then reloads it once. PDFium highlights the matched text and scrolls to it.
-Repeated clicks replace the prior directive without a preliminary clear/reload;
-the Clear action removes only the text directive and preserves normal
-`#page`/`#zoom` state. Text-fragment and viewer-anchor URL changes do not
+Chrome's PDF viewer recognizes `#:~:text=` only during viewer load, so one
+reload per attribution click is unavoidable. Nothing else is. The viewer's top
+frame is an ordinary scriptable HTML document with no embed, no subframes, and
+no viewer API, so the worker rewrites the tab's URL with an injected
+`history.replaceState` — no load and no session-history entry — and then reloads
+once. PDFium highlights the matched text and scrolls to it. `chrome.tabs.update`
+remains only as a fallback for tabs that cannot be injected, and it is the one
+path that still costs a Back entry. The panel names the reload in a one-time
+toast the first time a PDF attribution navigates, and settles rapid answer-text
+selection changes for 400 ms so adjusting a selection cannot queue several
+reloads.
+
+Repeated clicks replace the prior directive without a preliminary clear/reload.
+The worker skips the whole operation when the fragment it last applied to that
+tab is already the requested one; that record lives in `chrome.storage.session`,
+keyed per tab and dropped when the tab closes, because an in-memory one would
+not survive service-worker suspension and every post-suspension click would
+reload again. It is never compared against the tab's live URL: Chrome strips the
+`:~:` directive from both `location.href` and `tabs.url` once it consumes it, so
+a live-URL comparison can never match.
+
+Clearing has two costs. The default clear — panel close, panel occlusion, a
+replaced capture, a cleared chat — only rewrites the URL back to its
+fragment-free form, preserving normal `#page`/`#zoom` state; the highlight
+PDFium already painted stays on screen until the document's next natural load,
+and the user's reading position is left alone. Only the explicit Clear button
+passes `reload: true`, because Chrome offers no way to unpaint a text fragment
+short of loading the file again. Panel occlusion and tab activation send nothing
+to a PDF tab at all. Text-fragment and viewer-anchor URL changes do not
 invalidate the capture, while a different path or query does. A genuine
 navigation drops highlight ownership without issuing a PDF clear, which would
 otherwise navigate the user back to a document they left.
@@ -443,9 +466,7 @@ Scanned/image-only PDFs require OCR. Full-PDF source text comes from PDFium's
 own selection model, keeping generation/heatmap offsets aligned with the native
 viewer used for attribution. Context around a source span disambiguates most
 repeated phrases, but completely identical repeated passages cannot be
-guaranteed. Each PDF fragment update also creates a session-history entry:
-Chrome exposes tab navigation and reload, but no replace-in-place API for its
-protected viewer.
+guaranteed.
 
 ## Lifecycle and non-goals
 

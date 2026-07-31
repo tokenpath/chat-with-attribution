@@ -38,8 +38,8 @@ if (missingScripts.length > 0) {
   );
 } else {
   const controller = new PanelController();
-  const clearHighlightsWhenHidden = () => {
-    if (document.visibilityState === "hidden") controller.clearHighlights();
+  const releaseHighlightsWhenHidden = () => {
+    if (document.visibilityState === "hidden") controller.handlePanelHidden();
   };
 
   // pagehide covers every side-panel teardown Chrome fires; the deprecated
@@ -47,7 +47,7 @@ if (missingScripts.length > 0) {
   window.addEventListener("pagehide", () => controller.dispose(), {
     once: true,
   });
-  document.addEventListener("visibilitychange", clearHighlightsWhenHidden);
+  document.addEventListener("visibilitychange", releaseHighlightsWhenHidden);
 
   const initialized = controller.init().catch(() => undefined);
   root.render(

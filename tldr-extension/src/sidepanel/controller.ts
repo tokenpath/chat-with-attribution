@@ -217,6 +217,7 @@ export class PanelController {
   private highlightEpoch = 0;
   private highlightedTarget: ActiveHighlight | null = null;
   private pendingPdfHighlight: ActiveHighlight | null = null;
+  private pdfReloadNoticeShown = false;
   private pendingSubmission: string | null = null;
   private messageSequence = 0;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -483,7 +484,19 @@ export class PanelController {
             sourceType: this.sourceType,
             url: this.sourceUrl,
           });
-    void this.clearActiveHighlight(fallback);
+    // The one PDF clear allowed to reload: the user asked for the highlight to
+    // go away, and Chrome offers no other way to unpaint a text fragment.
+    void this.clearActiveHighlight(fallback, true);
+  };
+
+  // The side panel was occluded (another tab took the window's panel slot, or
+  // Chrome hid it). Page highlights are cheap to re-apply, so they still go;
+  // a PDF highlight stays exactly as it is, because clearing it would have to
+  // reload the user's document behind their back. It remains owned, so the
+  // "Clear highlight" button still works when the panel comes back.
+  handlePanelHidden = () => {
+    if (this.sourceType === "chrome-pdf") return;
+    this.clearHighlights();
   };
 
   // Stops the request in flight without touching the conversation or the
@@ -692,6 +705,13 @@ export class PanelController {
 
     if (source.sourceType === "chrome-pdf") {
       this.pendingPdfHighlight = { id: highlightId, source };
+      // Chrome applies a `#:~:text=` directive only while the PDF viewer
+      // loads, so every PDF attribution costs one reload. Say so once per
+      // panel session rather than letting the reload look like a bug.
+      if (!this.pdfReloadNoticeShown) {
+        this.pdfReloadNoticeShown = true;
+        this.showToast("Chrome reloads the PDF to highlight a source.");
+      }
     }
     try {
       const response =
@@ -1864,7 +1884,11 @@ export class PanelController {
 
   private clearHighlightTarget(
     target: HighlightSource | null,
-    highlightId: string | null = null
+    highlightId: string | null = null,
+    // Only the explicit "Clear highlight" button passes true. Chrome can
+    // unpaint a PDF text fragment only by loading the document again, so every
+    // other clear settles for a clean URL and leaves the paint alone.
+    reloadPdf = false
   ) {
     if (!target || target.tabId == null) return Promise.resolve();
     if (target.sourceType === "chrome-pdf") {
@@ -1874,6 +1898,7 @@ export class PanelController {
           tabId: target.tabId,
           url: target.url,
           highlightId,
+          reload: reloadPdf,
         })
         .then(() => undefined)
         .catch(() => undefined);
@@ -1892,12 +1917,16 @@ export class PanelController {
       .catch(() => undefined);
   }
 
-  private async clearActiveHighlight(fallback: HighlightSource | null = null) {
+  private async clearActiveHighlight(
+    fallback: HighlightSource | null = null,
+    reloadPdf = false
+  ) {
     const active = this.highlightedTarget;
     this.highlightedTarget = null;
     await this.clearHighlightTarget(
       active?.source || fallback,
-      active?.id || null
+      active?.id || null,
+      reloadPdf
     );
   }
 
@@ -1906,6 +1935,26 @@ export class PanelController {
     const pendingPdfHighlight = this.pendingPdfHighlight;
     this.pendingPdfHighlight = null;
     void this.clearActiveHighlight(pendingPdfHighlight?.source || null);
+  }
+
+  // Drops highlight ownership without sending anything that could touch the
+  // source tab. Used wherever the panel is leaving a document behind rather
+  // than being asked to clean it up: a PDF clear reaches the tab, and the
+  // user did not ask for their PDF to be disturbed.
+  private cancelHighlightWithoutClearing() {
+    this.highlightEpoch++;
+    this.pendingPdfHighlight = null;
+    this.highlightedTarget = null;
+    if (this.sourceType === "chrome-pdf" && this.tabId != null) {
+      // Not a tab operation: it only invalidates a navigation this panel may
+      // still have in flight in the worker.
+      void chrome.runtime
+        .sendMessage({
+          type: "cancel-pdf-source-operation",
+          tabId: this.tabId,
+        })
+        .catch(() => undefined);
+    }
   }
 
   private cancelActiveWork() {
@@ -1977,7 +2026,14 @@ export class PanelController {
     await this.persistCurrentPageChat();
     if (navigationEpoch !== this.navigationEpoch) return;
 
-    this.cancelHighlightAndClear();
+    // Switching tabs is not a request to touch the tab being left behind. A
+    // PDF clear used to navigate that tab, which reloaded the PDF — and reset
+    // its viewer to page 1 — every time the user glanced at another tab.
+    if (this.sourceType === "chrome-pdf") {
+      this.cancelHighlightWithoutClearing();
+    } else {
+      this.cancelHighlightAndClear();
+    }
     this.cancelActiveWork();
     this.invalidated = true;
     this.context = "";
@@ -2066,23 +2122,12 @@ export class PanelController {
     this.history = [];
     this.setAutoSummaryRequest(false);
     this.contextVersion++;
-    this.highlightEpoch++;
-    const pendingPdfHighlight = this.pendingPdfHighlight;
-    this.pendingPdfHighlight = null;
     if (clearHighlight) {
-      void this.clearActiveHighlight(pendingPdfHighlight?.source || null);
+      this.cancelHighlightAndClear();
     } else {
       // The source tab has already left the captured document (or no longer
-      // exists). A PDF clear is itself a navigation, so never send it here.
-      this.highlightedTarget = null;
-      if (this.sourceType === "chrome-pdf" && this.tabId != null) {
-        void chrome.runtime
-          .sendMessage({
-            type: "cancel-pdf-source-operation",
-            tabId: this.tabId,
-          })
-          .catch(() => undefined);
-      }
+      // exists), so there is nothing of ours left to clean up there.
+      this.cancelHighlightWithoutClearing();
     }
     this.cancelActiveWork();
     this.update({

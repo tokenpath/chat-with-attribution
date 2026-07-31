@@ -12,12 +12,22 @@ let autoCommitTabUpdates = true;
 let detectedContentType = "text/html";
 let pendingTabCommit = null;
 let sendMessageImpl = () => Promise.resolve({ text: "Fable 5", error: null });
-let executeScriptImpl = (options) =>
-  Promise.resolve(
-    options?.func ? [{ result: detectedContentType }] : undefined
-  );
+// The in-place URL rewrite is the only injection that carries `args`; every
+// other executeScript in background.js probes the tab's MIME type.
+const isUrlRewrite = (options) =>
+  typeof options?.func === "function" &&
+  String(options.func).includes("replaceState");
+const defaultExecuteScript = (options) =>
+  isUrlRewrite(options)
+    ? Promise.resolve([{ result: true }])
+    : Promise.resolve(
+        options?.func ? [{ result: detectedContentType }] : undefined
+      );
+let executeScriptImpl = defaultExecuteScript;
 const tabUpdateListeners = new Set();
+const tabRemovedListeners = new Set();
 const tabUrls = new Map();
+const sessionStore = new Map();
 const contextMenuItems = new Map([
   [
     "tldr-capture",
@@ -182,6 +192,11 @@ const chrome = {
         tabUpdateListeners.delete(listener);
       },
     },
+    onRemoved: {
+      addListener(listener) {
+        tabRemovedListeners.add(listener);
+      },
+    },
   },
   scripting: {
     executeScript(options) {
@@ -194,9 +209,32 @@ const chrome = {
     },
   },
   storage: {
+    // Backed by a real store: the applied-PDF-URL short-circuit has to survive
+    // a service-worker restart, which is what makes it worth persisting.
     session: {
+      get(keys) {
+        calls.push(["storage.session.get", keys]);
+        const requested = Array.isArray(keys) ? keys : [keys];
+        return Promise.resolve(
+          Object.fromEntries(
+            requested
+              .filter((key) => sessionStore.has(key))
+              .map((key) => [key, sessionStore.get(key)])
+          )
+        );
+      },
       set(value) {
         calls.push(["storage.session.set", value]);
+        for (const [key, stored] of Object.entries(value)) {
+          sessionStore.set(key, stored);
+        }
+        return Promise.resolve();
+      },
+      remove(keys) {
+        calls.push(["storage.session.remove", keys]);
+        for (const key of Array.isArray(keys) ? keys : [keys]) {
+          sessionStore.delete(key);
+        }
         return Promise.resolve();
       },
     },
@@ -204,17 +242,24 @@ const chrome = {
 };
 
 const source = readFileSync(join(__dirname, "..", "background.js"), "utf8");
-const sandbox = {
-  chrome,
-  console: { error() {}, warn() {} },
-  Date,
-  Promise,
-  Math,
-  URL,
-  clearTimeout,
-  setTimeout,
-};
-vm.runInNewContext(source, sandbox);
+// MV3 suspends an idle service worker within about 30 seconds and re-runs this
+// file on the next event, so "start a fresh worker over the same session
+// storage" is an ordinary occurrence, not an exotic one.
+function startWorker() {
+  const context = {
+    chrome,
+    console: { error() {}, warn() {} },
+    Date,
+    Promise,
+    Math,
+    URL,
+    clearTimeout,
+    setTimeout,
+  };
+  vm.runInNewContext(source, context);
+  return context;
+}
+const sandbox = startWorker();
 
 assert.ok(clickHandler, "context-menu listener registered");
 assert.ok(actionClickHandler, "toolbar-action listener registered");
@@ -586,10 +631,7 @@ assert.ok(installedHandler, "context-menu installer registered");
   await newerMimeCapture;
   mimeResolvers[0]([{ result: "text/html" }]);
   await olderMimeCapture;
-  executeScriptImpl = (options) =>
-    Promise.resolve(
-      options?.func ? [{ result: detectedContentType }] : undefined
-    );
+  executeScriptImpl = defaultExecuteScript;
 
   const mimeRaceCalls = calls.slice(mimeRaceStart);
   const mimeRaceMessages = mimeRaceCalls.filter(
@@ -884,10 +926,9 @@ assert.ok(installedHandler, "context-menu installer registered");
   assert.ok(embeddedPdfSeed.error);
   console.log("PASS: embedded PDFs never navigate their outer HTML tab");
 
-  autoCommitTabUpdates = false;
   tabUrls.set(120, "https://example.com/reports/dummy.pdf");
   const pdfHighlightStart = calls.length;
-  const pdfHighlight = dispatchRuntimeMessage({
+  const highlightResponse = await dispatchRuntimeMessage({
     type: "highlight-pdf-source",
     tabId: 120,
     url: "https://example.com/reports/dummy.pdf",
@@ -895,31 +936,41 @@ assert.ok(installedHandler, "context-menu installer registered");
     start: 6,
     end: 9,
   });
-  await new Promise((resolve) => setImmediate(resolve));
-  const beforeCommit = calls.slice(pdfHighlightStart);
-  const update = beforeCommit.find(([name]) => name === "tabs.update");
+  assert.strictEqual(highlightResponse?.ok, true);
+  const highlightCalls = calls.slice(pdfHighlightStart);
+  const rewrite = highlightCalls.find(
+    ([name, options]) => name === "scripting.executeScript" && isUrlRewrite(options)
+  );
   assert.strictEqual(
-    update?.[2]?.url,
+    rewrite?.[1]?.args?.[0],
     "https://example.com/reports/dummy.pdf#:~:text=Dummy-,PDF,-file"
   );
   assert.strictEqual(
-    beforeCommit.some(([name]) => name === "tabs.reload"),
+    highlightCalls.some(([name]) => name === "tabs.update"),
     false,
-    "PDF reload must wait until the text-fragment URL commits"
+    "a PDF fragment is replaced in place, never navigated: tabs.update would " +
+      "add a Back entry for every attribution click"
   );
-  assert.ok(pendingTabCommit, "PDF URL commit is being observed");
-  pendingTabCommit();
-  pendingTabCommit = null;
-  const highlightResponse = await pdfHighlight;
-  assert.strictEqual(highlightResponse?.ok, true);
-  const afterCommit = calls.slice(pdfHighlightStart);
+  assert.strictEqual(
+    highlightCalls.filter(([name]) => name === "tabs.reload").length,
+    1,
+    "the single reload is what makes Chrome apply the text fragment"
+  );
   assert.ok(
-    afterCommit.findIndex(([name]) => name === "tabs.reload") >
-      afterCommit.findIndex(([name]) => name === "tabs.update"),
-    "committed text-fragment navigation reloads the native PDF viewer"
+    highlightCalls.findIndex(([name]) => name === "tabs.reload") >
+      highlightCalls.findIndex(
+        ([name, options]) =>
+          name === "scripting.executeScript" && isUrlRewrite(options)
+      ),
+    "the URL must carry the directive before the viewer reloads"
+  );
+  assert.strictEqual(
+    sessionStore.get("pdfApplied:120"),
+    "https://example.com/reports/dummy.pdf#:~:text=Dummy-,PDF,-file",
+    "the applied URL is persisted, not held in worker memory"
   );
   console.log("PASS: PDF attribution builds contextual native text fragments");
-  console.log("PASS: PDF highlight reload waits for URL commit");
+  console.log("PASS: PDF highlights replace the URL in place and reload once");
 
   const repeatedHighlightStart = calls.length;
   const repeatedHighlightResponse = await dispatchRuntimeMessage({
@@ -936,10 +987,41 @@ assert.ok(installedHandler, "context-menu installer registered");
       .slice(repeatedHighlightStart)
       .some(([name]) => name === "tabs.update" || name === "tabs.reload"),
     false,
-    "clicking the already-active PDF attribution must not wait or reload again"
+    "clicking the already-active PDF attribution must not reload again"
   );
   console.log("PASS: repeated PDF attribution is an immediate no-op");
 
+  // The tab's own URL reads back without the directive Chrome consumed, so the
+  // short-circuit has only the stored record to go on — and that record has to
+  // outlive the worker that wrote it.
+  tabUrls.set(120, "https://example.com/reports/dummy.pdf");
+  startWorker();
+  const restartedHighlightStart = calls.length;
+  const restartedHighlightResponse = await dispatchRuntimeMessage({
+    type: "highlight-pdf-source",
+    tabId: 120,
+    url: "https://example.com/reports/dummy.pdf",
+    document: "Dummy PDF file",
+    start: 6,
+    end: 9,
+  });
+  assert.strictEqual(restartedHighlightResponse?.ok, true);
+  assert.strictEqual(
+    calls
+      .slice(restartedHighlightStart)
+      .some(([name]) => name === "tabs.reload"),
+    false,
+    "a suspended service worker must not reload an already-applied fragment"
+  );
+  console.log("PASS: the applied-fragment short-circuit survives suspension");
+
+  let resolveRewrite = null;
+  executeScriptImpl = (options) => {
+    if (!isUrlRewrite(options)) return defaultExecuteScript(options);
+    return new Promise((resolve) => {
+      resolveRewrite = () => resolve([{ result: true }]);
+    });
+  };
   const cancelledHighlightStart = calls.length;
   const cancelledHighlight = dispatchRuntimeMessage({
     type: "highlight-pdf-source",
@@ -950,14 +1032,14 @@ assert.ok(installedHandler, "context-menu installer registered");
     end: 5,
   });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.ok(pendingTabCommit, "a replacement PDF URL is pending");
+  assert.ok(resolveRewrite, "a replacement PDF URL is pending");
   const cancelResponse = await dispatchRuntimeMessage({
     type: "cancel-pdf-source-operation",
     tabId: 120,
   });
   assert.strictEqual(cancelResponse?.ok, true);
-  pendingTabCommit();
-  pendingTabCommit = null;
+  resolveRewrite();
+  resolveRewrite = null;
   const cancelledHighlightResponse = await cancelledHighlight;
   assert.strictEqual(cancelledHighlightResponse?.ok, false);
   assert.strictEqual(
@@ -968,6 +1050,51 @@ assert.ok(installedHandler, "context-menu installer registered");
     "a cancelled PDF operation must never perform its late reload"
   );
   console.log("PASS: cancelled PDF attribution cannot reload late");
+
+  // Restricted tabs reject injection. The fallback is the old behaviour: a
+  // real navigation, waited out, then one reload.
+  executeScriptImpl = (options) =>
+    isUrlRewrite(options)
+      ? Promise.reject(new Error("Cannot access contents of the page"))
+      : defaultExecuteScript(options);
+  autoCommitTabUpdates = false;
+  const fallbackStart = calls.length;
+  const fallbackHighlight = dispatchRuntimeMessage({
+    type: "highlight-pdf-source",
+    tabId: 120,
+    url: "https://example.com/reports/dummy.pdf",
+    document: "Dummy PDF file",
+    start: 0,
+    end: 5,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const beforeCommit = calls.slice(fallbackStart);
+  assert.strictEqual(
+    beforeCommit.find(([name]) => name === "tabs.update")?.[2]?.url,
+    "https://example.com/reports/dummy.pdf#:~:text=Dummy,-PDF%20file"
+  );
+  assert.strictEqual(
+    beforeCommit.some(([name]) => name === "tabs.reload"),
+    false,
+    "PDF reload must wait until the text-fragment URL commits"
+  );
+  assert.ok(pendingTabCommit, "PDF URL commit is being observed");
+  pendingTabCommit();
+  pendingTabCommit = null;
+  const fallbackResponse = await fallbackHighlight;
+  assert.strictEqual(fallbackResponse?.ok, true);
+  const afterCommit = calls.slice(fallbackStart);
+  assert.ok(
+    afterCommit.findIndex(([name]) => name === "tabs.reload") >
+      afterCommit.findIndex(([name]) => name === "tabs.update"),
+    "committed text-fragment navigation reloads the native PDF viewer"
+  );
+  console.log("PASS: uninjectable PDF tabs fall back to navigate-then-reload");
+  console.log("PASS: PDF highlight reload waits for URL commit");
+
+  executeScriptImpl = defaultExecuteScript;
+  autoCommitTabUpdates = true;
+  tabUrls.set(120, "https://example.com/reports/dummy.pdf");
 
   const reservedText = "before A-B, C&D #100% wow! ('yes') *done* after";
   const reservedStart = reservedText.indexOf("A-B");
@@ -1054,25 +1181,74 @@ assert.ok(installedHandler, "context-menu installer registered");
   console.log("PASS: PDF fragments bound long spans and encode source grammar");
   console.log("PASS: PDF fragments preserve Unicode shaping and normalize lines");
 
-  autoCommitTabUpdates = true;
-  const pdfClearStart = calls.length;
-  const clearResponse = await dispatchRuntimeMessage({
+  // An implicit clear — panel close, a replaced capture, a cleared chat — only
+  // cleans the URL. The user did not ask for their PDF to be reloaded, and a
+  // reload would throw the viewer back to page 1.
+  const quietClearStart = calls.length;
+  const quietClearResponse = await dispatchRuntimeMessage({
     type: "clear-pdf-source-highlight",
     tabId: 120,
     url:
       "https://example.com/reports/dummy.pdf#page=1:~:text=Dummy-,PDF,-file",
   });
-  assert.strictEqual(clearResponse?.ok, true);
-  const clearCalls = calls.slice(pdfClearStart);
+  assert.strictEqual(quietClearResponse?.ok, true);
+  const quietClearCalls = calls.slice(quietClearStart);
   assert.strictEqual(
-    clearCalls.find(([name]) => name === "tabs.update")?.[2]?.url,
+    quietClearCalls.find(
+      ([name, options]) =>
+        name === "scripting.executeScript" && isUrlRewrite(options)
+    )?.[1]?.args?.[0],
+    "https://example.com/reports/dummy.pdf#page=1",
+    "clearing a PDF highlight preserves ordinary PDF anchors"
+  );
+  assert.strictEqual(
+    quietClearCalls.some(
+      ([name]) => name === "tabs.reload" || name === "tabs.update"
+    ),
+    false,
+    "closing the panel must not navigate or reload the PDF tab"
+  );
+  console.log("PASS: an implicit PDF clear performs no tab navigation");
+
+  // The explicit "Clear highlight" button is the documented exception: Chrome
+  // offers no way to unpaint a text fragment short of loading the file again.
+  const buttonClearStart = calls.length;
+  const buttonClearResponse = await dispatchRuntimeMessage({
+    type: "clear-pdf-source-highlight",
+    tabId: 120,
+    url:
+      "https://example.com/reports/dummy.pdf#page=1:~:text=Dummy-,PDF,-file",
+    reload: true,
+  });
+  assert.strictEqual(buttonClearResponse?.ok, true);
+  const buttonClearCalls = calls.slice(buttonClearStart);
+  assert.strictEqual(
+    buttonClearCalls.find(
+      ([name, options]) =>
+        name === "scripting.executeScript" && isUrlRewrite(options)
+    )?.[1]?.args?.[0],
     "https://example.com/reports/dummy.pdf#page=1"
   );
   assert.strictEqual(
-    clearCalls.filter(([name]) => name === "tabs.reload").length,
-    1
+    buttonClearCalls.filter(([name]) => name === "tabs.reload").length,
+    1,
+    "an explicit clear repaints the viewer, even though the URL is already bare"
   );
-  console.log("PASS: clearing a PDF highlight preserves ordinary PDF anchors");
+  assert.strictEqual(
+    buttonClearCalls.some(([name]) => name === "tabs.update"),
+    false
+  );
+  console.log("PASS: only the explicit Clear button reloads a PDF");
+
+  for (const listener of tabRemovedListeners) listener(120, {});
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(
+    sessionStore.has("pdfApplied:120"),
+    false,
+    "a closed tab must not leave a recycled id an applied-URL record"
+  );
+  console.log("PASS: closing a tab drops its applied-PDF-URL record");
+  tabUrls.set(120, "https://example.com/reports/dummy.pdf");
 
   tabUrls.set(120, "https://example.com/another-page");
   const stalePdfStart = calls.length;
@@ -1088,9 +1264,13 @@ assert.ok(installedHandler, "context-menu installer registered");
   assert.strictEqual(
     calls
       .slice(stalePdfStart)
-      .some(([name]) => name === "tabs.update"),
+      .some(
+        ([name, options]) =>
+          name === "tabs.update" ||
+          (name === "scripting.executeScript" && isUrlRewrite(options))
+      ),
     false,
-    "a stale PDF panel must never navigate back to its old document"
+    "a stale PDF panel must never navigate or rewrite its old document"
   );
   console.log("PASS: stale PDF attribution cannot restore a departed tab");
 
