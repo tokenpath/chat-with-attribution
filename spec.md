@@ -33,13 +33,17 @@ supporting source range, and scrolls there in the live page or PDF.
    page first. Sources at or below the concise-source cutoff show an “Already
    concise” note instead of generating, and the starter is suppressed while
    that note shows.
-4. Continue with follow-up questions in the same composer and attributed chat.
-   The composer stays usable while an answer streams; its submit button becomes
-   **Stop**, which cancels the request and keeps the partial answer marked
-   incomplete.
+4. Continue with follow-up questions in the same composer and attributed chat,
+   or tap one of at most two suggested questions above it. The composer stays
+   usable while an answer streams; its submit button becomes **Stop**, which
+   cancels the request and keeps the partial answer marked incomplete.
 5. Click an attributed phrase, open the answer's **Sources (n)** list, or select
    any text in a completed answer to highlight and center its supporting source
    text in the originating page frame or PDF.
+6. The header gear opens an in-panel **Settings** view over the conversation:
+   whether new pages are summarized automatically, which summary shape is the
+   default, whether follow-ups are suggested, and — collapsed — the summary
+   instructions themselves.
 
 ## Components
 
@@ -70,13 +74,14 @@ supporting source range, and scrolls there in the live page or PDF.
   hidden Blob-backed instance of Chrome's native viewer to obtain PDFium's
   searchable text.
 - **`src/sidepanel/app.tsx`** is a thin shell: it wires the controller snapshot
-  to the panel components, owns the empty-state **Summarize** starter, and
-  renders the dismissible notice and announcement regions.
+  to the panel components, owns the empty-state **Summarize** starter, assembles
+  the follow-up chip row from the depth ladder and the latest answer's saved
+  suggestions, and renders the dismissible notice and announcement regions.
 - **`src/sidepanel/components/panel/`** holds those components — `panel-header`
-  (theme, credits, clear highlight, clear chat), `auth-panel`, `source-card`,
-  `composer`, `answer-response` (attributed
+  (theme, credits, settings gear, clear highlight, clear chat), `auth-panel`,
+  `source-card`, `composer`, `answer-response` (attributed
   phrases, the **Sources** list, incomplete/unavailable states), `chat-message`,
-  and `error-boundary`.
+  `follow-up-chips`, `settings-view`, and `error-boundary`.
 - **`src/sidepanel/lib/answer-highlights.ts`** and
   **`src/sidepanel/hooks/use-answer-highlights.ts`** own the panel-side CSS
   custom highlights over attributable and hovered answer phrases;
@@ -89,7 +94,9 @@ supporting source range, and scrolls there in the live page or PDF.
 - **`sidepanel/panel.js`** and **`sidepanel/panel.css`** are generated,
   self-contained Vite assets loaded by the MV3 extension page.
 - **`sidepanel/panel-logic.js`** contains pure summary, Unicode-safe truncation,
-  and heatmap-to-source span-resolution helpers.
+  heatmap-to-source span-resolution, and follow-up-suggestion helpers: the tail
+  instruction, its parser, the verbatim-anchor gate, the coverage ranking, and
+  the depth ladder's fixed-chip rule.
 - **`sidepanel/tokenpath.js`** calls TokenPath directly with the API key in
   `chrome.storage.local`, streams messages-only generation, validates sparse
   heatmaps, and adapts their offset tables for browser use. It also enforces the
@@ -216,11 +223,17 @@ emoji while preserving repeated-string disambiguation.
 
 ## Summary and generation policy
 
-The summary pathway is reached from the **Summarize** starter and from a
-toolbar capture, which requests it automatically. That request is held on the
+The summary pathway is reached from the **Summarize** starter, from the depth
+ladder's follow-up chip, and from a toolbar capture, which requests it
+automatically. That request is held on the
 controller with the `contextVersion` it was made under and runs once, only when
 the panel is connected, idle, and still on that exact context; a tab switch,
-navigation, capture failure, or restored chat drops it. A disconnected panel
+navigation, capture failure, or restored chat drops it. `maybeRunAutoSummary`
+also drops it when **Summarize new pages automatically** is off, so a toolbar
+click then behaves exactly like a context-menu capture: the panel shows what it
+captured and waits. Switching that setting back on is deliberately not
+retroactive — it changes the next page rather than spending on the one already
+on screen. A disconnected panel
 keeps it pending and spends nothing until `connect()` succeeds. Captured
 sources of 24 whitespace-delimited words or fewer skip
 the model call and post an “Already concise” note naming the source kind
@@ -228,21 +241,31 @@ the model call and post an “Already concise” note naming the source kind
 CJK-dominant sources are measured by characters (48) rather than whitespace
 tokens, so multi-paragraph CJK prose is not mistaken for a one-word selection.
 
-Longer sources all get the same request. `buildSummaryRequest` takes only the
-captured text and returns one prompt and one ceiling; there is no length
-preference, no persisted setting, and no per-source tier:
+Longer sources get one of two shapes, chosen by preference rather than by
+source kind. `buildSummaryRequest` takes the captured text plus the active
+preset and any custom instructions, and returns one prompt and one ceiling;
+there is no per-source tier and no length slider:
 
-- The prompt asks for exactly 3 concise Markdown bullet points, most important
+- The **3 bullets** prompt — the default — asks for exactly 3 concise Markdown
+  bullet points, most important
   takeaway first, one sentence each, covering only what someone needs to
   understand the source quickly. "Exactly 3" rather than a range: a range makes
   models drift to its upper bound and makes the 360px panel's height jump
-  between summaries. The suffix forbids a title, a `TL;DR:` label, a preamble,
-  an explanation, or a closing comment, and asks the model to finish cleanly.
+  between summaries.
+- The **Detailed** prompt asks for a short opening paragraph naming the source
+  and its central claim, then Markdown sections with bullets covering the main
+  claims, the supporting details and figures behind them, the qualifications
+  and limits the source itself states, and the conclusions or open questions it
+  ends on — omitting a section the source does not address rather than padding
+  it. Detailed is a different shape, not merely a longer one.
+- The suffix is shared by both and by any custom instructions. It forbids a
+  title, a `TL;DR:` label, a preamble, an explanation, or a closing comment,
+  and asks the model to finish cleanly.
 - The ceiling is 2048 output tokens — TokenPath's own `max_output_tokens`
   maximum — for every generation path: summaries and ordinary chat turns,
   page, PDF, selection, and video transcript alike. Generation is billed from
   the input text, so a lower ceiling saves nothing and only risks stopping an
-  answer mid-sentence.
+  answer mid-sentence. Detailed therefore costs exactly what 3 bullets costs.
 
 The ceiling is headroom, not a target length; the prompt controls concision
 without cutting off a sentence. An answer that produces every token it was
@@ -254,6 +277,119 @@ partial text but are deliberately left unattributed. The terminal `done.answer`
 is preserved unchanged for display, history, and attribution. There is no
 client-side clipping or extractive fallback. Document and conversation limits
 are counted by Unicode code point so truncation does not split surrogate pairs.
+
+## Settings
+
+The header gear opens an in-panel Settings view that replaces the conversation
+area; the back arrow and Escape both return, restoring focus to the gear, and
+a new message pulls the panel back to the conversation on its own. The gear
+carries `aria-expanded`, and the view works at 320px in both themes. Nothing
+else in the panel moves: the credits badge, theme toggle, source card,
+attribution states, click guide, **Sources** toggle, **Clear highlight**,
+**Clear chat**, **Disconnect**, the Build-with-TokenPath footer, toasts, error
+bands, and notices are untouched.
+
+Four preferences live in `localStorage` beside the theme, and every read is
+defensive — an unreadable or hand-edited value falls back to the default:
+
+| Setting | Key | Default |
+|---|---|---|
+| Summarize new pages automatically | `tldr-auto-summarize` | on |
+| Default summary (`3 bullets` / `Detailed`) | `tldr-summary-preset` | `bullets` |
+| Suggest follow-up questions | `tldr-suggest-followups` | on |
+| Summary instructions | `tldr-summary-instructions` | unset |
+
+Summary instructions are advanced and collapsed by default. The field is
+preloaded with the editable half of the prompt currently in force, so the user
+edits the real instructions rather than an empty box. Once edited, a
+**Customized** badge appears, a one-tap **Reset** restores the preset text, and
+the `3 bullets` / `Detailed` control greys out under the note "Custom
+instructions replace the preset." The value is bounded to 2,000 characters on
+write *and* on read, and it replaces only the preset's wording: the summary
+suffix and the suggestions tail are always appended after it and are not
+editable. One caveat sits under the field, because it is true: instructions
+that pull answers away from the source text can weaken source mapping.
+
+The view closes with the credit rule stated plainly — automatic summaries spend
+credits like any question, and pages with a saved chat reopen it instead of
+re-summarizing.
+
+## Suggested follow-ups
+
+Generation is billed from the input text, so a second `/v1/generate` call would
+re-pay for the whole captured document to produce two questions. Suggestions
+therefore ride along on the answer's own call: output is free, so asking for
+them costs nothing.
+
+Every generation path — summaries and ordinary turns alike — appends one fixed
+tail after the question (or after the summary prompt and its suffix) when the
+setting is on. The tail is added to the outgoing user message only:
+conversation history, the cached chat, and the heatmap request all keep the
+question the user actually asked. It requests four candidates in exactly this
+block:
+
+```text
+<<<SUGGESTIONS
+Q: <question strictly answerable from the provided text, about material not already covered by this answer>
+A: "<verbatim quote of at most 10 words from the provided text that the answer to this question would cite>"
+Q: ...
+A: "..."
+SUGGESTIONS>>>
+```
+
+`parseSuggestions` takes the last such block as authoritative and strips every
+complete block, any stray closing marker, and an opener the stream never closed
+— then trims the whitespace that removal left behind. An answer with no block
+is returned byte for byte, because the terminal `done.answer` is canonical.
+The same strip runs on each streaming delta, including a delta that stops
+part-way through the opening marker, so the marker is never rendered. The
+stripped answer is what is displayed, added to history, sent to attribution,
+and cached; a malformed or absent block simply yields no suggestions.
+
+Two client-side gates decide what survives, both fail-closed:
+
+1. **Groundedness.** The anchor quote must appear in the captured document
+   verbatim and case-sensitively once Unicode whitespace runs are collapsed on
+   both sides — the document inserts block separators the model will have
+   written as spaces. A quote that is not found drops its whole candidate, so a
+   fabricated citation can never become a chip. The match also yields the
+   anchor's real character bounds in the document.
+2. **Coverage.** When the answer's heatmap arrives, its attributed phrases are
+   resolved to their supporting passages with the same helpers the underlined
+   phrases and the **Sources** list use, and the union is the region the answer
+   already drew on. An anchor overlapping that region is disqualified outright;
+   the survivors are ranked by distance outside it and from each other, and the
+   best two are kept. Without a usable heatmap the ranking degrades to a
+   positional spread biased toward the later part of the document, which a
+   summary is least likely to have reached.
+
+At most two chips render, above the composer, behind an "Ask a follow-up"
+label. They are ordinary buttons — Tab reaches them, Enter activates them — and
+the row is hidden entirely when the setting is off or nothing survived.
+Clicking a generated chip submits that question as a normal turn. Only the
+chosen question text is persisted, as an optional field on the cached answer
+message, so a restored chat shows its chips without re-deriving anything; the
+anchors and rejected candidates are working state and are never written.
+
+### Depth ladder and the Summarize starter
+
+Slot 1 is a fixed rung rather than a generated question when this chat has one
+left to climb, and generated candidates fill whatever remains:
+
+| This chat | Slot 1 |
+|---|---|
+| No summary yet | "Summarize this page" (adapting to PDF, video, or selection) |
+| Latest summary was the 3-bullet default | "Give me a detailed summary" |
+| Detailed already produced, or the default preset is Detailed, or custom instructions are in force | none — both slots are generated |
+
+The detailed rung runs the Detailed prompt through the ordinary summary
+pathway: no echoed question, normal attribution, the same ceiling.
+
+The empty-state **Summarize** starter keeps working and stands down only when
+the chip row is already offering a summarize chip, which happens when automatic
+summaries are switched off and the capture is therefore waiting. That is the
+same suppression the “Already concise” note uses, and both conditions apply
+independently.
 
 ## Streaming generation and just-in-time heatmap attribution
 
@@ -486,6 +622,10 @@ Chats are persisted per page in IndexedDB (`tokenpath-page-chats`, schema
 version 2: one record per page key, storing each distinct captured document once
 and referencing it from the messages that were attributed against it). A record
 holds the captured context, message list, bounded history, and cached heatmaps.
+An answer message may additionally carry the follow-up questions chosen for it
+and the depth rung a summary was produced at; both are optional additive
+fields, so records written before they existed restore unchanged and the schema
+version does not move.
 Reopening or returning to a page restores it without an API call; a fresh
 capture whose content differs significantly from the cached one — judged by
 sampled 5-word shingles and a length ratio — deletes the record and posts a
@@ -498,6 +638,11 @@ those records hold captured page and PDF text.
 The panel is wrapped in a React error boundary, and `main.tsx` renders an
 explicit failure state if `panel-logic.js` or `tokenpath.js` did not load, so
 neither case can leave a blank side panel.
+
+Follow-up chips deliberately carry no video timestamp. The transcript-offset to
+cue table lives in the content script and never crosses the frame boundary, so
+labelling a chip "· 4:12" would mean a new cross-boundary message for a
+decoration; the chips ship without it.
 
 Out of scope for this version: Readability/article-only extraction, cross-frame
 page concatenation, shadow-root traversal, unmounted virtualized content, OCR,

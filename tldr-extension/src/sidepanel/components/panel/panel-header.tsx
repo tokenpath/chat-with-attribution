@@ -2,11 +2,14 @@ import {
   EraserIcon,
   MonitorIcon,
   MoonIcon,
+  SettingsIcon,
   SunIcon,
   Trash2Icon,
 } from "lucide-react";
+import type { RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import type { PanelController, PanelSnapshot } from "@/controller";
+import { cn } from "@/lib/utils";
 
 function TokenPathWordmark() {
   return (
@@ -39,9 +42,11 @@ function nextThemeLabel(snapshot: PanelSnapshot) {
 
 export function PanelHeader({
   controller,
+  settingsButtonRef,
   snapshot,
 }: {
   controller: PanelController;
+  settingsButtonRef?: RefObject<HTMLButtonElement | null>;
   snapshot: PanelSnapshot;
 }) {
   const chatIsEmpty = snapshot.messages.every(
@@ -88,6 +93,22 @@ export function PanelHeader({
           variant="ghost"
         >
           <ThemeIcon snapshot={snapshot} />
+        </Button>
+        <Button
+          aria-controls="settings"
+          aria-expanded={snapshot.settingsOpen}
+          aria-label={snapshot.settingsOpen ? "Close settings" : "Open settings"}
+          className={cn(
+            snapshot.settingsOpen && "bg-accent text-accent-foreground"
+          )}
+          id="settings-toggle"
+          onClick={controller.toggleSettings}
+          ref={settingsButtonRef}
+          size="icon-xs"
+          title={snapshot.settingsOpen ? "Close settings" : "Settings"}
+          variant="ghost"
+        >
+          <SettingsIcon className="size-3.5" />
         </Button>
         <Button
           aria-label="Clear source highlight"

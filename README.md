@@ -66,14 +66,27 @@ reopens that conversation and spends nothing. Every other capture starts a
 turn only when you ask: the panel shows what it captured and waits.
 
 - The empty chat offers one **Summarize** starter, which runs the summary
-  pathway against the captured source. Every summary asks for the same thing:
-  exactly three one-sentence Markdown bullets, most important first. There is
+  pathway against the captured source. A summary is either the default three
+  one-sentence Markdown bullets, most important first, or a **Detailed**
+  structured one — sections covering the claims, the evidence behind them, the
+  limits the source states, and where it lands. Which one is a preference, not
+  a per-question control: see **Settings** below. There is
   no length control — every generation path, summary or ordinary question,
   page, PDF, selection, or video transcript, requests TokenPath's maximum
   output ceiling of 2048 tokens. Generation is billed from the input text, so
-  the headroom costs nothing and concision is the prompt's job rather than a
+  the headroom costs nothing, a detailed summary costs exactly what three
+  bullets costs, and concision is the prompt's job rather than a
   sentence-cutting cap's. An answer that still reaches the ceiling keeps its
   attribution and carries a note saying it may end abruptly.
+- Each answer is followed by at most two suggested questions above the
+  composer. Tapping one asks it. They come from the same request as the answer,
+  so they add nothing to the bill, and a suggestion is shown only when the exact
+  passage it would cite is really in the captured text — a question the model
+  invented from nothing never appears. The panel prefers questions about
+  material the answer did not already use. The first slot climbs a depth
+  ladder instead: **Summarize this page** when the chat has no summary yet, then
+  **Give me a detailed summary** once the three bullets are on screen, and
+  nothing once the detailed one has run.
 - Sources of 24 whitespace-delimited words or fewer are already concise, so the
   summary pathway skips generation and shows an “Already concise” note instead;
   the starter is hidden while that note shows. Whitespace-free CJK prose is
@@ -87,6 +100,28 @@ turn only when you ask: the panel shows what it captured and waits.
   attributed phrase — a keyboard path to the same navigation as clicking one.
   Arrow keys move through the list with roving focus, Enter highlights that
   phrase's source, Escape closes the list and returns focus to the toggle.
+
+## Settings
+
+The gear in the header opens Settings in place of the conversation; the back
+arrow or Escape returns. It holds four preferences, stored locally:
+
+- **Summarize new pages automatically** (on). Off, a toolbar click still opens
+  the panel and captures the page, but waits for you to ask — nothing is spent.
+- **Default summary**: **3 bullets** or **Detailed**. Applies to automatic
+  summaries and to the **Summarize** action.
+- **Suggest follow-up questions** (on). Off hides the suggestion row entirely.
+- **Summary instructions** (advanced, collapsed). The box is preloaded with the
+  instructions currently in force, so you edit the real thing. Once you change
+  them a **Customized** badge appears, **Reset** puts the preset back in one
+  tap, and the 3 bullets / Detailed control greys out, because custom
+  instructions replace the preset. TokenPath always appends its own formatting
+  rules and the follow-up request after your text; those are not editable.
+  Instructions that pull answers away from the source text can weaken source
+  mapping.
+
+Automatic summaries spend credits like any question. A page you have already
+chatted with reopens its saved chat instead — nothing is re-summarized.
 
 ## How it works
 
@@ -267,6 +302,7 @@ tldr-extension/
 │   └── components/
 │       ├── panel/             # panel-header, auth-panel, source-card,
 │       │                      # composer, answer-response, chat-message,
+│       │                      # follow-up-chips, settings-view,
 │       │                      # error-boundary
 │       ├── ai-elements/       # adapted Vercel AI Elements source
 │       └── ui/                # local shadcn-style primitives
@@ -274,7 +310,8 @@ tldr-extension/
     ├── panel.html
     ├── panel.js               # generated React/AI Elements bundle (committed)
     ├── panel.css              # generated Tailwind/theme bundle (committed)
-    ├── panel-logic.js         # summary helpers and heatmap span resolver
+    ├── panel-logic.js         # summary prompts, follow-up suggestion
+    │                          # protocol, and heatmap span resolver
     └── tokenpath.js           # streaming generation + heatmap client
 ```
 

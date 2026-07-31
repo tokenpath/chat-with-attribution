@@ -11,6 +11,9 @@ import {
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
+/** The two shipped summary shapes, plus the one the user wrote themselves. */
+export type SummaryPreset = "bullets" | "detailed";
+export type SummaryDepth = SummaryPreset | "custom";
 // Why the click happened. Only the toolbar's "tldr" asks the panel to start a
 // summary by itself; a context-menu capture is an "ask" and waits.
 export type CaptureIntent = "tldr" | "simplify" | "ask";
@@ -87,6 +90,23 @@ export interface PanelMessage {
     label: string;
     href: string;
   };
+  /**
+   * The follow-up questions finally chosen for this answer. Optional and
+   * additive: an older cached record simply has none, and the anchors and
+   * rejected candidates behind them are never written to the cache.
+   */
+  suggestions?: string[];
+  /** Set on an answer produced by the summary pathway; drives the ladder. */
+  summaryDepth?: SummaryDepth;
+}
+
+/** Persisted panel preferences. Every read is defensive. */
+export interface PanelSettings {
+  autoSummarize: boolean;
+  summaryPreset: SummaryPreset;
+  suggestFollowUps: boolean;
+  /** null until the user edits the instructions; then it replaces the preset. */
+  customSummaryPrompt: string | null;
 }
 
 export interface PanelSnapshot {
@@ -103,6 +123,8 @@ export interface PanelSnapshot {
   messages: PanelMessage[];
   notice: string | null;
   resolvedTheme: ResolvedTheme;
+  settings: PanelSettings;
+  settingsOpen: boolean;
   sourceType: ContextSourceType;
   themePreference: ThemePreference;
   toast: string | null;
@@ -137,6 +159,10 @@ interface CachedPageChat {
 
 const CACHE_FORMAT_VERSION = 2;
 const THEME_KEY = "tldr-theme";
+const AUTO_SUMMARIZE_KEY = "tldr-auto-summarize";
+const SUMMARY_PRESET_KEY = "tldr-summary-preset";
+const SUGGEST_FOLLOWUPS_KEY = "tldr-suggest-followups";
+const SUMMARY_INSTRUCTIONS_KEY = "tldr-summary-instructions";
 const MAX_GENERATE_INPUT_CHARS = 420_000;
 const MAX_GENERATE_MESSAGES = 50;
 // TokenPath caps `max_output_tokens` at 2048 and bills generation from the
@@ -174,6 +200,49 @@ function readThemePreference(): ThemePreference {
     // The panel can still follow the OS theme if storage is unavailable.
   }
   return "system";
+}
+
+function readStoredString(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    // The panel still works on its defaults if storage is unavailable.
+    return null;
+  }
+}
+
+function writeStoredString(key: string, value: string | null) {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // The preference still applies for the lifetime of this panel.
+  }
+}
+
+/**
+ * Both switches default on, so a first-run panel behaves like the shipped
+ * one-click TLDR. Anything that is not the exact "off" token is treated as
+ * on rather than trusted as a boolean.
+ */
+function readBooleanPreference(key: string, fallback: boolean) {
+  const stored = readStoredString(key);
+  if (stored === "on") return true;
+  if (stored === "off") return false;
+  return fallback;
+}
+
+function readPanelSettings(): PanelSettings {
+  const preset = readStoredString(SUMMARY_PRESET_KEY);
+  const custom = TldrPanelLogic.boundSummaryInstructions(
+    readStoredString(SUMMARY_INSTRUCTIONS_KEY) || ""
+  );
+  return {
+    autoSummarize: readBooleanPreference(AUTO_SUMMARIZE_KEY, true),
+    summaryPreset: preset === "detailed" ? "detailed" : "bullets",
+    suggestFollowUps: readBooleanPreference(SUGGEST_FOLLOWUPS_KEY, true),
+    customSummaryPrompt: custom.trim() ? custom : null,
+  };
 }
 
 function systemTheme(): ResolvedTheme {
@@ -229,6 +298,13 @@ export class PanelController {
   private activePdfExtractionController: AbortController | null = null;
   private heatmapControllers = new Map<string, AbortController>();
   private navigationEpoch = 0;
+  // Grounded follow-up candidates awaiting their answer's heatmap. Kept off
+  // the message — and therefore out of the cache — because only the two
+  // finally chosen questions are worth restoring.
+  private suggestionCandidates = new Map<
+    string,
+    TldrGroundedSuggestion[]
+  >();
 
   constructor() {
     const themePreference = readThemePreference();
@@ -247,6 +323,8 @@ export class PanelController {
       messages: [],
       notice: null,
       resolvedTheme,
+      settings: readPanelSettings(),
+      settingsOpen: false,
       sourceType: "page",
       themePreference,
       toast: null,
@@ -529,8 +607,10 @@ export class PanelController {
     return true;
   };
 
-  // Runs the summary pathway against the live context.
-  runSummary = () => {
+  // Runs the summary pathway against the live context. `depth` is the ladder's
+  // "Give me a detailed summary" chip asking for one rung deeper than the
+  // preference; without it the saved preset (or custom instructions) decides.
+  runSummary = ({ depth }: { depth?: SummaryPreset } = {}) => {
     if (this.snapshot.busy) return false;
     if (!this.snapshot.connected) {
       this.showToast("Connect TokenPath to start chatting.");
@@ -542,7 +622,13 @@ export class PanelController {
       // over a path that is about to succeed.
       return false;
     }
-    const summary = TldrPanelLogic.buildSummaryRequest(this.context);
+    const settings = this.snapshot.settings;
+    const summary = TldrPanelLogic.buildSummaryRequest(this.context, {
+      preset: depth || settings.summaryPreset,
+      // An explicit ladder request overrides custom instructions: the user
+      // just asked for the detailed shape by name.
+      customPrompt: depth ? null : settings.customSummaryPrompt,
+    });
     if (summary.skip) {
       this.addMessage({
         kind: "note",
@@ -561,6 +647,7 @@ export class PanelController {
     void this.runTurn(summary.prompt || "", {
       echoUser: false,
       maxOutputTokens: summary.maxOutputTokens,
+      summaryDepth: (summary.depth as SummaryDepth) || "bullets",
     });
     return true;
   };
@@ -613,6 +700,47 @@ export class PanelController {
     this.applyTheme(resolvedTheme);
     this.update({ themePreference, resolvedTheme });
   };
+
+  openSettings = () => this.update({ settingsOpen: true });
+
+  closeSettings = () => this.update({ settingsOpen: false });
+
+  toggleSettings = () =>
+    this.update({ settingsOpen: !this.snapshot.settingsOpen });
+
+  private updateSettings(patch: Partial<PanelSettings>) {
+    this.update({ settings: { ...this.snapshot.settings, ...patch } });
+  }
+
+  setAutoSummarize = (autoSummarize: boolean) => {
+    writeStoredString(AUTO_SUMMARIZE_KEY, autoSummarize ? "on" : "off");
+    this.updateSettings({ autoSummarize });
+    // Deliberately not retroactive: the toolbar click that opened this page
+    // was already answered by waiting, and turning the switch on should
+    // change the next page rather than spend on this one behind the user.
+  };
+
+  setSummaryPreset = (summaryPreset: SummaryPreset) => {
+    const next: SummaryPreset =
+      summaryPreset === "detailed" ? "detailed" : "bullets";
+    writeStoredString(SUMMARY_PRESET_KEY, next);
+    this.updateSettings({ summaryPreset: next });
+  };
+
+  setSuggestFollowUps = (suggestFollowUps: boolean) => {
+    writeStoredString(SUGGEST_FOLLOWUPS_KEY, suggestFollowUps ? "on" : "off");
+    this.updateSettings({ suggestFollowUps });
+  };
+
+  /** Empty or whitespace-only instructions are a reset, not a customization. */
+  setSummaryInstructions = (text: string) => {
+    const bounded = TldrPanelLogic.boundSummaryInstructions(text);
+    const customSummaryPrompt = bounded.trim() ? bounded : null;
+    writeStoredString(SUMMARY_INSTRUCTIONS_KEY, customSummaryPrompt);
+    this.updateSettings({ customSummaryPrompt });
+  };
+
+  resetSummaryInstructions = () => this.setSummaryInstructions("");
 
   onAnswerSelection = async (
     messageId: string,
@@ -1096,6 +1224,14 @@ export class PanelController {
   // panel keeps the request pending without spending anything; connect() and
   // init() retry it.
   private maybeRunAutoSummary() {
+    // "Summarize new pages automatically" off means a toolbar click opens the
+    // panel with its capture and waits, exactly like a context-menu capture.
+    // Drop the request rather than holding it: a later toggle should change
+    // the next page, not silently spend on the one already on screen.
+    if (this.autoSummaryRequested && !this.snapshot.settings.autoSummarize) {
+      this.setAutoSummaryRequest(false);
+      return;
+    }
     if (
       !this.autoSummaryRequested ||
       this.autoSummaryContextVersion !== this.contextVersion ||
@@ -1175,9 +1311,11 @@ export class PanelController {
     {
       echoUser,
       maxOutputTokens,
+      summaryDepth,
     }: {
       echoUser: boolean;
       maxOutputTokens?: number;
+      summaryDepth?: SummaryDepth;
     }
   ) {
     if (!this.snapshot.connected) {
@@ -1205,7 +1343,10 @@ export class PanelController {
         ? []
         : [{ role: "user" as const, content: userText }]),
     ];
-    const turn = this.buildTurnRequest(context, history);
+    // Suggestions ride along on this call or not at all: a second generate
+    // request would re-pay for the whole document to produce them.
+    const wantsSuggestions = this.snapshot.settings.suggestFollowUps;
+    const turn = this.buildTurnRequest(context, history, wantsSuggestions);
     const turnController = new AbortController();
     this.activeTurnController?.abort();
     this.activeTurnController = turnController;
@@ -1226,6 +1367,7 @@ export class PanelController {
         sourceType: this.sourceType,
         url: this.sourceUrl,
       },
+      summaryDepth,
       text: "",
     });
     this.activeTurnMessageId = assistant.id;
@@ -1251,7 +1393,11 @@ export class PanelController {
           ) {
             return;
           }
-          this.updateMessage(assistant.id, { text: accumulated });
+          // The tail block is stripped from every delta too, so the marker is
+          // never on screen — not even for the frame it takes to arrive.
+          this.updateMessage(assistant.id, {
+            text: TldrPanelLogic.stripSuggestionsBlock(accumulated),
+          });
         },
       });
       if (
@@ -1262,7 +1408,11 @@ export class PanelController {
         return;
       }
 
-      const answer = result.answer;
+      // The suggestions block is peeled off before anything else sees the
+      // answer: the displayed text, the conversation history, the cached
+      // record, and the heatmap request all get the answer without it.
+      const parsed = TldrPanelLogic.parseSuggestions(result.answer);
+      const answer = parsed.answer;
       if (!answer.trim()) {
         throw new TokenPath.Error(
           502,
@@ -1270,6 +1420,12 @@ export class PanelController {
           "TokenPath returned an empty answer."
         );
       }
+      this.suggestionCandidates.set(
+        assistant.id,
+        wantsSuggestions
+          ? TldrPanelLogic.groundSuggestions(parsed.candidates, turn.document)
+          : []
+      );
 
       if (!echoUser) {
         this.history.push({ role: "user", content: userText });
@@ -1466,7 +1622,11 @@ export class PanelController {
     messages: Array<{
       role: "user" | "assistant";
       content: string;
-    }>
+    }>,
+    // The tail is appended to the outgoing user message only. `question` — the
+    // string attribution maps the answer against, and the one stored with the
+    // chat — stays exactly what the user (or the summary prompt) asked.
+    withSuggestions = false
   ) {
     const lastUserIndex = messages
       .map((message) => message.role)
@@ -1539,7 +1699,12 @@ export class PanelController {
       messages: [
         { role: "system" as const, content: system },
         ...boundedPrior,
-        { role: "user" as const, content: boundedQuestion },
+        {
+          role: "user" as const,
+          content: withSuggestions
+            ? TldrPanelLogic.withSuggestionsTail(boundedQuestion)
+            : boundedQuestion,
+        },
       ],
     };
   }
@@ -1636,8 +1801,40 @@ export class PanelController {
       if (this.heatmapControllers.get(messageId) === controller) {
         this.heatmapControllers.delete(messageId);
       }
+      // The heatmap is the second gate's input, so the chips are chosen here —
+      // whether it arrived or failed. A failure falls back to the positional
+      // spread rather than dropping the suggestions entirely.
+      if (contextVersion === this.contextVersion) {
+        this.finalizeSuggestions(messageId);
+      }
       void this.persistCurrentPageChat();
     }
+  }
+
+  /**
+   * Turn this answer's surviving candidates into at most two chips. Only the
+   * question text is kept: anchors and rejected candidates are working state,
+   * and a restored chat re-shows chips without re-deriving them.
+   */
+  private finalizeSuggestions(messageId: string) {
+    const candidates = this.suggestionCandidates.get(messageId);
+    this.suggestionCandidates.delete(messageId);
+    if (!candidates || candidates.length === 0) return;
+    const message = this.snapshot.messages.find(
+      (candidate) => candidate.id === messageId
+    );
+    if (!message) return;
+    const attribution = message.attribution;
+    const selected = TldrPanelLogic.selectSuggestions(candidates, {
+      heatmap:
+        attribution?.status === "ready" ? attribution.heatmap || null : null,
+      document: attribution?.document || this.context,
+      answer: message.text,
+    });
+    if (selected.length === 0) return;
+    this.updateMessage(messageId, {
+      suggestions: selected.map((candidate) => candidate.question),
+    });
   }
 
   private async persistCurrentPageChat() {
@@ -1958,6 +2155,9 @@ export class PanelController {
   }
 
   private cancelActiveWork() {
+    // Candidates whose answer never finished being attributed are working
+    // state for a turn that is going away.
+    this.suggestionCandidates.clear();
     const wasExtractingPdf = Boolean(this.activePdfExtractionController);
     this.activePdfExtractionController?.abort();
     this.activePdfExtractionController = null;

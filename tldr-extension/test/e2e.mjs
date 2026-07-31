@@ -378,7 +378,11 @@ function recordDeterministic(good) {
             [...(request.messages || [])]
               .reverse()
               .find((message) => message.role === "user")?.content || "";
-          const selected = cases[question] || fallback;
+          // Every generation path appends the follow-up suggestions tail after
+          // the question. The fixture keys on what the user actually asked.
+          const selected =
+            cases[question.split("\n\nAfter your answer is complete")[0]] ||
+            fallback;
           return sseResponse(
             selected.answer,
             // Exercise controller finalization too: transient deltas may differ
@@ -1032,7 +1036,15 @@ function recordDeterministic(good) {
       (message) => message.role === "system"
     )?.content;
     const summaryPrompt = generationMessages.at(-1)?.content;
+    // The fixed follow-up instruction every generation path appends, read
+    // back from a turn whose question is known exactly.
+    const tail = (
+      panelResult.followupHistory[2]?.content || ""
+    ).slice("inline code case".length);
     const good =
+      tail.startsWith("\n\nAfter your answer is complete") &&
+      tail.includes("<<<SUGGESTIONS") &&
+      tail.includes("SUGGESTIONS>>>") &&
       pendingSourceState.hasToggle === false &&
       pendingSourceState.hidden === true &&
       !pendingSourceState.visible &&
@@ -1071,12 +1083,14 @@ function recordDeterministic(good) {
       (panelResult.canonicalSummary.trim().match(/\S+/g)?.length || 0) > 16 &&
       panelResult.autoHeatmapAnswer === panelResult.canonicalSummary &&
       panelResult.followupHistoryAnswer === panelResult.canonicalSummary &&
+      // The suggestions tail is appended to the outgoing user message only:
+      // conversation history keeps the question the user actually asked.
       panelResult.followupHistory[0]?.role === "user" &&
-      panelResult.followupHistory[0]?.content === summaryPrompt &&
+      summaryPrompt === panelResult.followupHistory[0]?.content + tail &&
       panelResult.followupHistory[1]?.role === "assistant" &&
       panelResult.followupHistory[1]?.content === panelResult.canonicalSummary &&
       panelResult.followupHistory[2]?.role === "user" &&
-      panelResult.followupHistory[2]?.content === "inline code case" &&
+      panelResult.followupHistory[2]?.content === "inline code case" + tail &&
       panelResult.hasSafeMarkdownLink &&
       panelResult.blocksRemoteMarkdownImage &&
       panelResult.fitsNarrowPanel &&
@@ -3269,7 +3283,10 @@ function recordDeterministic(good) {
       askReadyState.starterText === "Summarize" &&
       askReadyState.placeholder === "Ask about the page…" &&
       askReadyState.truncationNote &&
-      askResult.question === explicitQuestion &&
+      // An ordinary turn asks for follow-up suggestions too: the tail sits
+      // after the user's exact question, and nothing rewrites the question.
+      askResult.question.startsWith(explicitQuestion) &&
+      askResult.question.includes("<<<SUGGESTIONS") &&
       // An ordinary question shares the summary's ceiling.
       askResult.maxOutputTokens === 2_048 &&
       askResult.systemIncludesContext &&
@@ -7312,4 +7329,721 @@ if (deterministicFail > 0) process.exitCode = 1;
     `  video transcript attribution: ${videoPass} passed, ${videoFail} failed`
   );
   if (videoFail > 0) process.exitCode = 1;
+}
+
+// Auto-summary, suggested follow-ups, the depth ladder, and Settings. The
+// panel asks for follow-up candidates on the same generation call as the
+// answer — generation is billed from the input text, so a second call would
+// re-pay for the whole document — then strips that tail block before anything
+// displays, attributes, or caches the answer, and keeps only the two
+// questions whose anchor quotes it could find in the captured source.
+// Self-contained: its own browser, fixtures, and counters.
+{
+  const followUpBrowser = await chromium.launch({ args: ["--no-sandbox"] });
+  let followUpPass = 0;
+  let followUpFail = 0;
+  const followUpCheck = (name, good, detail) => {
+    if (good) followUpPass++;
+    else followUpFail++;
+    console.log(
+      `  [${name}] ${good ? "PASS" : "FAIL"}` +
+        (good || detail === undefined ? "" : ` — ${JSON.stringify(detail)}`)
+    );
+  };
+
+  console.log("\n### Auto-summary, follow-ups, and settings");
+
+  const PAGE_URL = "https://ops.example/maintenance-window";
+  const SECOND_URL = "https://ops.example/staffing-plan";
+  // The opening two sentences are what the mocked heatmap attributes the
+  // answer to; everything after them is material a follow-up can point at.
+  const SOURCE =
+    "The maintenance window opens at midnight and lasts four hours. " +
+    "Engineers drain traffic from the primary region first. " +
+    "A rollback plan restores the previous build within ten minutes. " +
+    "Customer notices went out on Tuesday to every affected account. " +
+    "The team expects no data loss during the switchover, and support " +
+    "staffing doubles for the following two days.";
+  const SECOND_SOURCE =
+    "Support staffing doubles for two days after every maintenance window. " +
+    "The rota is published a week ahead so nobody is surprised by a shift. " +
+    "Escalation paths stay unchanged, and the on-call engineer keeps the " +
+    "pager for the whole window rather than handing it over midway.";
+  // A fabricated anchor, and one that quotes the passage the answer already
+  // used. Neither may reach a chip.
+  const FABRICATED_ANCHOR = "eleven engineers stayed on call overnight";
+  const FABRICATED_QUESTION = "How many engineers were on call?";
+  const COVERED_QUESTION = "How long is the maintenance window?";
+  const ROLLBACK_QUESTION = "What does the rollback plan restore?";
+  const NOTICE_QUESTION = "When did the customer notices go out?";
+  const LOSS_QUESTION = "What does the team expect about data loss?";
+  const STAFFING_QUESTION = "How long does support staffing stay doubled?";
+  const ROTA_QUESTION = "How far ahead is the rota published?";
+
+  try {
+    const page = await followUpBrowser.newPage();
+    await page.setViewportSize({ width: 360, height: 720 });
+    await page.addInitScript(
+      ({
+        source,
+        secondSource,
+        fabricatedAnchor,
+        fabricatedQuestion,
+        coveredQuestion,
+        rollbackQuestion,
+        noticeQuestion,
+        lossQuestion,
+        staffingQuestion,
+        rotaQuestion,
+        pageUrl,
+        secondUrl,
+      }) => {
+        window.__followUpSource = source;
+        window.__followUpSecondSource = secondSource;
+        window.__followUpRequests = [];
+        const runtimeListeners = [];
+        window.__followUpRuntimeListeners = runtimeListeners;
+        window.__followUpTabUrl = pageUrl;
+        const localStore = { tokenpathKey: "tpk_followups" };
+
+        const responseJson = (body, status = 200) =>
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          });
+        const doneStream = (answer) =>
+          new Response(
+            "event: delta\ndata: " +
+              JSON.stringify({ text: answer.slice(0, 8) }) +
+              "\n\nevent: done\ndata: " +
+              JSON.stringify({
+                answer,
+                model: "test/model",
+                usage: {
+                  input_tokens: 40,
+                  output_tokens: 12,
+                  billed_tokens: 40,
+                },
+                credits_remaining: 402_000,
+              }) +
+              "\n\n",
+            {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }
+          );
+        const codePointOffset = (text, utf16Offset) =>
+          Array.from(text.slice(0, utf16Offset)).length;
+        const block = (pairs) =>
+          "\n\n<<<SUGGESTIONS\n" +
+          pairs
+            .map(([question, anchor]) => `Q: ${question}\nA: "${anchor}"`)
+            .join("\n") +
+          "\nSUGGESTIONS>>>";
+
+        // Every mocked answer opens with the same sentence the heatmap below
+        // attributes, so the covered region is stable across turns.
+        const summaryAnswer =
+          "- The maintenance window opens at midnight for four hours.\n" +
+          "- Engineers drain the primary region before anything else.";
+        window.__followUpSummaryAnswer = summaryAnswer;
+        const answers = {
+          summary:
+            summaryAnswer +
+            block([
+              [rollbackQuestion, "restores the previous build within ten minutes"],
+              [fabricatedQuestion, fabricatedAnchor],
+              [coveredQuestion, "maintenance window opens at midnight"],
+            ]),
+          follow:
+            "The maintenance window rollback restores the previous build " +
+            "within ten minutes." +
+            block([
+              [noticeQuestion, "Customer notices went out on Tuesday"],
+              [lossQuestion, "expects no data loss during the switchover"],
+            ]),
+          detailed:
+            "The maintenance window plan, in detail, covers timing, " +
+            "rollback, and communications." +
+            block([
+              [staffingQuestion, "staffing doubles for the following two days"],
+              [lossQuestion, "expects no data loss during the switchover"],
+            ]),
+          custom:
+            "The maintenance window figures: four hours, ten minutes, two days." +
+            block([[rotaQuestion, "rota is published a week ahead"]]),
+        };
+        window.__followUpAnswers = answers;
+
+        window.chrome = {
+          tabs: {
+            async query() {
+              return [
+                { id: 77, windowId: 5, url: window.__followUpTabUrl },
+              ];
+            },
+            async get(tabId) {
+              return { id: tabId, url: window.__followUpTabUrl };
+            },
+            async sendMessage() {
+              return { ok: true };
+            },
+            onActivated: { addListener() {} },
+            onUpdated: { addListener() {} },
+            onRemoved: { addListener() {} },
+          },
+          runtime: {
+            async sendMessage() {
+              return { ok: true };
+            },
+            onMessage: {
+              addListener(listener) {
+                runtimeListeners.push(listener);
+              },
+            },
+          },
+          storage: {
+            local: {
+              async get(keys) {
+                const requested = Array.isArray(keys) ? keys : [keys];
+                return Object.fromEntries(
+                  requested
+                    .filter((key) => key in localStore)
+                    .map((key) => [key, localStore[key]])
+                );
+              },
+              async set(values) {
+                Object.assign(localStore, values);
+              },
+              async remove(key) {
+                delete localStore[key];
+              },
+            },
+            session: {
+              async get() {
+                return {};
+              },
+            },
+          },
+        };
+
+        window.fetch = async (url, options = {}) => {
+          const path = String(url);
+          const request = options.body ? JSON.parse(options.body) : null;
+          if (path.endsWith("/v1/me/credits")) {
+            return responseJson({ available_tokens: 402_000 });
+          }
+          window.__followUpRequests.push({ path, request });
+          if (path.endsWith("/v1/generate")) {
+            const asked =
+              [...(request.messages || [])]
+                .reverse()
+                .find((message) => message.role === "user")?.content || "";
+            if (asked.includes("thorough, structured summary")) {
+              return doneStream(answers.detailed);
+            }
+            if (asked.includes("Only list the numbers")) {
+              return doneStream(answers.custom);
+            }
+            if (asked.includes("exactly 3 concise Markdown bullet points")) {
+              return doneStream(answers.summary);
+            }
+            return doneStream(answers.follow);
+          }
+          if (path.endsWith("/v1/attributions/heatmap")) {
+            // Two tokens over the head of the answer and the head of the
+            // document: whatever the answer said, the passage it drew on is
+            // the source's opening sentences.
+            const answerSplit = Math.min(24, request.answer.length);
+            const answerEnd = Math.min(48, request.answer.length);
+            const documentSplit = Math.min(30, request.document.length);
+            const documentEnd = Math.min(60, request.document.length);
+            const cpA = (offset) => codePointOffset(request.answer, offset);
+            const cpD = (offset) => codePointOffset(request.document, offset);
+            return responseJson({
+              row: [0, 1],
+              col: [0, 1],
+              data: [0.95, 0.9],
+              shape: [2, 2],
+              answer_offsets: [
+                [0, cpA(answerSplit)],
+                [cpA(answerSplit), cpA(answerEnd)],
+              ],
+              document_offsets: [
+                [0, cpD(documentSplit)],
+                [cpD(documentSplit), cpD(documentEnd)],
+              ],
+            });
+          }
+          return responseJson({}, 404);
+        };
+      },
+      {
+        source: SOURCE,
+        secondSource: SECOND_SOURCE,
+        fabricatedAnchor: FABRICATED_ANCHOR,
+        fabricatedQuestion: FABRICATED_QUESTION,
+        coveredQuestion: COVERED_QUESTION,
+        rollbackQuestion: ROLLBACK_QUESTION,
+        noticeQuestion: NOTICE_QUESTION,
+        lossQuestion: LOSS_QUESTION,
+        staffingQuestion: STAFFING_QUESTION,
+        rotaQuestion: ROTA_QUESTION,
+        pageUrl: PAGE_URL,
+        secondUrl: SECOND_URL,
+      }
+    );
+
+    const chipState = () =>
+      page.evaluate(() => ({
+        labels: [...document.querySelectorAll(".follow-up-chip")].map(
+          (chip) => chip.textContent?.trim() || ""
+        ),
+        kinds: [...document.querySelectorAll(".follow-up-chip")].map(
+          (chip) => chip.dataset.chipKind
+        ),
+        rowLabel:
+          document.querySelector(".follow-ups-label")?.textContent?.trim() || "",
+        starter: !!document.getElementById("summarize-starter"),
+        panelText: document.body.textContent || "",
+      }));
+    const generateRequests = () =>
+      page.evaluate(() =>
+        window.__followUpRequests
+          .filter((item) => item.path.endsWith("/v1/generate"))
+          .map((item) => item.request)
+      );
+
+    await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () => document.getElementById("input")?.disabled === false
+    );
+
+    // 1. The toolbar seeds intent "tldr" and the panel summarizes on its own.
+    await page.evaluate(() => {
+      window.__followUpRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "follow-up-seed",
+        capturedAt: 10,
+        tabId: 77,
+        windowId: 5,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "tldr",
+        sourceType: "page",
+        url: window.__followUpTabUrl,
+        text: window.__followUpSource,
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') &&
+        document.querySelectorAll(".follow-up-chip").length > 0
+    );
+
+    const afterAutoSummary = await chipState();
+    const requestsAfterSummary = await generateRequests();
+    const summaryUserMessage =
+      requestsAfterSummary[0]?.messages?.at(-1)?.content || "";
+    const heatmapAnswers = await page.evaluate(() =>
+      window.__followUpRequests
+        .filter((item) => item.path.endsWith("/v1/attributions/heatmap"))
+        .map((item) => item.request.answer)
+    );
+    const renderedAnswer = await page.evaluate(
+      () =>
+        document.querySelector("[data-answer-content]")?.textContent || ""
+    );
+
+    followUpCheck(
+      "a toolbar capture summarises and asks for follow-ups in one call",
+      requestsAfterSummary.length === 1 &&
+        summaryUserMessage.includes(
+          "exactly 3 concise Markdown bullet points"
+        ) &&
+        summaryUserMessage.includes("Do not add a title, a 'TL;DR:' label") &&
+        summaryUserMessage.includes("<<<SUGGESTIONS") &&
+        summaryUserMessage.indexOf("<<<SUGGESTIONS") >
+          summaryUserMessage.indexOf("Do not add a title") &&
+        requestsAfterSummary[0]?.max_output_tokens === 2_048,
+      { count: requestsAfterSummary.length, summaryUserMessage }
+    );
+
+    followUpCheck(
+      "the suggestions block never reaches the answer or attribution",
+      heatmapAnswers.length === 1 &&
+        !heatmapAnswers[0].includes("SUGGESTIONS") &&
+        !heatmapAnswers[0].includes("Q:") &&
+        heatmapAnswers[0] ===
+          (await page.evaluate(() => window.__followUpSummaryAnswer)) &&
+        !renderedAnswer.includes("SUGGESTIONS") &&
+        !afterAutoSummary.panelText.includes("SUGGESTIONS>>>"),
+      { heatmapAnswers, renderedAnswer }
+    );
+
+    followUpCheck(
+      "the ladder takes slot one and a generated question takes slot two",
+      afterAutoSummary.rowLabel === "Ask a follow-up" &&
+        afterAutoSummary.labels.length === 2 &&
+        afterAutoSummary.kinds[0] === "detailed" &&
+        afterAutoSummary.labels[0] === "Give me a detailed summary" &&
+        afterAutoSummary.kinds[1] === "generated" &&
+        afterAutoSummary.labels[1] === ROLLBACK_QUESTION,
+      afterAutoSummary
+    );
+
+    followUpCheck(
+      "a fabricated anchor and an already-covered one both lose their slot",
+      !afterAutoSummary.panelText.includes(FABRICATED_QUESTION) &&
+        !afterAutoSummary.panelText.includes(FABRICATED_ANCHOR) &&
+        !afterAutoSummary.panelText.includes(COVERED_QUESTION),
+      afterAutoSummary.labels
+    );
+
+    // 2. Clicking a generated chip asks it as an ordinary turn.
+    await page.locator(`.follow-up-chip[data-chip-kind="generated"]`).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll('[data-answer-status="ready"]').length === 2
+    );
+    const afterChipClick = await page.evaluate(() => ({
+      userTurns: [...document.querySelectorAll(".is-user")].map(
+        (node) => node.textContent?.trim() || ""
+      ),
+      chips: [...document.querySelectorAll(".follow-up-chip")].map(
+        (chip) => chip.textContent?.trim() || ""
+      ),
+    }));
+    const requestsAfterChip = await generateRequests();
+    followUpCheck(
+      "a chip click submits its question as a normal turn",
+      requestsAfterChip.length === 2 &&
+        afterChipClick.userTurns.some((text) =>
+          text.includes(ROLLBACK_QUESTION)
+        ) &&
+        (requestsAfterChip[1]?.messages?.at(-1)?.content || "").startsWith(
+          ROLLBACK_QUESTION
+        ),
+      afterChipClick
+    );
+    followUpCheck(
+      "the latest answer's suggestions replace the previous set",
+      afterChipClick.chips.length === 2 &&
+        afterChipClick.chips[0] === "Give me a detailed summary" &&
+        // Of this answer's two grounded candidates, the slot goes to the one
+        // whose anchor sits farthest from the passage the answer drew on.
+        afterChipClick.chips[1] === LOSS_QUESTION &&
+        !afterChipClick.chips.includes(ROLLBACK_QUESTION) &&
+        !afterChipClick.chips.includes(NOTICE_QUESTION),
+      afterChipClick.chips
+    );
+
+    // 3. The ladder's detailed rung runs the second preset as a summary turn.
+    await page.locator(`.follow-up-chip[data-chip-kind="detailed"]`).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll('[data-answer-status="ready"]').length === 3
+    );
+    const afterDetailed = await chipState();
+    const requestsAfterDetailed = await generateRequests();
+    const detailedUserMessage =
+      requestsAfterDetailed[2]?.messages?.at(-1)?.content || "";
+    const detailedUserTurns = await page.evaluate(
+      () => document.querySelectorAll(".is-user").length
+    );
+    followUpCheck(
+      "the detailed rung sends the second preset without echoing a question",
+      requestsAfterDetailed.length === 3 &&
+        detailedUserMessage.includes("thorough, structured summary") &&
+        detailedUserMessage.includes("qualifications, caveats") &&
+        detailedUserMessage.includes("Do not add a title, a 'TL;DR:' label") &&
+        detailedUserMessage.includes("<<<SUGGESTIONS") &&
+        requestsAfterDetailed[2]?.max_output_tokens === 2_048 &&
+        // Only the follow-up question the user clicked is echoed as a turn.
+        detailedUserTurns === 1,
+      { detailedUserMessage: detailedUserMessage.slice(0, 120) }
+    );
+    followUpCheck(
+      "once detailed has run, both slots go to generated questions",
+      afterDetailed.labels.length === 2 &&
+        afterDetailed.kinds.every((kind) => kind === "generated") &&
+        afterDetailed.labels.includes(STAFFING_QUESTION) &&
+        afterDetailed.labels.includes(LOSS_QUESTION),
+      afterDetailed.labels
+    );
+
+    // 4. A restored chat shows the chips it was saved with, free.
+    await page.waitForTimeout(300);
+    await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll("[data-answer-content]").length === 3 &&
+        document.querySelectorAll(".follow-up-chip").length > 0
+    );
+    const restored = await chipState();
+    const requestsAfterRestore = await generateRequests();
+    followUpCheck(
+      "a restored chat shows its saved chips and spends nothing",
+      requestsAfterRestore.length === 0 &&
+        restored.labels.length === 2 &&
+        restored.labels.includes(STAFFING_QUESTION) &&
+        restored.labels.includes(LOSS_QUESTION) &&
+        !restored.panelText.includes("SUGGESTIONS"),
+      { requests: requestsAfterRestore.length, labels: restored.labels }
+    );
+
+    // A chat restored without a capture cannot send a turn until the page is
+    // captured again. Re-seed the same document — an "ask" capture, so it
+    // still spends nothing — so the composer below has a live context.
+    await page.evaluate(() => {
+      window.__followUpRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "follow-up-seed-recapture",
+        capturedAt: 15,
+        tabId: 77,
+        windowId: 5,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "ask",
+        sourceType: "page",
+        url: window.__followUpTabUrl,
+        text: window.__followUpSource,
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll("[data-answer-content]").length === 3 &&
+        document.querySelectorAll(".follow-up-chip").length === 2
+    );
+
+    // 5. Settings: turning follow-ups off hides the row entirely.
+    await page.locator("#settings-toggle").click();
+    await page.waitForFunction(() => document.getElementById("settings"));
+    const settingsState = await page.evaluate(() => ({
+      conversationHidden: document.getElementById("messages")?.hidden === true,
+      gearExpanded: document
+        .getElementById("settings-toggle")
+        ?.getAttribute("aria-expanded"),
+      autoSummarize: document
+        .getElementById("setting-auto-summarize")
+        ?.getAttribute("aria-checked"),
+      suggest: document
+        .getElementById("setting-suggest-followups")
+        ?.getAttribute("aria-checked"),
+      preset: document
+        .getElementById("setting-preset-bullets")
+        ?.getAttribute("aria-pressed"),
+      creditNote:
+        document.getElementById("settings-credit-note")?.textContent || "",
+      focus: document.activeElement?.id,
+    }));
+    followUpCheck(
+      "the gear opens Settings over the conversation with both switches on",
+      settingsState.conversationHidden &&
+        settingsState.gearExpanded === "true" &&
+        settingsState.autoSummarize === "true" &&
+        settingsState.suggest === "true" &&
+        settingsState.preset === "true" &&
+        settingsState.focus === "settings-back" &&
+        settingsState.creditNote.includes("spend credits like any question"),
+      settingsState
+    );
+
+    await page.locator("#setting-suggest-followups").click();
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.getElementById("settings"));
+    const suggestionsOff = await page.evaluate(() => ({
+      chips: document.querySelectorAll(".follow-up-chip").length,
+      row: !!document.getElementById("follow-ups"),
+      focus: document.activeElement?.id,
+    }));
+    followUpCheck(
+      "follow-ups off hides the row, and Escape returns focus to the gear",
+      suggestionsOff.chips === 0 &&
+        !suggestionsOff.row &&
+        suggestionsOff.focus === "settings-toggle",
+      suggestionsOff
+    );
+
+    // With the setting off the tail is not sent at all, so the answer is not
+    // asked to produce one — and a model that volunteers a block anyway still
+    // never renders it.
+    await page.locator("#input").fill("What is the rollback window?");
+    await page.locator("#send").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll('[data-answer-status="ready"]').length === 4
+    );
+    const offTurn = await generateRequests();
+    const offTurnState = await page.evaluate(() => ({
+      chips: document.querySelectorAll(".follow-up-chip").length,
+      answers: [...document.querySelectorAll("[data-answer-content]")].map(
+        (node) => node.textContent || ""
+      ),
+    }));
+    followUpCheck(
+      "follow-ups off sends no tail and still never renders a stray block",
+      offTurn.length === 1 &&
+        offTurn[0].messages?.at(-1)?.content ===
+          "What is the rollback window?" &&
+        offTurnState.chips === 0 &&
+        offTurnState.answers.every((text) => !text.includes("SUGGESTIONS")),
+      {
+        outgoing: offTurn[0]?.messages?.at(-1)?.content,
+        chips: offTurnState.chips,
+      }
+    );
+    // Everything below counts requests made from here on.
+    await page.evaluate(() => {
+      window.__followUpRequests.length = 0;
+    });
+
+    // 6. Automatic summaries off: a toolbar capture waits, and the ladder's
+    //    first rung becomes the chip the starter would otherwise duplicate.
+    await page.locator("#settings-toggle").click();
+    await page.waitForFunction(() => document.getElementById("settings"));
+    await page.locator("#setting-suggest-followups").click();
+    await page.locator("#setting-auto-summarize").click();
+    await page.locator("#settings-back").click();
+    await page.evaluate(() => {
+      window.__followUpTabUrl = "https://ops.example/staffing-plan";
+      window.__followUpRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "follow-up-seed-2",
+        capturedAt: 20,
+        tabId: 77,
+        windowId: 5,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "tldr",
+        sourceType: "page",
+        url: window.__followUpTabUrl,
+        text: window.__followUpSecondSource,
+        error: null,
+      });
+    });
+    await page.waitForFunction(() =>
+      document
+        .getElementById("context-text")
+        ?.textContent?.startsWith("Support staffing")
+    );
+    await page.waitForTimeout(250);
+    const autoSummaryOff = await chipState();
+    const requestsAfterOff = await generateRequests();
+    followUpCheck(
+      "automatic summaries off captures without spending",
+      requestsAfterOff.length === 0 &&
+        !autoSummaryOff.panelText.includes("data-answer-content") &&
+        (await page.evaluate(
+          () => document.querySelectorAll("[data-answer-content]").length
+        )) === 0,
+      { requests: requestsAfterOff.length }
+    );
+    followUpCheck(
+      "the summarize chip replaces the starter rather than duplicating it",
+      autoSummaryOff.labels.length === 1 &&
+        autoSummaryOff.kinds[0] === "summarize" &&
+        autoSummaryOff.labels[0] === "Summarize this page" &&
+        autoSummaryOff.starter === false,
+      autoSummaryOff
+    );
+
+    // 7. Custom instructions replace the preset and still carry both the
+    //    suffix and the tail.
+    const CUSTOM = "Only list the numbers in the text, one per line.";
+    await page.locator("#settings-toggle").click();
+    await page.waitForFunction(() => document.getElementById("settings"));
+    await page.locator("#setting-instructions-toggle").click();
+    const preloaded = await page.evaluate(() => ({
+      value: document.getElementById("setting-instructions")?.value || "",
+      maxLength: document.getElementById("setting-instructions")?.maxLength,
+      badge: !!document.getElementById("setting-instructions-badge"),
+      presetDisabled:
+        document.getElementById("setting-preset-detailed")?.disabled === true,
+      caveat:
+        document.querySelector(".setting-caveat")?.textContent?.trim() || "",
+    }));
+    await page.locator("#setting-instructions").fill(CUSTOM);
+    const customized = await page.evaluate(() => ({
+      badge:
+        document
+          .getElementById("setting-instructions-badge")
+          ?.textContent?.trim() || "",
+      presetDisabled:
+        document.getElementById("setting-preset-detailed")?.disabled === true,
+      note: document.getElementById("setting-preset-desc")?.textContent || "",
+      resetEnabled:
+        document.getElementById("setting-instructions-reset")?.disabled ===
+        false,
+    }));
+    followUpCheck(
+      "the instructions field preloads the active prompt and guards the swap",
+      preloaded.value.includes("exactly 3 concise Markdown bullet points") &&
+        // Only the editable half is preloaded; the suffix is never editable.
+        !preloaded.value.includes("Do not add a title") &&
+        preloaded.maxLength === 2_000 &&
+        preloaded.badge === false &&
+        preloaded.presetDisabled === false &&
+        preloaded.caveat.startsWith("Instructions that pull answers away") &&
+        customized.badge === "Customized" &&
+        customized.presetDisabled &&
+        customized.note === "Custom instructions replace the preset." &&
+        customized.resetEnabled,
+      { preloaded, customized }
+    );
+
+    await page.locator("#settings-back").click();
+    await page.waitForFunction(() => !document.getElementById("settings"));
+    await page.locator(`.follow-up-chip[data-chip-kind="summarize"]`).click();
+    await page.waitForFunction(
+      () => document.querySelector('[data-answer-status="ready"]')
+    );
+    const customRequests = await generateRequests();
+    const customUserMessage =
+      customRequests[0]?.messages?.at(-1)?.content || "";
+    followUpCheck(
+      "custom instructions reach generation with the suffix and tail after them",
+      customRequests.length === 1 &&
+        customUserMessage.startsWith(CUSTOM) &&
+        !customUserMessage.includes("exactly 3 concise Markdown bullet") &&
+        customUserMessage.includes("Do not add a title, a 'TL;DR:' label") &&
+        customUserMessage.includes("<<<SUGGESTIONS") &&
+        customUserMessage.indexOf("Do not add a title") <
+          customUserMessage.indexOf("<<<SUGGESTIONS"),
+      { customUserMessage: customUserMessage.slice(0, 160) }
+    );
+
+    // Reset restores the preset and re-enables the two-way control.
+    await page.locator("#settings-toggle").click();
+    await page.waitForFunction(() => document.getElementById("settings"));
+    await page.locator("#setting-instructions-toggle").click();
+    await page.locator("#setting-instructions-reset").click();
+    const afterReset = await page.evaluate(() => ({
+      badge: !!document.getElementById("setting-instructions-badge"),
+      value: document.getElementById("setting-instructions")?.value || "",
+      presetDisabled:
+        document.getElementById("setting-preset-detailed")?.disabled === true,
+    }));
+    followUpCheck(
+      "one tap resets the instructions back to the selected preset",
+      afterReset.badge === false &&
+        afterReset.presetDisabled === false &&
+        afterReset.value.includes("exactly 3 concise Markdown bullet points"),
+      afterReset
+    );
+
+    await page.close();
+  } catch (error) {
+    followUpFail++;
+    console.log(`  SUITE ERROR — ${String(error.message).split("\n")[0]}`);
+  } finally {
+    await followUpBrowser.close();
+  }
+
+  console.log(
+    `  auto-summary and follow-ups: ${followUpPass} passed, ${followUpFail} failed`
+  );
+  if (followUpFail > 0) process.exitCode = 1;
 }

@@ -32,6 +32,21 @@ export function composerPlaceholder(snapshot: PanelSnapshot) {
 }
 
 /**
+ * Label for the depth ladder's first chip when this chat has no summary yet.
+ * A chip is a sentence fragment the user is about to "say", so it carries no
+ * trailing period.
+ */
+export function summarizeChipLabel(snapshot: PanelSnapshot) {
+  if (snapshot.sourceType === "pdf") return "Summarize this PDF";
+  if (snapshot.sourceType === "video") return "Summarize the video";
+  if (snapshot.sourceType === "selection") return "Summarize this selection";
+  return "Summarize this page";
+}
+
+/** Label for the ladder's second rung, once a 3-bullet summary exists. */
+export const DETAILED_SUMMARY_CHIP_LABEL = "Give me a detailed summary";
+
+/**
  * Fallback prompt for the Summarize starter when there is no live context yet.
  * With a context, `controller.runSummary()` owns the wording.
  */
