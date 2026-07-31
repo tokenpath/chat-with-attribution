@@ -210,7 +210,14 @@ export function SettingsView({
               className="setting-reset"
               disabled={!isCustomized}
               id="setting-instructions-reset"
-              onClick={controller.resetSummaryInstructions}
+              onClick={() => {
+                controller.resetSummaryInstructions();
+                // Put the preset's text back in the same tap rather than
+                // waiting for the effect below to notice the change.
+                setDraft(
+                  TldrPanelLogic.summaryPresetPrompt(settings.summaryPreset)
+                );
+              }}
               title="Restore the default instructions for the selected preset"
               type="button"
             >
