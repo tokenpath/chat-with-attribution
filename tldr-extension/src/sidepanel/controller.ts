@@ -11,6 +11,9 @@ import {
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
+// Why the click happened. Only the toolbar's "tldr" asks the panel to start a
+// summary by itself; a context-menu capture is an "ask" and waits.
+export type CaptureIntent = "tldr" | "simplify" | "ask";
 export type SourceType = "page" | "chrome-pdf";
 // "video-transcript" is a full-document capture whose document is the video's
 // subtitle transcript rather than the page's rendered text. Its highlight
@@ -34,6 +37,7 @@ export interface SelectionSeed {
   windowId?: number | null;
   frameId?: number;
   captureMode?: CaptureMode;
+  intent?: CaptureIntent;
   sourceType?: SourceType;
   url?: string | null;
   text?: string;
@@ -194,6 +198,12 @@ export class PanelController {
   private sourceBaseUrl = "the current webpage";
   private sourceType: SourceType = "page";
   private captureMode: CaptureMode = "selection";
+  // A toolbar capture asks for a summary the moment its context is live. The
+  // request belongs to the context that was captured, so it carries the
+  // contextVersion it was made under: a tab switch or a newer capture between
+  // request and run must not summarize a different document.
+  private autoSummaryRequested = false;
+  private autoSummaryContextVersion = -1;
   private sourceUrl: string | null = null;
   private context = "";
   private history: Array<{
@@ -316,6 +326,9 @@ export class PanelController {
     }
 
     await authReady;
+    // A seed that arrived before auth finished has a context but nothing it is
+    // allowed to spend yet; this is where a toolbar TLDR catches up.
+    this.maybeRunAutoSummary();
   }
 
   connect = async (tokenPathKey: string) => {
@@ -337,6 +350,7 @@ export class PanelController {
       this.updateCredits(credits, creditsEpoch);
       this.setConnected(true);
       this.update({ authError: null });
+      this.maybeRunAutoSummary();
       return true;
     } catch (error) {
       if (authEpoch !== this.authEpoch) return false;
@@ -542,6 +556,7 @@ export class PanelController {
     const key = pageChatKey(this.sourceUrl);
     if (key) await deletePageChat(key).catch(() => undefined);
     this.history = [];
+    this.setAutoSummaryRequest(false);
     this.cancelActiveWork();
     this.cancelHighlightAndClear();
     this.update({
@@ -797,6 +812,9 @@ export class PanelController {
     // A capture supersedes any navigation or tab activation still awaiting its
     // own persist, which would otherwise resume and clobber this context.
     this.navigationEpoch++;
+    // Recorded against the version this capture just took, so the pending
+    // request cannot outlive the context it was made for.
+    this.setAutoSummaryRequest(seed.intent === "tldr");
     this.history = [];
     const contextLabel =
       this.captureMode === "full-pdf"
@@ -810,6 +828,7 @@ export class PanelController {
               : "Selected from page";
 
     if (seed.error) {
+      this.setAutoSummaryRequest(false);
       const pendingSubmission = this.pendingSubmission;
       this.pendingSubmission = null;
       this.context = "";
@@ -843,6 +862,7 @@ export class PanelController {
       return true;
     }
     if (!seed.text) {
+      this.setAutoSummaryRequest(false);
       this.context = "";
       this.update({
         busy: false,
@@ -876,6 +896,7 @@ export class PanelController {
   private beginFullPdfCapture(contextLabel: string) {
     const sourceUrl = this.sourceUrl;
     if (!sourceUrl) {
+      this.setAutoSummaryRequest(false);
       this.context = "";
       this.update({
         busy: false,
@@ -934,6 +955,7 @@ export class PanelController {
           return;
         }
         this.activePdfExtractionController = null;
+        this.setAutoSummaryRequest(false);
         this.context = "";
         const contextError =
           error instanceof Error
@@ -1021,15 +1043,51 @@ export class PanelController {
     // The restore replaces the whole message list, so the note has to wait for
     // it. Adding the note first would leave it visible only until the cached
     // chat arrived.
+    //
+    // A toolbar TLDR takes this same path rather than skipping ahead to the
+    // summary. Skipping it would overwrite this page's saved conversation with
+    // an empty one and pay for a summary the user already has: a restored chat
+    // is the answer to "TLDR this page", so it cancels the pending request and
+    // spends nothing.
     void this.restorePageChat(text, contextVersion, true).then((restored) => {
       if (contextVersion !== this.contextVersion) return;
       addTranscriptFallbackNote();
       addTruncationNote();
-      if (!restored) void this.persistCurrentPageChat();
+      if (restored) this.setAutoSummaryRequest(false);
+      else void this.persistCurrentPageChat();
       if (pendingSubmission) {
+        // A question the user typed supersedes a queued toolbar summary, which
+        // would otherwise stay pending and fire on a later reconnect.
+        this.setAutoSummaryRequest(false);
         void this.runTurn(pendingSubmission, { echoUser: true });
       }
+      this.maybeRunAutoSummary();
     });
+  }
+
+  private setAutoSummaryRequest(requested: boolean) {
+    this.autoSummaryRequested = requested;
+    this.autoSummaryContextVersion = requested ? this.contextVersion : -1;
+  }
+
+  // Runs the pending toolbar summary once — and only once — everything it
+  // needs is true: a connected panel, a live context that is still the one the
+  // request was made against, and no turn already in flight. A disconnected
+  // panel keeps the request pending without spending anything; connect() and
+  // init() retry it.
+  private maybeRunAutoSummary() {
+    if (
+      !this.autoSummaryRequested ||
+      this.autoSummaryContextVersion !== this.contextVersion ||
+      !this.snapshot.connected ||
+      this.snapshot.busy ||
+      !this.context ||
+      this.invalidated
+    ) {
+      return;
+    }
+    this.setAutoSummaryRequest(false);
+    this.runSummary();
   }
 
   private async initAuth() {
@@ -1072,6 +1130,7 @@ export class PanelController {
       connected,
       creditsText: connected ? this.snapshot.creditsText : null,
     });
+    if (connected) this.maybeRunAutoSummary();
   }
 
   private beginCreditsObservation() {
@@ -1923,6 +1982,8 @@ export class PanelController {
     this.invalidated = true;
     this.context = "";
     this.history = [];
+    // The pending toolbar summary belonged to the tab being left behind.
+    this.setAutoSummaryRequest(false);
     this.contextVersion++;
     this.tabId = tabId;
     this.windowId = windowId;
@@ -1984,6 +2045,7 @@ export class PanelController {
     this.invalidated = true;
     this.context = "";
     this.history = [];
+    this.setAutoSummaryRequest(false);
     this.pendingSubmission = null;
     this.update({
       busy: false,
@@ -2002,6 +2064,7 @@ export class PanelController {
     this.invalidated = true;
     this.context = "";
     this.history = [];
+    this.setAutoSummaryRequest(false);
     this.contextVersion++;
     this.highlightEpoch++;
     const pendingPdfHighlight = this.pendingPdfHighlight;

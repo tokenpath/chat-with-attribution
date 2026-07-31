@@ -1955,6 +1955,67 @@ function recordDeterministic(good) {
         pdfFetchCount: window.__fullPdfFetches.length,
       };
     });
+
+    // The toolbar sends the same textless full-PDF descriptor with intent
+    // "tldr". Reading the PDF still spends nothing; the summary starts by
+    // itself once the extraction lands, with no starter click.
+    const requestsBeforeToolbarPdf = await page.evaluate(
+      () => window.__fullPdfRequests.length
+    );
+    await page.evaluate(() => {
+      window.__fullPdfRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "full-pdf-toolbar",
+        capturedAt: Date.now(),
+        tabId: 301,
+        windowId: 17,
+        frameId: 0,
+        captureMode: "full-pdf",
+        intent: "tldr",
+        sourceType: "chrome-pdf",
+        url: "https://docs.example/reports/toolbar.pdf",
+        text: "",
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        window.__fullPdfEmbeds.length === 3 &&
+        window.__fullPdfEmbeds[2]?.requestedText === true
+    );
+    const toolbarPdfReadingState = await page.evaluate((previous) => ({
+      context: document.getElementById("context-text")?.textContent || "",
+      spentNothing: window.__fullPdfRequests.length === previous,
+    }), requestsBeforeToolbarPdf);
+    await page.evaluate(() => {
+      window.__resolveFullPdfEmbed(2, window.__fullPdfNewerText);
+    });
+    await page.waitForFunction(
+      () =>
+        window.__fullPdfRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length === 2 &&
+        window.__fullPdfRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length === 2
+    );
+    const toolbarPdfResult = await page.evaluate(() => {
+      const generation = window.__fullPdfRequests.filter((item) =>
+        item.path.endsWith("/v1/generate")
+      )[1];
+      const messages = generation?.request?.messages || [];
+      return {
+        answer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        label: document.querySelector(".source-label")?.textContent || "",
+        maxOutputTokens: generation?.request?.max_output_tokens,
+        prompt:
+          [...messages]
+            .reverse()
+            .find((message) => message.role === "user")?.content || "",
+      };
+    });
+
     const good =
       initialReadingState.context === "Reading the full PDF…" &&
       initialReadingState.label === "Entire PDF" &&
@@ -1978,11 +2039,20 @@ function recordDeterministic(good) {
       result.heatmapCount === 1 &&
       result.heatmapDocument ===
         (await page.evaluate(() => window.__fullPdfNewerText)) &&
-      result.pdfFetchCount === 2;
+      result.pdfFetchCount === 2 &&
+      toolbarPdfReadingState.context === "Reading the full PDF…" &&
+      toolbarPdfReadingState.spentNothing &&
+      toolbarPdfResult.label === "Entire PDF" &&
+      toolbarPdfResult.answer.includes("durable scheduling improvement") &&
+      toolbarPdfResult.maxOutputTokens === 2_048 &&
+      toolbarPdfResult.prompt.includes(
+        "exactly 3 concise Markdown bullet points"
+      );
     console.log("\n### Full-PDF side-panel fixture");
     console.log(
-      `  [reading state + extraction replacement + generation] ${good ? "PASS" : "FAIL"}` +
+      `  [reading state + extraction replacement + generation + toolbar TLDR] ${good ? "PASS" : "FAIL"}` +
         ` — label=${result.label}, waited=${extractionWaited}, fetches=${result.pdfFetchCount}, ` +
+        `toolbarPdf=${toolbarPdfReadingState.spentNothing}/${toolbarPdfResult.maxOutputTokens}, ` +
         `aborted=${olderSignalWasAborted}, calls=${result.generationCount}/${result.heatmapCount}`
     );
     recordDeterministic(good);
@@ -2188,6 +2258,213 @@ function recordDeterministic(good) {
         document.getElementById("summarize-starter") &&
         document.getElementById("input")?.disabled === false
     );
+
+    // The toolbar entry point seeds `intent: "tldr"`. Unlike a context-menu
+    // capture, it summarises the page it just captured without a second click.
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "toolbar-summary-seed",
+        capturedAt: 5,
+        tabId: 411,
+        windowId: 23,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "tldr",
+        sourceType: "page",
+        url: "https://docs.example/toolbar-summary",
+        text: window.__intentSummarySource,
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length === 1 &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length === 1
+    );
+    const toolbarSummary = await page.evaluate(() => {
+      const generation = window.__intentRequests.find((item) =>
+        item.path.endsWith("/v1/generate")
+      );
+      const messages = generation?.request?.messages || [];
+      return {
+        answer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        label: document.querySelector(".source-label")?.textContent || "",
+        maxOutputTokens: generation?.request?.max_output_tokens,
+        prompt:
+          [...messages]
+            .reverse()
+            .find((message) => message.role === "user")?.content || "",
+        // The auto-summary owns the empty state: its turn is already running,
+        // so the starter never invites a second, duplicate summary.
+        starterHidden: !document.getElementById("summarize-starter"),
+      };
+    });
+
+    // Clicking the toolbar again on the same document restores the summary the
+    // first click already paid for. The settle covers the cache write the
+    // finished turn starts and the cache read the second capture performs.
+    await page.waitForTimeout(200);
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "toolbar-summary-seed-again",
+        capturedAt: 6,
+        tabId: 411,
+        windowId: 23,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "tldr",
+        sourceType: "page",
+        url: "https://docs.example/toolbar-summary",
+        text: window.__intentSummarySource,
+        error: null,
+      });
+    });
+    await page.waitForTimeout(200);
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll("[data-answer-content]").length === 1 &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length === 1 &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length === 1
+    );
+    const toolbarSecondClick = await page.evaluate(() => {
+      const state = {
+        answer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        answerCount: document.querySelectorAll("[data-answer-content]").length,
+        generateCount: window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length,
+        heatmapCount: window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/attributions/heatmap")
+        ).length,
+      };
+      window.__intentRequests.length = 0;
+      return state;
+    });
+
+    // A toolbar click on a page whose chat was saved in an earlier session
+    // shows that chat. It never re-summarises, and never replaces the saved
+    // record with the empty conversation the capture arrived with.
+    await page.evaluate(async () => {
+      const key = "https://docs.example/toolbar-saved";
+      const context =
+        "The saved article describes a maintenance window, its rollback " +
+        "plan, the affected regions, and the customer notice that went out " +
+        "before the change was applied to production traffic.";
+      window.__toolbarSavedContext = context;
+      const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("tokenpath-page-chats");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction("conversations", "readwrite");
+        transaction.onerror = () => reject(transaction.error);
+        transaction.oncomplete = () => resolve();
+        transaction.objectStore("conversations").put({
+          key,
+          savedAt: Date.now(),
+          value: {
+            version: 2,
+            context,
+            contextLabel: "Entire page",
+            captureMode: "full-page",
+            sourceType: "page",
+            documents: [context],
+            history: [
+              { role: "assistant", content: "The saved summary is still here." },
+            ],
+            messages: [
+              {
+                id: "message-77",
+                role: "assistant",
+                kind: "answer",
+                text: "The saved summary is still here.",
+                answerStatus: "ready",
+                attribution: {
+                  documentIndex: 0,
+                  question: "Summarize the given text",
+                  status: "ready",
+                },
+                source: {
+                  tabId: 411,
+                  frameId: 0,
+                  captureId: "toolbar-saved-capture",
+                  contextVersion: 1,
+                  sourceType: "page",
+                  url: key,
+                },
+              },
+            ],
+          },
+        });
+      });
+      database.close();
+    });
+    await page.evaluate(() => {
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "toolbar-saved-seed",
+        capturedAt: 7,
+        tabId: 411,
+        windowId: 23,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "tldr",
+        sourceType: "page",
+        url: "https://docs.example/toolbar-saved",
+        text: window.__toolbarSavedContext,
+        error: null,
+      });
+    });
+    await page.waitForFunction(() =>
+      document
+        .getElementById("messages")
+        ?.textContent?.includes("The saved summary is still here.")
+    );
+    await page.waitForTimeout(200);
+    const toolbarSavedChat = await page.evaluate(async () => {
+      const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("tokenpath-page-chats");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      const record = await new Promise((resolve, reject) => {
+        const transaction = database.transaction("conversations", "readonly");
+        const request = transaction
+          .objectStore("conversations")
+          .get("https://docs.example/toolbar-saved");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      database.close();
+      const state = {
+        answerCount: document.querySelectorAll("[data-answer-content]").length,
+        recordMessageCount: record?.value?.messages?.length ?? 0,
+        recordKeepsAnswer:
+          record?.value?.messages?.[0]?.text ===
+          "The saved summary is still here.",
+        requestCount: window.__intentRequests.length,
+        restoredAnswer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        starterHidden: !document.getElementById("summarize-starter"),
+      };
+      window.__intentRequests.length = 0;
+      return state;
+    });
+
     await page.evaluate(() => {
       window.__intentRuntimeListeners[0]?.({
         type: "selection-captured",
@@ -2695,7 +2972,87 @@ function recordDeterministic(good) {
           ?.textContent?.includes("Source map unavailable") === true
     );
 
+    // A toolbar capture that lands while the panel is disconnected keeps its
+    // pending summary instead of dropping it, and spends nothing until there
+    // is a key to spend with.
+    await page.evaluate(() => {
+      document.getElementById("disconnect")?.click();
+    });
+    await page.waitForFunction(
+      () =>
+        document.getElementById("auth")?.hidden === false &&
+        document.getElementById("tokenpath-key")?.disabled === false
+    );
+    await page.evaluate(() => {
+      window.__intentRequests.length = 0;
+      window.__intentRuntimeListeners[0]?.({
+        type: "selection-captured",
+        captureId: "toolbar-disconnected-seed",
+        capturedAt: 30,
+        tabId: 411,
+        windowId: 23,
+        frameId: 0,
+        captureMode: "full-page",
+        intent: "tldr",
+        sourceType: "page",
+        url: "https://docs.example/toolbar-disconnected",
+        text: window.__intentSummarySource,
+        error: null,
+      });
+    });
+    await page.waitForFunction(
+      () =>
+        document.getElementById("context-text")?.textContent ===
+        window.__intentSummarySource
+    );
+    await page.waitForTimeout(120);
+    const disconnectedToolbarSpentNothing = await page.evaluate(
+      () => window.__intentRequests.length === 0
+    );
+    await page.locator("#tokenpath-key").fill("tpk_reconnected");
+    await page.locator("#auth-connect").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-answer-status="ready"]') &&
+        window.__intentRequests.filter((item) =>
+          item.path.endsWith("/v1/generate")
+        ).length === 1
+    );
+    const reconnectedToolbarSummary = await page.evaluate(() => {
+      const generation = window.__intentRequests.find((item) =>
+        item.path.endsWith("/v1/generate")
+      );
+      const messages = generation?.request?.messages || [];
+      return {
+        answer:
+          document.querySelector("[data-answer-content]")?.textContent || "",
+        prompt:
+          [...messages]
+            .reverse()
+            .find((message) => message.role === "user")?.content || "",
+      };
+    });
+
     const good =
+      toolbarSummary.answer.includes("simpler workflow") &&
+      toolbarSummary.prompt.includes(
+        "Summarize the given text as exactly 3 concise Markdown bullet points"
+      ) &&
+      toolbarSummary.maxOutputTokens === 2_048 &&
+      toolbarSummary.label === "Entire page" &&
+      toolbarSummary.starterHidden &&
+      toolbarSecondClick.answerCount === 1 &&
+      toolbarSecondClick.answer.includes("simpler workflow") &&
+      toolbarSecondClick.generateCount === 1 &&
+      toolbarSecondClick.heatmapCount === 1 &&
+      toolbarSavedChat.requestCount === 0 &&
+      toolbarSavedChat.answerCount === 1 &&
+      toolbarSavedChat.restoredAnswer.includes(
+        "The saved summary is still here."
+      ) &&
+      toolbarSavedChat.starterHidden &&
+      toolbarSavedChat.recordMessageCount === 1 &&
+      toolbarSavedChat.recordKeepsAnswer &&
       captureSpentNothing &&
       summaryLengthControlCount === 0 &&
       savedSummaryLength === null &&
@@ -2744,11 +3101,19 @@ function recordDeterministic(good) {
       restoredChat.notice === "" &&
       clearedChatStayedDeleted &&
       changedContentStartedFresh &&
-      interruptedMappingRecovered;
+      interruptedMappingRecovered &&
+      disconnectedToolbarSpentNothing &&
+      reconnectedToolbarSummary.answer.includes("simpler workflow") &&
+      reconnectedToolbarSummary.prompt.includes(
+        "Summarize the given text as exactly 3 concise Markdown bullet points"
+      );
     console.log("\n### Capture starter side-panel fixture");
     console.log(
-      `  [capture waits + 3-bullet summary + ask on submit] ${good ? "PASS" : "FAIL"}` +
-        ` — idleCapture=${captureSpentNothing}, summary=${summaryLengthControlCount}/${savedSummaryLength}/${summaryResult.maxOutputTokens}, ` +
+      `  [toolbar auto-summary + capture waits + ask on submit] ${good ? "PASS" : "FAIL"}` +
+        ` — toolbar=${toolbarSummary.maxOutputTokens}/${toolbarSecondClick.generateCount}, ` +
+        `saved=${toolbarSavedChat.requestCount}/${toolbarSavedChat.recordMessageCount}, ` +
+        `offline=${disconnectedToolbarSpentNothing}, ` +
+        `idleCapture=${captureSpentNothing}, summary=${summaryLengthControlCount}/${savedSummaryLength}/${summaryResult.maxOutputTokens}, ` +
         `concise=${conciseState.requestCount}/${conciseState.starterHidden}, ` +
         `askIdle=${askReadyState.generateCount}/${askReadyState.heatmapCount}, ` +
         `ask=${askResult.maxOutputTokens}`
@@ -6640,6 +7005,111 @@ if (deterministicFail > 0) process.exitCode = 1;
             "so it captured the page text instead"
           ),
         fallbackNote
+      );
+
+      // The toolbar entry point on a watch page: the same transcript capture,
+      // seeded with intent "tldr", summarises itself with no starter click.
+      const requestsBeforeToolbarVideo = await panel.evaluate(
+        () => window.__videoRequests.length
+      );
+      await panel.evaluate(() => {
+        window.__videoRuntimeListeners[0]?.({
+          type: "selection-captured",
+          captureId: "video-toolbar-seed",
+          capturedAt: 21,
+          tabId: 731,
+          windowId: 41,
+          frameId: 0,
+          captureMode: "video-transcript",
+          intent: "tldr",
+          sourceType: "page",
+          url: "https://www.youtube.com/watch?v=toolbar54321",
+          text: window.__videoTranscript,
+          error: null,
+        });
+      });
+      await panel.waitForFunction(
+        () =>
+          document.querySelector('[data-answer-status="ready"]') &&
+          document.getElementById("context-text")?.textContent ===
+            window.__videoTranscript
+      );
+      const toolbarVideo = await panel.evaluate((previous) => {
+        const newRequests = window.__videoRequests.slice(previous);
+        const generation = newRequests.find((item) =>
+          item.path.endsWith("/v1/generate")
+        );
+        const messages = generation?.request?.messages || [];
+        return {
+          answer:
+            document.querySelector("[data-answer-content]")?.textContent || "",
+          generateCount: newRequests.filter((item) =>
+            item.path.endsWith("/v1/generate")
+          ).length,
+          label: document.querySelector(".source-label")?.textContent || "",
+          maxOutputTokens: generation?.request?.max_output_tokens,
+          prompt:
+            [...messages]
+              .reverse()
+              .find((message) => message.role === "user")?.content || "",
+        };
+      }, requestsBeforeToolbarVideo);
+      videoCheck(
+        "a toolbar capture summarises the transcript with no second click",
+        toolbarVideo.answer === ANSWER &&
+          toolbarVideo.generateCount === 1 &&
+          toolbarVideo.label === "Video transcript" &&
+          toolbarVideo.maxOutputTokens === 2_048 &&
+          toolbarVideo.prompt.includes(
+            "exactly 3 concise Markdown bullet points"
+          ),
+        toolbarVideo
+      );
+
+      // A toolbar click on a captionless watch page summarises the page text
+      // it fell back to. The explanation is posted first, so the summary is
+      // never read as a summary of the video's spoken words.
+      await panel.evaluate(
+        ({ pageMarker, transcript }) => {
+          window.__videoRuntimeListeners[0]?.({
+            type: "selection-captured",
+            captureId: "no-captions-toolbar-seed",
+            capturedAt: 22,
+            tabId: 731,
+            windowId: 41,
+            frameId: 0,
+            captureMode: "full-page",
+            intent: "tldr",
+            sourceType: "page",
+            url: "https://www.youtube.com/watch?v=silent876543",
+            text: `${pageMarker} ${transcript}`,
+            error: null,
+            transcriptUnavailable: true,
+          });
+        },
+        { pageMarker: PAGE_MARKER, transcript: TRANSCRIPT }
+      );
+      await panel.waitForFunction(
+        () =>
+          document.querySelector('[data-answer-status="ready"]') &&
+          document
+            .getElementById("messages")
+            ?.textContent?.includes("This video has no subtitles")
+      );
+      const captionlessToolbar = await panel.evaluate((answer) => {
+        const text = document.getElementById("messages")?.textContent || "";
+        return {
+          answerIndex: text.indexOf(answer),
+          label: document.querySelector(".source-label")?.textContent || "",
+          noteIndex: text.indexOf("This video has no subtitles"),
+        };
+      }, ANSWER);
+      videoCheck(
+        "a captionless toolbar click explains the fallback, then summarises it",
+        captionlessToolbar.label === "Entire page" &&
+          captionlessToolbar.noteIndex >= 0 &&
+          captionlessToolbar.answerIndex > captionlessToolbar.noteIndex,
+        captionlessToolbar
       );
 
       await panel.close();

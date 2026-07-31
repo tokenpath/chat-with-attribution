@@ -3,9 +3,9 @@
 ## Goal
 
 TokenPath — Chat with Attribution is a Chrome Manifest V3 extension. A user
-opens the side panel from the toolbar icon, or selects text, right-clicks, and
-chooses the single **Chat with TokenPath** context-menu item. A selection uses
-only that span. A context-menu click without a selection uses the rendered text
+clicks the toolbar icon for a one-click summary of the whole page, or selects
+text, right-clicks, and chooses the single **Chat with TokenPath** context-menu
+item. A selection uses only that span. A context-menu click without a selection uses the rendered text
 of the originating page/frame or the entire top-level searchable PDF. The
 resulting side-panel chat is grounded in that source text. TokenPath streams
 each answer, then returns one answer-to-document heatmap. Clicking an attributed
@@ -19,17 +19,20 @@ supporting source range, and scrolls there in the live page or PDF.
    nested frame, or searchable PDF. The context menu is one item in the
    selection, page, and frame contexts; a selection takes precedence, and
    without one the originating HTML frame or top-level PDF becomes the source.
-   The toolbar icon opens the panel for the active tab and defers capture until
-   the user asks something (see step 3).
+   The toolbar icon always captures the complete active page (or PDF, or
+   video transcript) and asks for a summary of it (see step 3).
 2. The panel confirms capture immediately in a compact source row,
    independently of API-key validation or credit refresh. The full captured
    text is collapsed by default and can be expanded on demand.
-3. No capture starts a turn. The empty chat offers one **Summarize** starter,
-   which runs the summary pathway (`controller.runSummary()`) against the live
-   context, or — when the panel has no context yet, as after a toolbar-icon
-   open — submits a plain summary question that captures the page first.
-   Sources at or below the concise-source cutoff show an “Already concise” note
-   instead of generating, and the starter is suppressed while that note shows.
+3. Only a toolbar capture starts a turn, and only when there is nothing to
+   show: a page whose chat was saved earlier reopens that conversation and
+   spends nothing. Every other capture waits. The empty chat offers one
+   **Summarize** starter, which runs the summary pathway
+   (`controller.runSummary()`) against the live context, or — when the panel
+   has no context yet — submits a plain summary question that captures the
+   page first. Sources at or below the concise-source cutoff show an “Already
+   concise” note instead of generating, and the starter is suppressed while
+   that note shows.
 4. Continue with follow-up questions in the same composer and attributed chat.
    The composer stays usable while an answer streams; its submit button becomes
    **Stop**, which cancels the request and keeps the partial answer marked
@@ -104,12 +107,18 @@ an unpacked reload cannot leave stale actions behind. Each frame listens for
 selection changes, clones the current `Range`, and eagerly extracts it during
 `contextmenu`.
 
-The toolbar action is the second entry point. It only opens the side panel —
-`openPanelOnActionClick` is disabled — and capture is deferred: the panel
-restores this page's cached chat if there is one, and otherwise waits. The first
-question (or the **Summarize** starter with no context) sends
-`capture-tab-for-chat`, which runs the same full-page capture path against
-frame 0 without reopening the panel.
+The toolbar action is the second entry point, and the one-click TLDR path.
+`openPanelOnActionClick` is disabled so the worker owns the click: it runs the
+same `captureAndOpen` as the context menu with `frameId: 0`, `forceFullPage`,
+and `intent: "tldr"`, so the capture starts before the panel finishes opening.
+The panel restores this page's cached chat if there is one — a saved
+conversation is the answer to "TLDR this page", so it cancels the pending
+summary and spends nothing — and otherwise summarizes what it just captured.
+
+A panel opened without a capture still defers: the first question (or the
+**Summarize** starter with no context) sends `capture-tab-for-chat`, which runs
+the same full-page capture path against frame 0 with `intent: "ask"` and
+without reopening the panel.
 
 `chrome.sidePanel.open()` must begin synchronously in the click gesture, but the
 background worker does not await it. It first starts an idempotent script and CSS
@@ -142,7 +151,9 @@ silently choosing the wrong duplicate.
 
 Every seed carries `captureId`, `capturedAt` (the click), `seededAt` (the
 session-storage write), `tabId`, `windowId`, `frameId`, `captureMode`,
-`sourceType`, and the source URL. IDs are allocated before extraction, so click
+`intent`, `sourceType`, and the source URL. `intent` is why the click happened:
+only the toolbar's `"tldr"` asks the panel to summarize by itself, and every
+context-menu capture is an `"ask"` that waits. IDs are allocated before extraction, so click
 order—not async completion order—defines freshness. The panel installs its live
 listener before active-tab lookup, seed replay, or credit validation. A replayed
 seed is discarded when its capture is more than 120 seconds old or when its URL
@@ -205,8 +216,13 @@ emoji while preserving repeated-string disambiguation.
 
 ## Summary and generation policy
 
-The summary pathway is reached from the **Summarize** starter, never
-automatically. Captured sources of 24 whitespace-delimited words or fewer skip
+The summary pathway is reached from the **Summarize** starter and from a
+toolbar capture, which requests it automatically. That request is held on the
+controller with the `contextVersion` it was made under and runs once, only when
+the panel is connected, idle, and still on that exact context; a tab switch,
+navigation, capture failure, or restored chat drops it. A disconnected panel
+keeps it pending and spends nothing until `connect()` succeeds. Captured
+sources of 24 whitespace-delimited words or fewer skip
 the model call and post an “Already concise” note naming the source kind
 (selection, page, or PDF); the starter is hidden while such a note is present.
 CJK-dominant sources are measured by characters (48) rather than whitespace
@@ -241,9 +257,11 @@ are counted by Unicode code point so truncation does not split surrogate pairs.
 
 ## Streaming generation and just-in-time heatmap attribution
 
-A capture never starts a turn. Its source may be inspected in the panel, but no
-generation or attribution request is made until the user submits the composer or
-runs the **Summarize** starter. Once a turn starts, the generator uses one
+Only a toolbar capture starts a turn, and only when it has no saved chat to
+show instead. A context-menu capture's source may be inspected in the panel,
+but no generation or attribution request is made until the user submits the
+composer or runs the **Summarize** starter. Once a turn starts, the generator
+uses one
 streaming `POST /v1/generate` request. Its body contains only messages and an
 optional `max_output_tokens`:
 

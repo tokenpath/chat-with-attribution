@@ -2,8 +2,9 @@
 
 **TokenPath — Chat with Attribution** is a Chrome MV3 extension that opens an
 attributed chat about a web page, a passage inside it, or Chrome's native PDF
-viewer. Click the toolbar icon for the whole page, or select a passage,
-right-click, and choose the single **Chat with TokenPath** context-menu item.
+viewer. Click the toolbar icon for a one-click summary of the whole page, or
+select a passage, right-click, and choose the single **Chat with TokenPath**
+context-menu item.
 Every answer can be traced back: click an underlined phrase, select any part of
 the answer, or open its **Sources** list, and the extension highlights and
 scrolls to the source text that most strongly supports it.
@@ -21,9 +22,10 @@ scrolls to the source text that most strongly supports it.
 2. Open `chrome://extensions`.
 3. Enable **Developer mode**.
 4. Choose **Load unpacked** and select `tldr-extension/`.
-5. Click the TokenPath toolbar icon to open the panel for the active tab, then
-   ask a question or use the **Summarize** starter. To chat about one passage
-   instead, select it first, right-click, and choose **Chat with TokenPath**.
+5. Click the TokenPath toolbar icon to capture the active page and immediately
+   get an attributed three-bullet summary of it, then ask follow-up questions
+   in the same chat. To chat about one passage instead, select it first,
+   right-click, and choose **Chat with TokenPath**.
 
 On first use, paste a TokenPath API key from
 [platform.tokenpath.ai](https://platform.tokenpath.ai). The same key covers
@@ -58,8 +60,10 @@ explanations, privacy checks, and reviewer instructions are in
 
 ## Chat behavior
 
-A capture never starts a turn by itself: the panel shows what it captured and
-waits.
+The toolbar icon is the one-click summary path: it captures the whole page and
+summarizes it right away, unless that page already has a saved chat — then it
+reopens that conversation and spends nothing. Every other capture starts a
+turn only when you ask: the panel shows what it captured and waits.
 
 - The empty chat offers one **Summarize** starter, which runs the summary
   pathway against the captured source. Every summary asks for the same thing:
@@ -102,8 +106,9 @@ waits.
    is never selected or reloaded. Each capture travels as a seed carrying
    `capturedAt` (the click) and `seededAt` (the write); the panel discards a
    seed older than 120 seconds or one whose URL no longer matches the live tab.
-3. When the user asks a question or runs the summary starter, TokenPath streams
-   the answer from `POST /v1/generate` using a messages-only request. The
+3. When a toolbar capture lands on a page with no saved chat, and whenever the
+   user asks a question or runs the summary starter, TokenPath streams the
+   answer from `POST /v1/generate` using a messages-only request. The
    extension owns the system prompt, exact captured document, bounded
    conversation history, and latest question; TokenPath chooses the inexpensive
    model. Named `delta` events update the panel, while the terminal

@@ -185,11 +185,12 @@ alternative.
 The tests mock rather than launch a packaged Chrome extension, so a final
 load-unpacked pass should verify the real entry points: the context menu offers
 exactly one item, **Chat with TokenPath**, on a selection and on a page with no
-selection, and the toolbar icon opens the panel for the current tab. Confirm
-that neither one generates anything on its own, that the **Summarize** starter
-runs a summary at the selected length, that a short source shows the “Already
-concise” note instead (with no starter beside it), and that **Stop** during a
-stream leaves the partial answer marked incomplete.
+selection, and the toolbar icon captures the current tab and summarizes it.
+Confirm that a context-menu capture generates nothing on its own, that a
+toolbar click on a page with a saved chat reopens that chat without spending
+anything, that the **Summarize** starter runs a summary, that a short source
+shows the “Already concise” note instead (with no starter beside it), and that
+**Stop** during a stream leaves the partial answer marked incomplete.
 
 The pass should also verify the side panel, TokenPath HTTP/authentication flow,
 streamed Markdown, the three ways into attribution (clicking an underlined

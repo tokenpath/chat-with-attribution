@@ -20,11 +20,13 @@ capture, then trace generated answer text back to the passage that supports it.
 
 TokenPath adds an attributed chat to webpages and searchable PDFs.
 
-Click the TokenPath toolbar icon to chat about the page you are on, or select a
-passage, right-click, and choose **Chat with TokenPath** to chat about just that
-text. Nothing is generated automatically: the panel shows what it captured and
-waits. Type your question, or use the one-click **Summarize** starter, which
-answers with three short bullet points you can follow up on.
+Click the TokenPath toolbar icon to read the page you are on and summarize it in
+three short bullet points you can follow up on. Reopening a page you have
+already chatted about brings that conversation back instead of summarizing it
+again. To chat about one passage instead, select it, right-click, and choose
+**Chat with TokenPath**: that capture generates nothing on its own — the panel
+shows what it captured and waits for your question or the one-click
+**Summarize** starter.
 
 After TokenPath answers, click any underlined phrase — or open the answer's
 **Sources** list, or select any words in the answer. The extension maps that
@@ -87,11 +89,13 @@ behavior. Confirm and disclose:
 Provide a temporary reviewer API key, then ask the reviewer to:
 
 1. Open a normal article and click the TokenPath toolbar icon. The side panel
-   opens with an empty chat.
-2. Paste the supplied TokenPath API key and connect.
-3. Click the **Summarize** starter in the empty chat. TokenPath reads the page,
-   then streams a summary. (Any typed question works the same way. Nothing is
-   generated until this step — capture alone never starts an answer.)
+   opens and shows the captured page.
+2. Paste the supplied TokenPath API key and connect. TokenPath then streams the
+   summary that toolbar click asked for. (Nothing is generated while the panel
+   is disconnected, and a page with a saved chat reopens that chat instead of
+   summarizing again.)
+3. Type any question about the page in the composer. It streams a second
+   attributed answer the same way.
 4. Wait for “Mapping this answer to the source…” to finish. Attributed phrases
    in the answer become underlined.
 5. Click one of the underlined phrases. Confirm that the matching text is
@@ -104,8 +108,9 @@ Provide a temporary reviewer API key, then ask the reviewer to:
 8. Reload the article. The chat is restored; clicking a phrase again still
    highlights the source in the reloaded page.
 9. Select one paragraph, right-click, and choose **Chat with TokenPath** — the
-   only item the extension adds. Confirm the panel now shows *Selected text* and
-   answers about that passage only.
+   only item the extension adds. Confirm the panel now shows *Selected text*,
+   generates nothing on its own, and answers about that passage only once you
+   ask or click the **Summarize** starter.
 10. Open a searchable PDF in Chrome's viewer and repeat steps 3–5 to verify PDF
     capture and highlighting.
 

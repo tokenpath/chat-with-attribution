@@ -309,12 +309,27 @@ assert.ok(installedHandler, "context-menu installer registered");
     toolbarCalls.some(([name]) => name === "sidePanel.open"),
     "toolbar click opens the side panel"
   );
-  assert.strictEqual(
-    toolbarCalls.some(([name]) => name === "tabs.sendMessage"),
-    false,
-    "toolbar click must not read the page before the user asks"
+  const toolbarCapture = toolbarCalls.find(
+    ([name, tabId, message]) =>
+      name === "tabs.sendMessage" &&
+      tabId === 40 &&
+      message?.type === "capture-page"
   );
-  console.log("PASS: toolbar click opens chat without capturing the page");
+  assert.ok(toolbarCapture, "toolbar click captures the active page");
+  assert.strictEqual(toolbarCapture[2].forceFullPage, true);
+  assert.strictEqual(toolbarCapture[3].frameId, 0);
+  const toolbarSeed = toolbarCalls.find(
+    ([name]) => name === "storage.session.set"
+  )[1]["seed:40"];
+  assert.strictEqual(toolbarSeed.captureMode, "full-page");
+  assert.strictEqual(toolbarSeed.intent, "tldr");
+  assert.strictEqual(toolbarSeed.text, "Toolbar article");
+  assert.ok(
+    toolbarCalls.findIndex(([name]) => name === "sidePanel.open") <
+      toolbarCalls.findIndex(([name]) => name === "tabs.sendMessage"),
+    "toolbar capture must not wait for the side panel"
+  );
+  console.log("PASS: toolbar click captures the page and starts a TLDR");
 
   tabUrls.set(40, "https://example.com/activated-tab");
   const silentCaptureStart = calls.length;
