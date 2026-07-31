@@ -40,7 +40,15 @@ The files today:
   absence of a low summary output cap, code-point-safe truncation around emoji,
   TokenPath code-point to browser UTF-16 offset conversion, CJK-dominant
   handling, and the service-parity heatmap resolver across sparse mass,
-  weak-token gaps, repeated source text, missing mass, and emoji.
+  weak-token gaps, repeated source text, missing mass, and emoji. It also
+  covers the follow-up suggestions protocol: the Detailed preset and bounded
+  custom instructions replacing the preset but never the shared suffix; the
+  tail appended after every question; parsing a well-formed block, an absent
+  one, malformed pairs, several blocks, a nested opener, a stream cut off
+  mid-block or mid-marker, and CJK, emoji, curly-quoted, and bulleted lines;
+  the verbatim anchor gate including whitespace-collapse and case sensitivity;
+  coverage ranking against a synthetic heatmap plus the positional fallback;
+  and the depth ladder's fixed-chip rule.
 - **`controller-urls.test.cjs`** pins page identity: a plain `#section` anchor, a
   `:~:text=` directive, and PDF `#page`/`#zoom` anchors all keep one document
   and one page-chat key, while a different path or query string does not. It
@@ -150,6 +158,20 @@ source-offset highlight. It covers:
 - X post identity across detach and reorder when another post contains the same
   text, plus rejection of a connected React Text node whose contents changed.
 
+**Auto-summary, follow-ups, and Settings** is a self-contained suite with its
+own browser and counters. It drives a toolbar capture through an automatic
+summary whose single generation call also carries the suggestions tail, and
+checks that the tail block reaches neither the rendered answer nor the heatmap
+request, that a fabricated anchor quote and one quoting the passage the answer
+already used both lose their slot, that the depth ladder takes slot one, that
+clicking a generated chip asks it as an ordinary turn and refreshes the row,
+that the detailed rung sends the second preset without echoing a question, that
+a restored chat shows its saved chips without spending, and that each setting
+behaves: follow-ups off hides the row, automatic summaries off captures without
+spending and replaces the **Summarize** starter with a summarize chip, and
+custom instructions reach generation with the suffix and tail after them and
+reset in one tap.
+
 ### Live public sites
 
 The checks against real third-party pages (Example, Wikipedia, GNU, MDN, Hacker
@@ -190,7 +212,11 @@ Confirm that a context-menu capture generates nothing on its own, that a
 toolbar click on a page with a saved chat reopens that chat without spending
 anything, that the **Summarize** starter runs a summary, that a short source
 shows the “Already concise” note instead (with no starter beside it), and that
-**Stop** during a stream leaves the partial answer marked incomplete.
+**Stop** during a stream leaves the partial answer marked incomplete. Confirm
+too that a real model returns a usable suggestions block often enough to be
+worth the tail, that no marker text is ever visible mid-stream, and that the
+Settings gear, its switches, the Detailed preset, and custom instructions all
+behave against the live API.
 
 The pass should also verify the side panel, TokenPath HTTP/authentication flow,
 streamed Markdown, the three ways into attribution (clicking an underlined

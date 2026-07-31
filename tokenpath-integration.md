@@ -124,9 +124,11 @@ panel's **Summarize** starter. A capture by itself makes no request.
 
 For the summary pathway, sources of 24 words or fewer make no request at all
 (CJK-dominant text uses a 48-character cutoff); the panel posts an “Already
-concise” note instead. Every longer source gets the same request: a prompt
-asking for exactly 3 one-sentence Markdown bullet points, most important first,
-and `max_output_tokens: 2048`. That ceiling is TokenPath's maximum and is what
+concise” note instead. Every longer source gets one of two prompts — the
+default asking for exactly 3 one-sentence Markdown bullet points, most
+important first, or a Detailed one asking for a structured summary in sections
+— or the user's own instructions in place of either. All three share the same
+suffix and the same `max_output_tokens: 2048`. That ceiling is TokenPath's maximum and is what
 every generation path sends — summaries and ordinary questions alike — because
 generation is billed from the input text, so a lower ceiling saves nothing and
 only risks stopping mid-sentence. The ceiling leaves completion headroom;
@@ -135,6 +137,46 @@ token it was allowed gets a note saying it reached the maximum answer length,
 and stays attributed. The client does not clip or replace the result: the exact
 terminal
 `done.answer` is used for the UI, conversation history, and heatmap request.
+
+### The suggestions tail
+
+When follow-up suggestions are enabled, the panel appends one fixed instruction
+after the latest question in the **outgoing user message only**, asking the
+model to end its answer with a block of four Q/A pairs:
+
+```text
+<<<SUGGESTIONS
+Q: <question strictly answerable from the provided text, about material not already covered by this answer>
+A: "<verbatim quote of at most 10 words from the provided text that the answer to this question would cite>"
+Q: ...
+A: "..."
+SUGGESTIONS>>>
+```
+
+This is a client-side convention, not a TokenPath feature: `/v1/generate` is
+unchanged and TokenPath adds no prompt of its own. Riding along on the answer's
+own call is what makes it free — generation is billed from the input text, so a
+separate request would re-pay for the whole document to obtain two questions,
+while the extra output tokens cost nothing.
+
+The block therefore appears in `done.answer` (and in the trailing `delta`
+events). **The panel strips it before anything else sees the answer.** Every
+complete block, a stray closing marker, and an opener the stream never closed
+are removed from each streaming delta and from the terminal answer, so:
+
+- the rendered answer never shows the marker, not even mid-stream;
+- `POST /v1/attributions/heatmap` receives the stripped answer — the block is
+  never part of the `answer` field, and the heatmap therefore never maps it;
+- the conversation history and the cached page chat store the stripped answer;
+  and
+- the `question` field of the heatmap request is the question **without** the
+  tail, because the tail is added to the outgoing message only.
+
+An answer that carries no block is passed through byte for byte. A malformed
+block yields no suggestions and never garbles the answer. The panel then keeps
+only candidates whose anchor quote occurs verbatim in the captured document and
+whose anchors lie outside the regions the answer's heatmap drew on, and shows at
+most two.
 
 Cancellation is not always discarding. Navigation, a newer capture, or
 disconnect drops the turn, but the composer's **Stop** button and a mid-stream
