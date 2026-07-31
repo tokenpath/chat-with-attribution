@@ -8,11 +8,20 @@ import {
 import { AuthPanel } from "@/components/panel/auth-panel";
 import { ChatMessage, ThinkingMessage } from "@/components/panel/chat-message";
 import { Composer } from "@/components/panel/composer";
+import {
+  FollowUpChips,
+  type FollowUpChip,
+} from "@/components/panel/follow-up-chips";
 import { PanelHeader } from "@/components/panel/panel-header";
+import { SettingsView } from "@/components/panel/settings-view";
 import { SourceCard } from "@/components/panel/source-card";
 import type { AnswerStatus, PanelController, PanelMessage } from "@/controller";
 import { useAnswerHighlights } from "@/hooks/use-answer-highlights";
-import { summaryFallbackPrompt } from "@/lib/source-copy";
+import {
+  DETAILED_SUMMARY_CHIP_LABEL,
+  summarizeChipLabel,
+  summaryFallbackPrompt,
+} from "@/lib/source-copy";
 import { findLast } from "@/lib/utils";
 
 // The controller emits this note through its own copy; the view only needs to
@@ -66,6 +75,7 @@ export function App({
   );
   const highlights = useAnswerHighlights();
   const keyInputRef = useRef<HTMLInputElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [authResolved, setAuthResolved] = useState(!initialized);
   const [dismissedNotice, setDismissedNotice] = useState<string | null>(null);
@@ -94,6 +104,72 @@ export function App({
     snapshot.notice && snapshot.notice !== dismissedNotice
       ? snapshot.notice
       : null;
+
+  // ---- Suggested follow-ups -------------------------------------------
+  //
+  // The row is a post-answer affordance: the depth ladder's fixed chip takes
+  // slot 1 and the latest answer's generated suggestions fill what is left.
+  // The one case where it appears over an empty chat is a capture that
+  // deliberately did not summarize, which is exactly where "Summarize this
+  // page" belongs.
+  const summaryAnswers = snapshot.messages.filter(
+    (message) => isAnswer(message) && message.summaryDepth
+  );
+  const answeredThisChat = snapshot.messages.some(
+    (message) => isAnswer(message) && Boolean(message.text)
+  );
+  const latestSuggestions =
+    findLast(
+      snapshot.messages,
+      (message) => isAnswer(message) && (message.suggestions?.length ?? 0) > 0
+    )?.suggestions ?? [];
+  const fixedChipKind = TldrPanelLogic.selectFixedLadderChip({
+    hasSummary: summaryAnswers.length > 0,
+    lastSummaryDepth: summaryAnswers.at(-1)?.summaryDepth ?? null,
+    defaultPreset: snapshot.settings.customSummaryPrompt
+      ? "custom"
+      : snapshot.settings.summaryPreset,
+  });
+  const chips: FollowUpChip[] = [];
+  if (
+    snapshot.settings.suggestFollowUps &&
+    snapshot.connected &&
+    snapshot.hasContext &&
+    !snapshot.busy &&
+    !snapshot.settingsOpen &&
+    (answeredThisChat || !snapshot.settings.autoSummarize)
+  ) {
+    if (fixedChipKind === "summarize") {
+      chips.push({
+        id: "ladder-summarize",
+        kind: "summarize",
+        label: summarizeChipLabel(snapshot),
+        onSelect: () => {
+          if (snapshot.hasContext && controller.runSummary()) return;
+          controller.submit(summaryFallbackPrompt(snapshot));
+        },
+      });
+    } else if (fixedChipKind === "detailed") {
+      chips.push({
+        id: "ladder-detailed",
+        kind: "detailed",
+        label: DETAILED_SUMMARY_CHIP_LABEL,
+        onSelect: () => controller.runSummary({ depth: "detailed" }),
+      });
+    }
+    for (const question of latestSuggestions) {
+      if (chips.length >= TldrPanelLogic.MAX_SUGGESTION_CHIPS) break;
+      chips.push({
+        id: `suggestion-${question}`,
+        kind: "generated",
+        label: question,
+        onSelect: () => controller.submit(question),
+      });
+    }
+  }
+  // A "Summarize this page" chip and a Summarize starter saying the same
+  // thing is clutter, so the chip wins and the starter stands down.
+  const chipsIncludeSummarize = chips.some((chip) => chip.kind === "summarize");
 
   // Auth resolves asynchronously. Focusing the key field before then would
   // steal focus from every already-connected user, so wait for the answer.
@@ -168,6 +244,25 @@ export function App({
     if (!snapshot.notice) setDismissedNotice(null);
   }, [snapshot.notice]);
 
+  // Leaving Settings — by the back arrow, Escape, or the gear itself — puts
+  // focus back on the control that opened it.
+  const wasSettingsOpen = useRef(snapshot.settingsOpen);
+  useEffect(() => {
+    const previous = wasSettingsOpen.current;
+    wasSettingsOpen.current = snapshot.settingsOpen;
+    if (previous && !snapshot.settingsOpen) settingsButtonRef.current?.focus();
+  }, [snapshot.settingsOpen]);
+
+  // A new turn (or note) belongs to the conversation, so it pulls the panel
+  // back out of Settings rather than answering behind it.
+  const messageCount = snapshot.messages.length;
+  const previousMessageCount = useRef(messageCount);
+  useEffect(() => {
+    const grew = messageCount > previousMessageCount.current;
+    previousMessageCount.current = messageCount;
+    if (grew && snapshot.settingsOpen) controller.closeSettings();
+  }, [controller, messageCount, snapshot.settingsOpen]);
+
   // Connecting hides the auth section under the just-clicked button, which
   // would otherwise drop focus to <body>.
   const wasConnected = useRef(snapshot.connected);
@@ -180,7 +275,11 @@ export function App({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <PanelHeader controller={controller} snapshot={snapshot} />
+      <PanelHeader
+        controller={controller}
+        settingsButtonRef={settingsButtonRef}
+        snapshot={snapshot}
+      />
       <div aria-hidden="true" className="token-rail" />
 
       <AuthPanel
@@ -218,7 +317,16 @@ export function App({
         </div>
       </div>
 
-      <Conversation aria-label="Conversation" className="min-h-0" id="messages">
+      {snapshot.settingsOpen && (
+        <SettingsView controller={controller} snapshot={snapshot} />
+      )}
+
+      <Conversation
+        aria-label="Conversation"
+        className="min-h-0"
+        hidden={snapshot.settingsOpen}
+        id="messages"
+      >
         <ConversationContent className="gap-5 px-3.5 py-4">
           {snapshot.messages.map((message) => (
             <ChatMessage
@@ -232,7 +340,10 @@ export function App({
               message={message}
             />
           ))}
-          {chatIsEmpty && !snapshot.busy && !hasConciseNote && (
+          {chatIsEmpty &&
+            !snapshot.busy &&
+            !hasConciseNote &&
+            !chipsIncludeSummarize && (
             <div className="chat-starter">
               <p>What would you like to know?</p>
               <button
@@ -254,6 +365,8 @@ export function App({
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
+
+      <FollowUpChips chips={chips} />
 
       <Composer
         controller={controller}

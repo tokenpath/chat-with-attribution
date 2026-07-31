@@ -378,7 +378,11 @@ function recordDeterministic(good) {
             [...(request.messages || [])]
               .reverse()
               .find((message) => message.role === "user")?.content || "";
-          const selected = cases[question] || fallback;
+          // Every generation path appends the follow-up suggestions tail after
+          // the question. The fixture keys on what the user actually asked.
+          const selected =
+            cases[question.split("\n\nAfter your answer is complete")[0]] ||
+            fallback;
           return sseResponse(
             selected.answer,
             // Exercise controller finalization too: transient deltas may differ
@@ -1032,7 +1036,15 @@ function recordDeterministic(good) {
       (message) => message.role === "system"
     )?.content;
     const summaryPrompt = generationMessages.at(-1)?.content;
+    // The fixed follow-up instruction every generation path appends, read
+    // back from a turn whose question is known exactly.
+    const tail = (
+      panelResult.followupHistory[2]?.content || ""
+    ).slice("inline code case".length);
     const good =
+      tail.startsWith("\n\nAfter your answer is complete") &&
+      tail.includes("<<<SUGGESTIONS") &&
+      tail.includes("SUGGESTIONS>>>") &&
       pendingSourceState.hasToggle === false &&
       pendingSourceState.hidden === true &&
       !pendingSourceState.visible &&
@@ -1071,12 +1083,14 @@ function recordDeterministic(good) {
       (panelResult.canonicalSummary.trim().match(/\S+/g)?.length || 0) > 16 &&
       panelResult.autoHeatmapAnswer === panelResult.canonicalSummary &&
       panelResult.followupHistoryAnswer === panelResult.canonicalSummary &&
+      // The suggestions tail is appended to the outgoing user message only:
+      // conversation history keeps the question the user actually asked.
       panelResult.followupHistory[0]?.role === "user" &&
-      panelResult.followupHistory[0]?.content === summaryPrompt &&
+      summaryPrompt === panelResult.followupHistory[0]?.content + tail &&
       panelResult.followupHistory[1]?.role === "assistant" &&
       panelResult.followupHistory[1]?.content === panelResult.canonicalSummary &&
       panelResult.followupHistory[2]?.role === "user" &&
-      panelResult.followupHistory[2]?.content === "inline code case" &&
+      panelResult.followupHistory[2]?.content === "inline code case" + tail &&
       panelResult.hasSafeMarkdownLink &&
       panelResult.blocksRemoteMarkdownImage &&
       panelResult.fitsNarrowPanel &&
@@ -3269,7 +3283,10 @@ function recordDeterministic(good) {
       askReadyState.starterText === "Summarize" &&
       askReadyState.placeholder === "Ask about the page…" &&
       askReadyState.truncationNote &&
-      askResult.question === explicitQuestion &&
+      // An ordinary turn asks for follow-up suggestions too: the tail sits
+      // after the user's exact question, and nothing rewrites the question.
+      askResult.question.startsWith(explicitQuestion) &&
+      askResult.question.includes("<<<SUGGESTIONS") &&
       // An ordinary question shares the summary's ceiling.
       askResult.maxOutputTokens === 2_048 &&
       askResult.systemIncludesContext &&

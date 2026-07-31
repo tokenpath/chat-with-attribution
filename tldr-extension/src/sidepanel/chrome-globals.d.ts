@@ -11,6 +11,20 @@ interface TldrSummaryRequest {
   skip: boolean;
   maxOutputTokens?: number;
   prompt?: string;
+  /** Which rung of the depth ladder this request represents. */
+  depth?: "bullets" | "detailed" | "custom";
+}
+
+/** One Q/A pair lifted from an answer's suggestions tail block. */
+interface TldrSuggestionCandidate {
+  question: string;
+  anchor: string;
+}
+
+/** A candidate whose anchor quote was found verbatim in the document. */
+interface TldrGroundedSuggestion extends TldrSuggestionCandidate {
+  start: number;
+  end: number;
 }
 
 interface TldrAnswerAttributionPhrase {
@@ -20,12 +34,52 @@ interface TldrAnswerAttributionPhrase {
 }
 
 interface TldrPanelLogicApi {
+  MAX_SUGGESTION_CHIPS: number;
+  MAX_SUMMARY_INSTRUCTIONS_CHARS: number;
+  SUGGESTION_CANDIDATES: number;
+  boundSummaryInstructions(text: string): string;
   buildAnswerAttributionPhrases(
     heatmap: TldrHeatmap,
     answer: string,
     minimumMass?: number
   ): TldrAnswerAttributionPhrase[];
-  buildSummaryRequest(text: string): TldrSummaryRequest;
+  buildSummaryRequest(
+    text: string,
+    options?: {
+      preset?: string;
+      customPrompt?: string | null;
+    }
+  ): TldrSummaryRequest;
+  groundSuggestions(
+    candidates: TldrSuggestionCandidate[],
+    document: string
+  ): TldrGroundedSuggestion[];
+  heatmapCoveredRegions(
+    heatmap: TldrHeatmap | null,
+    document: string,
+    answer: string
+  ): Array<[number, number]>;
+  parseSuggestions(answer: string): {
+    answer: string;
+    candidates: TldrSuggestionCandidate[];
+  };
+  selectFixedLadderChip(state?: {
+    hasSummary?: boolean;
+    lastSummaryDepth?: string | null;
+    defaultPreset?: string;
+  }): "summarize" | "detailed" | null;
+  selectSuggestions(
+    candidates: TldrGroundedSuggestion[],
+    options?: {
+      heatmap?: TldrHeatmap | null;
+      document?: string;
+      answer?: string;
+      max?: number;
+    }
+  ): TldrGroundedSuggestion[];
+  stripSuggestionsBlock(answer: string): string;
+  summaryPresetPrompt(preset: string): string;
+  withSuggestionsTail(question: string): string;
   truncateCodePoints(text: string, maxCodePoints: number): string;
   resolveHeatmapSpan(
     heatmap: TldrHeatmap,

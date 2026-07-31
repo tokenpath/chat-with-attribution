@@ -204,10 +204,8 @@ const TldrPanelLogic = (() => {
    * marker is never visible and never reaches attribution or the cache.
    */
   function stripSuggestionsBlock(answer) {
-    let value = String(answer == null ? "" : answer).replace(
-      suggestionsBlockPattern(),
-      ""
-    );
+    const original = String(answer == null ? "" : answer);
+    let value = original.replace(suggestionsBlockPattern(), "");
     // A nested or duplicated block can leave a closing marker behind. It is a
     // deliberately exotic string, so removing a stray one costs nothing and
     // keeps the marker out of the rendered answer.
@@ -230,7 +228,10 @@ const TldrPanelLogic = (() => {
         }
       }
     }
-    return value.replace(/\s+$/u, "");
+    // An answer that carried no block is returned byte for byte: the terminal
+    // `done.answer` is canonical, and trimming it would desynchronize the
+    // displayed text from the string sent to attribution.
+    return value === original ? original : value.replace(/\s+$/u, "");
   }
 
   /**
