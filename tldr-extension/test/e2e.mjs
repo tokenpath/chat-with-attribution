@@ -393,7 +393,17 @@ function recordDeterministic(good) {
           );
         }
         if (path.endsWith("/v1/attributions/heatmap")) {
-          const selected = cases[request.question] || fallback;
+          const currentRequestMarker = "\n\nCurrent user request:\n";
+          const currentRequestStart = request.question.lastIndexOf(
+            currentRequestMarker
+          );
+          const currentQuestion =
+            currentRequestStart === -1
+              ? request.question
+              : request.question.slice(
+                  currentRequestStart + currentRequestMarker.length
+                );
+          const selected = cases[currentQuestion] || fallback;
           const answerRanges = [
             [selected.start, selected.end],
             ...(request.answer.includes("worldwide")
@@ -752,7 +762,9 @@ function recordDeterministic(good) {
           window.__panelRequests.some(
             (item) =>
               item.path.endsWith("/v1/attributions/heatmap") &&
-              item.request?.question === expectedQuestion
+              item.request?.question?.endsWith(
+                `\n\nCurrent user request:\n${expectedQuestion}`
+              )
           ) &&
           [...document.querySelectorAll("[data-answer-status]")].at(-1)
             ?.dataset.answerStatus === "ready",
@@ -811,6 +823,8 @@ function recordDeterministic(good) {
       );
       return {
         autoHeatmapAnswer: heatmapRequests[0]?.request?.answer,
+        autoHeatmapQuestion: heatmapRequests[0]?.request?.question,
+        followupHeatmapQuestion: heatmapRequests[1]?.request?.question,
         heatmapThreshold: heatmapRequests[0]?.request?.threshold,
         canonicalSummary: window.__panelCanonicalSummary,
         context: document.getElementById("context-text").textContent,
@@ -1082,6 +1096,22 @@ function recordDeterministic(good) {
       !panelResult.displayedSummary.includes("Temporary streamed draft") &&
       (panelResult.canonicalSummary.trim().match(/\S+/g)?.length || 0) > 16 &&
       panelResult.autoHeatmapAnswer === panelResult.canonicalSummary &&
+      panelResult.autoHeatmapQuestion?.includes(
+        "Instructions given to the generator:\nYou are given some text from https://news.example."
+      ) &&
+      !panelResult.autoHeatmapQuestion?.includes(
+        "Conversation history given to the generator:"
+      ) &&
+      panelResult.autoHeatmapQuestion?.endsWith(
+        `Current user request:\n${panelResult.followupHistory[0]?.content}`
+      ) &&
+      !panelResult.autoHeatmapQuestion?.includes("<<<SUGGESTIONS") &&
+      panelResult.followupHeatmapQuestion?.includes(
+        `Conversation history given to the generator:\nUser:\n${panelResult.followupHistory[0]?.content}\n\nAssistant:\n${panelResult.canonicalSummary}`
+      ) &&
+      panelResult.followupHeatmapQuestion?.endsWith(
+        "Current user request:\ninline code case"
+      ) &&
       panelResult.followupHistoryAnswer === panelResult.canonicalSummary &&
       // The suggestions tail is appended to the outgoing user message only:
       // conversation history keeps the question the user actually asked.
