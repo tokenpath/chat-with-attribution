@@ -1354,7 +1354,7 @@ export class PanelController {
       answerStatus: "streaming",
       attribution: {
         document: turn.document,
-        question: turn.question,
+        question: turn.attributionQuestion,
         status: "loading",
       },
       kind: "answer",
@@ -1442,7 +1442,7 @@ export class PanelController {
         answerStatus: "attributing",
         attribution: {
           document: turn.document,
-          question: turn.question,
+          question: turn.attributionQuestion,
           status: "loading",
         },
         text: answer,
@@ -1623,9 +1623,9 @@ export class PanelController {
       role: "user" | "assistant";
       content: string;
     }>,
-    // The tail is appended to the outgoing user message only. `question` — the
-    // string attribution maps the answer against, and the one stored with the
-    // chat — stays exactly what the user (or the summary prompt) asked.
+    // The tail is appended to the outgoing user message only. The attribution
+    // transcript, which is also stored with the chat, keeps the clean request
+    // exactly as the user (or the summary prompt) asked it.
     withSuggestions = false
   ) {
     const lastUserIndex = messages
@@ -1636,7 +1636,7 @@ export class PanelController {
         ? "Summarize the selected text."
         : messages[lastUserIndex].content;
     const boundedQuestion = TldrPanelLogic.truncateCodePoints(question, 10_000);
-    const systemPrefix =
+    const systemInstructions =
       `You are given some text from ${this.sourceBaseUrl}. ` +
       "Answer the user's question using the given text as the source of " +
       "truth. Do not invent details that the source does not support. If the " +
@@ -1656,8 +1656,8 @@ export class PanelController {
       "- Prefer bullet points when they make the answer easier to scan.\n" +
       "- Use a Markdown table when the information is naturally tabular or " +
       "when comparing multiple items.\n" +
-      "- Do not force bullets or tables when a short paragraph is clearer.\n\n" +
-      "Given text:\n";
+      "- Do not force bullets or tables when a short paragraph is clearer.";
+    const systemPrefix = `${systemInstructions}\n\nGiven text:\n`;
     const maxSystemChars = Math.max(
       systemPrefix.length + 2,
       MAX_GENERATE_INPUT_CHARS - boundedQuestion.length
@@ -1693,9 +1693,25 @@ export class PanelController {
       remainingChars -= content.length;
     }
 
+    const attributionConversation = boundedPrior
+      .map(
+        (message) =>
+          `${message.role === "user" ? "User" : "Assistant"}:\n${message.content}`
+      )
+      .join("\n\n");
+    const attributionQuestion = [
+      `Instructions given to the generator:\n${systemInstructions}`,
+      attributionConversation
+        ? `Conversation history given to the generator:\n${attributionConversation}`
+        : null,
+      `Current user request:\n${boundedQuestion}`,
+    ]
+      .filter((section): section is string => section !== null)
+      .join("\n\n");
+
     return {
       document,
-      question: boundedQuestion,
+      attributionQuestion,
       messages: [
         { role: "system" as const, content: system },
         ...boundedPrior,
