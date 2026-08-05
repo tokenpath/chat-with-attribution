@@ -2,3 +2,17 @@ node_modules/
 tldr-extension/node_modules/
 tldr-extension/dist/
 .DS_Store
+
+# Vendored Chromium shared libraries, downloaded by test/setup-libs.sh.
+_libs/
+
+# Local agent and editor state.
+.claude/
+
+# Secrets. Nothing here has ever belonged in the repository, and the
+# extension's only credential is a user-pasted API key that lives in
+# chrome.storage.local — but a public repo should refuse these by default
+# rather than rely on nobody ever running `git add .`.
+.env
+.env.*
+*.pem

@@ -136,8 +136,10 @@ There is no other entry point: one context-menu item and the toolbar icon.
 
 - `tldr-extension/icons/icon128.png`: packaged extension icon.
 - `store-assets/small-promo.png`: 440×280 Chrome Web Store promotional tile.
-- Still required: at least one real 1280×800 or 640×400 screenshot captured
-  from the release build.
+- `store-assets/screenshots/`: three 1280×800 screenshots of the release build —
+  an attributed page summary with its source highlighted, a video-transcript
+  capture, and the Settings view. Every page and video in them is invented for
+  the shot, so nothing real is published with the listing.
 
 ## Release commands
 
@@ -152,12 +154,19 @@ For a versioned GitHub release:
 ```sh
 cd tldr-extension
 npm run version:set -- 0.1.1
+npm run licenses
 cd ..
-git add .
+git add tldr-extension/manifest.json tldr-extension/package.json \
+  tldr-extension/package-lock.json THIRD-PARTY-LICENSES.md
 git commit -m "Release extension v0.1.1"
 git tag v0.1.1
 git push origin main v0.1.1
 ```
+
+Stage the files by name. `git add .` in a repository this size is how an
+untracked local artifact — a scratch capture, a downloaded PDF, an `.env` —
+reaches a public release commit, and `.gitignore` only covers what someone
+thought of first.
 
 The tag must exactly match the version in `manifest.json`. A valid tag creates
 a GitHub Release with the Chrome Web Store ZIP attached.
