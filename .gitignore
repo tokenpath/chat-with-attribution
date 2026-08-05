@@ -1,6 +1,6 @@
 node_modules/
-tldr-extension/node_modules/
-tldr-extension/dist/
+extension/node_modules/
+extension/dist/
 .DS_Store
 
 # Vendored Chromium shared libraries, downloaded by test/setup-libs.sh.

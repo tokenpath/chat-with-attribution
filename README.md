@@ -12,24 +12,21 @@ seeks the video to the moment it was said.
 
 "Browse with TokenPath" is the product name; **Chat with TokenPath** is the one
 context-menu action, and stays worded that way on purpose — it names what the
-click does. Two internal names predate the rename and are deliberately left
-alone: the `tldr-extension/` directory and the `tldr-` message and intent
-prefixes. Renaming either churns every path in the repo for no user-visible
-gain, so both wait for the repository rename.
+click does.
 
 ## Load it unpacked
 
 1. Build the side panel once:
 
    ```sh
-   cd tldr-extension
+   cd extension
    npm install
    npm run build
    ```
 
 2. Open `chrome://extensions`.
 3. Enable **Developer mode**.
-4. Choose **Load unpacked** and select `tldr-extension/`.
+4. Choose **Load unpacked** and select `extension/`.
 5. Click the TokenPath toolbar icon to capture the active page and immediately
    get an attributed three-bullet summary of it, then ask follow-up questions
    in the same chat. To chat about one passage instead, select it first,
@@ -44,7 +41,7 @@ model-provider key is needed.
 
 ## Build the Chrome Web Store package
 
-From `tldr-extension/`, run:
+From `extension/`, run:
 
 ```sh
 npm run package:store
@@ -304,7 +301,7 @@ and [`spec.md`](./spec.md) for the extension architecture.
 The page-capture scripts remain build-free. The side panel is a React 19,
 TypeScript, Tailwind CSS 4, and Vite bundle; AI Elements components are copied
 into the repository as editable source. Run the complete validation from
-`tldr-extension/`:
+`extension/`:
 
 ```sh
 npm install
@@ -324,7 +321,7 @@ CI fails if they differ from a fresh build of `src/`, so every change under
 ## Layout
 
 ```text
-tldr-extension/
+extension/
 ├── manifest.json
 ├── background.js              # frame/page/PDF capture and PDF navigation
 ├── content.js                 # extraction, node map, remap, highlight
@@ -357,4 +354,4 @@ tldr-extension/
 ```
 
 Test instructions and coverage are in
-[`tldr-extension/test/README.md`](./tldr-extension/test/README.md).
+[`extension/test/README.md`](./extension/test/README.md).

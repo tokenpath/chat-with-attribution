@@ -136,7 +136,7 @@ There is no other entry point: one context-menu item and the toolbar icon.
 
 ## Store assets
 
-- `tldr-extension/icons/icon128.png`: packaged extension icon.
+- `extension/icons/icon128.png`: packaged extension icon.
 - `store-assets/small-promo.png`: 440×280 Chrome Web Store promotional tile.
 - `store-assets/screenshots/`: three 1280×800 screenshots of the release build —
   an attributed page summary with its source highlighted, a video-transcript
@@ -158,12 +158,12 @@ cut a release.
 For a versioned GitHub release:
 
 ```sh
-cd tldr-extension
+cd extension
 npm run version:set -- 0.1.1
 npm run licenses
 cd ..
-git add tldr-extension/manifest.json tldr-extension/package.json \
-  tldr-extension/package-lock.json THIRD-PARTY-LICENSES.md
+git add extension/manifest.json extension/package.json \
+  extension/package-lock.json THIRD-PARTY-LICENSES.md
 git commit -m "Release extension v0.1.1"
 git tag v0.1.1
 git push origin main v0.1.1
@@ -180,7 +180,7 @@ a GitHub Release with the Chrome Web Store ZIP attached.
 For a local package:
 
 ```sh
-cd tldr-extension
+cd extension
 npm run package:store
 ```
 

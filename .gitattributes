@@ -1,7 +1,7 @@
 # The side-panel bundle and its stylesheet are build output from
-# tldr-extension/src, committed so the store package can be built and audited
+# extension/src, committed so the store package can be built and audited
 # from a checkout alone. Marking them generated keeps a 776 KB minified diff out
 # of review and out of the repository's language statistics; the CI bundle check
 # is what proves they match the sources.
-tldr-extension/sidepanel/panel.js linguist-generated=true -diff
-tldr-extension/sidepanel/panel.css linguist-generated=true -diff
+extension/sidepanel/panel.js linguist-generated=true -diff
+extension/sidepanel/panel.css linguist-generated=true -diff

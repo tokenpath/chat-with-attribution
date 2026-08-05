@@ -4,7 +4,7 @@ The suite has pure/unit coverage for offset math, summary policy, page-chat URL
 identity, and background capture orchestration, plus Playwright integration
 coverage for the side panel and the real content script.
 
-From `tldr-extension/`, build the packaged panel and run everything:
+From `extension/`, build the packaged panel and run everything:
 
 ```bash
 npm install
