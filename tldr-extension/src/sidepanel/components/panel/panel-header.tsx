@@ -68,10 +68,7 @@ export function PanelHeader({
         <span aria-hidden="true" className="brand-divider">
           /
         </span>
-        <span
-          className="product-name"
-          title="TokenPath — Chat with Attribution"
-        >
+        <span className="product-name" title="Browse with TokenPath">
           Chat
         </span>
       </div>
