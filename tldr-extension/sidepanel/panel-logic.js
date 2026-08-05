@@ -584,7 +584,7 @@ const TldrPanelLogic = (() => {
     return best;
   }
 
-  // Browser port of tokenpath/service_backend/spans.py::resolve_span.
+  // Browser port of the TokenPath service's span resolver.
   //
   // The heatmap offset tables have already been converted from TokenPath's
   // Unicode code-point coordinates to browser-native UTF-16 coordinates by
