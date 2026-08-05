@@ -10,6 +10,13 @@ select any part of the answer, or open its **Sources** list, and the extension
 highlights and scrolls to the source text that most strongly supports it, or
 seeks the video to the moment it was said.
 
+**Requirements.** TokenPath is a hosted service. The extension needs a TokenPath
+account and an API key, and every answer and every attribution is computed by
+`api.tokenpath.ai`; without a key the panel captures text and does nothing else.
+This repository holds the extension alone — there is no server in it and no
+self-hosted mode. The account is free to create and the panel walks through it
+on first run.
+
 "Browse with TokenPath" is the product name; **Chat with TokenPath** is the one
 context-menu action, and stays worded that way on purpose — it names what the
 click does.
