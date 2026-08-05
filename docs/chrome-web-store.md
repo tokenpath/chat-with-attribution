@@ -148,6 +148,10 @@ GitHub Actions workflow runs the full test suite, verifies that the committed
 side-panel bundle matches `src/`, and publishes a downloadable ZIP artifact for
 30 days. The live third-party site checks are not part of that run: they execute
 on the nightly schedule, or on demand through the workflow's `live_sites` input.
+The nightly job and the release job are gated on
+`github.repository == 'tokenpath/browse-with-tokenpath'`, so a fork inherits the
+tests but neither the cron traffic against third-party sites nor the ability to
+cut a release.
 
 For a versioned GitHub release:
 
