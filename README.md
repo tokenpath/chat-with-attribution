@@ -1,12 +1,14 @@
 # Browse with TokenPath
 
 **Browse with TokenPath** is a Chrome MV3 extension that opens an attributed
-chat about a web page, a passage inside it, or Chrome's native PDF viewer. Click
-the toolbar icon for a one-click summary of the whole page, or select a passage,
-right-click, and choose the single **Chat with TokenPath** context-menu item.
-Every answer can be traced back: click an underlined phrase, select any part of
-the answer, or open its **Sources** list, and the extension highlights and
-scrolls to the source text that most strongly supports it.
+chat about a web page, a passage inside it, Chrome's native PDF viewer, or a
+captioned YouTube video. Click the toolbar icon for a one-click summary of the
+whole page — or, on a YouTube watch page, of the video's subtitle transcript —
+or select a passage, right-click, and choose the single **Chat with TokenPath**
+context-menu item. Every answer can be traced back: click an underlined phrase,
+select any part of the answer, or open its **Sources** list, and the extension
+highlights and scrolls to the source text that most strongly supports it, or
+seeks the video to the moment it was said.
 
 "Browse with TokenPath" is the product name; **Chat with TokenPath** is the one
 context-menu action, and stays worded that way on purpose — it names what the
@@ -153,27 +155,37 @@ chatted with reopens its saved chat instead — nothing is re-summarized.
    is never selected or reloaded. Each capture travels as a seed carrying
    `capturedAt` (the click) and `seededAt` (the write); the panel discards a
    seed older than 120 seconds or one whose URL no longer matches the live tab.
-3. When a toolbar capture lands on a page with no saved chat, and whenever the
+3. On a top-level YouTube watch page, the capture is the video's subtitle
+   transcript rather than the page shell: the content script asks YouTube's own
+   same-origin `youtubei/v1/get_panel` endpoint — the request the site's built-in
+   transcript panel makes — for the default caption track, and joins its
+   segments into one plain document. Only the watch document itself takes this
+   path; embedded players and YouTube iframes on other sites keep ordinary page
+   capture. The offset-to-cue table stays in the content script beside the node
+   map and never crosses the frame boundary, so an attributed transcript span is
+   answered by seeking the player to the line that supports it instead of
+   painting a DOM highlight.
+4. When a toolbar capture lands on a page with no saved chat, and whenever the
    user asks a question or runs the summary starter, TokenPath streams the
    answer from `POST /v1/generate` using a messages-only request. The
    extension owns the system prompt, exact captured document, bounded
    conversation history, and latest question; TokenPath chooses the inexpensive
    model. Named `delta` events update the panel, while the terminal
    `done.answer` becomes the canonical final text.
-4. The panel uses Vercel [AI Elements](https://elements.ai-sdk.dev/)
+5. The panel uses Vercel [AI Elements](https://elements.ai-sdk.dev/)
    conversation, message, and prompt-input primitives; answers render as safe
    Markdown through Streamdown while tokens arrive. After generation, one
    authenticated `POST /v1/attributions/heatmap` request maps the complete
    answer to the captured document. TokenPath's sparse matrix and code-point
    offset tables are validated, converted once to UTF-16, and cached with that
    answer.
-5. Clicking an underlined phrase, choosing one from the **Sources** list, or
+6. Clicking an underlined phrase, choosing one from the **Sources** list, or
    selecting any rendered answer text—across Markdown blocks, emphasis, links,
    inline or fenced code, entities, and Unicode—maps back to the exact
    raw-answer character range. A local port of TokenPath's span resolver
    aggregates the cached heatmap just in time and derives one supported source
    range; changing the selection makes no additional API call.
-6. The content script maps those document offsets back to live DOM `Range`s,
+7. The content script maps those document offsets back to live DOM `Range`s,
    highlights the source with the CSS Custom Highlight API, and scrolls it into
    view, including through nested panes such as Gmail's message view. The
    in-page palette has a light and a dark ruleset, chosen per range from the

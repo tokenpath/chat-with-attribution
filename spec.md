@@ -7,12 +7,14 @@ toolbar icon for a one-click summary of the whole page, or selects text,
 right-clicks, and chooses the single **Chat with TokenPath** context-menu item.
 A selection uses only that span. A context-menu click without a selection uses
 the rendered text of the originating page/frame or the entire top-level
-searchable PDF. The
+searchable PDF. A top-level YouTube watch page is captured as the video's
+subtitle transcript rather than as its page shell. The
 resulting side-panel chat is grounded in that source text. TokenPath streams
 each answer, then returns one answer-to-document heatmap. Clicking an attributed
 phrase, choosing one from the answer's **Sources** list, or selecting any part
 of an answer resolves that range against the cached heatmap, highlights its
-supporting source range, and scrolls there in the live page or PDF.
+supporting source range, and scrolls there in the live page or PDF — or, for a
+transcript capture, seeks the player to the caption cue that supports it.
 
 ## User flow
 

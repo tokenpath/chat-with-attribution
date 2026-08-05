@@ -8,30 +8,35 @@ Browse with TokenPath
 
 **Summary**
 
-Chat about a page or PDF, then trace any part of an answer back to its exact
-source text.
+Chat about a page, PDF, or video, then trace any part of an answer back to its
+exact source text.
 
 **Single purpose**
 
-TokenPath lets users ask questions about webpage or PDF text they explicitly
-capture, then trace generated answer text back to the passage that supports it.
+TokenPath lets users chat with what they are reading or watching, with every
+answer traced to its source: the user explicitly captures a webpage, a searchable
+PDF, a selected passage, or a YouTube video's subtitle transcript, asks questions
+about it, and traces generated answer text back to the passage that supports it.
 
 **Detailed description**
 
-TokenPath adds an attributed chat to webpages and searchable PDFs.
+TokenPath adds an attributed chat to webpages, searchable PDFs, and captioned
+YouTube videos.
 
 Click the TokenPath toolbar icon to read the page you are on and summarize it in
-three short bullet points you can follow up on. Reopening a page you have
-already chatted about brings that conversation back instead of summarizing it
-again. To chat about one passage instead, select it, right-click, and choose
-**Chat with TokenPath**: that capture generates nothing on its own — the panel
-shows what it captured and waits for your question or the one-click
-**Summarize** starter.
+three short bullet points you can follow up on. On a YouTube watch page, that
+same click captures the video's subtitle transcript instead of the page shell,
+so you can ask about what was said. Reopening a page or video you have already
+chatted about brings that conversation back instead of summarizing it again. To
+chat about one passage instead, select it, right-click, and choose **Chat with
+TokenPath**: that capture generates nothing on its own — the panel shows what it
+captured and waits for your question or the one-click **Summarize** starter.
 
 After TokenPath answers, click any underlined phrase — or open the answer's
 **Sources** list, or select any words in the answer. The extension maps that
 span back to the strongest supporting passage, highlights it on the page, and
-scrolls it into view.
+scrolls it into view. When the source is a video transcript, it seeks the player
+to the moment those words were spoken instead.
 
 Chats are saved locally per page, so returning to a page brings its conversation
 back, and attribution keeps working after a refresh. **Clear chat** removes the
@@ -52,7 +57,11 @@ token-level source attribution.
 - **storage**: Stores the TokenPath API key and UI preferences locally.
 - **All website content scripts (`<all_urls>` content script)**: Captures a live
   user selection before a dynamic page replaces it, and later resolves and
-  highlights the attributed source span.
+  highlights the attributed source span. On a YouTube watch page the user
+  invokes TokenPath on, the same content script reads that video's subtitle
+  transcript through YouTube's own same-origin `youtubei/v1/get_panel` endpoint —
+  the request the site's built-in transcript panel makes — and later seeks the
+  player to an attributed line instead of painting a page highlight.
 - **`<all_urls>` host permission**: The content script above already grants the
   “read and change all your data on all websites” access this warning describes.
   The matching host permission is what additionally keeps `tab.url` readable
@@ -72,11 +81,14 @@ The dashboard declarations and public privacy policy must match production
 behavior. Confirm and disclose:
 
 - captured webpage or PDF text;
+- captured YouTube subtitle transcript text, fetched from YouTube only for a
+  watch page the user invoked TokenPath on, and sent to TokenPath as the
+  captured document like any other capture;
 - the current website origin or URL data sent with a request;
 - user questions and generated answers;
 - the TokenPath API key stored in `chrome.storage.local` and sent only as
   authentication to TokenPath;
-- locally stored page chats: captured page or PDF text plus the conversation are
+- locally stored page chats: captured page, PDF, or transcript text plus the conversation are
   kept in IndexedDB on the user's machine, capped at roughly 50 pages and 30
   days, and are user-clearable per page (**Clear chat**) or in full
   (**Disconnect**);
@@ -113,6 +125,10 @@ Provide a temporary reviewer API key, then ask the reviewer to:
    ask or click the **Summarize** starter.
 10. Open a searchable PDF in Chrome's viewer and repeat steps 3–5 to verify PDF
     capture and highlighting.
+11. Open any YouTube video that has captions and click the TokenPath toolbar
+    icon. The panel shows that it captured the video transcript and streams a
+    summary of what was said. Click one of the underlined phrases in the answer
+    and confirm the player seeks to the moment those words were spoken.
 
 There is no other entry point: one context-menu item and the toolbar icon.
 
