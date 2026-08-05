@@ -277,6 +277,18 @@ export function isSubscribed(
   );
 }
 
+/** A date the user recognizes, or nothing rather than a guess. */
+export function planDate(iso: string | null) {
+  if (!iso) return null;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 /** "$7" from 700. The plan is priced in whole dollars today. */
 function formatPlanPrice(cents: number) {
   return cents % 100 === 0
@@ -328,6 +340,7 @@ export class PanelController {
   private contextVersion = 0;
   private authEpoch = 0;
   private creditsEpoch = 0;
+  private availableTokens: number | null = null;
   private subscriptionEpoch = 0;
   private highlightEpoch = 0;
   private highlightedTarget: ActiveHighlight | null = null;
@@ -1334,6 +1347,7 @@ export class PanelController {
   }
 
   private setConnected(connected: boolean) {
+    if (!connected) this.availableTokens = null;
     this.update({
       allowanceText: connected ? this.snapshot.allowanceText : null,
       connected,
@@ -1394,6 +1408,9 @@ export class PanelController {
     ) {
       return;
     }
+    // Kept as a number too: an out-of-tokens message has to know whether the
+    // balance behind the allowance is actually empty, not just how to print it.
+    this.availableTokens = availableTokens;
     this.update({ creditsText: `${formatTokens(availableTokens)} tokens` });
   }
 
@@ -1646,14 +1663,45 @@ export class PanelController {
       };
     }
     if (error.status === 402) {
-      this.updateCreditsAfterInsufficient(error);
+      const funds = await this.observeInsufficientFunds(error);
+      if (funds.state === "unsubscribed") {
+        const { price, grant } = planTerms(this.snapshot.subscription);
+        return {
+          kind: "error",
+          role: "assistant",
+          text:
+            "Your TokenPath account has insufficient credits for this " +
+            `request. Subscribe for ${price}/month — ${grant} tokens ` +
+            "monthly — or top up credits. ",
+          link: {
+            label: "Manage at platform.tokenpath.ai →",
+            href: TokenPath.PLATFORM_URL,
+          },
+        };
+      }
+      if (funds.state === "allowance-exhausted") {
+        const renews = planDate(funds.subscription.renewsAt);
+        return {
+          kind: "error",
+          role: "assistant",
+          text:
+            "Your monthly allowance is used up, and there are no credits " +
+            (renews
+              ? `behind it. It renews on ${renews} — or top up credits to keep going now. `
+              : "behind it. Top up credits to keep going before it renews. "),
+          link: {
+            label: "Top up at platform.tokenpath.ai →",
+            href: TokenPath.PLATFORM_URL,
+          },
+        };
+      }
       return {
         kind: "error",
         role: "assistant",
         text: "Your TokenPath account has insufficient credits for this request. ",
         link: {
           label: "Top up at platform.tokenpath.ai →",
-          href: "https://platform.tokenpath.ai",
+          href: TokenPath.PLATFORM_URL,
         },
       };
     }
@@ -2118,7 +2166,21 @@ export class PanelController {
       return "TokenPath rejected the saved key. Reconnect to map this answer.";
     }
     if (error.status === 402) {
-      this.updateCreditsAfterInsufficient(error);
+      const funds = await this.observeInsufficientFunds(error);
+      if (funds.state === "unsubscribed") {
+        const { price, grant } = planTerms(this.snapshot.subscription);
+        return (
+          "TokenPath credits are insufficient, so this answer has no source " +
+          `map. Subscribe for ${price}/month — ${grant} tokens monthly — or ` +
+          "top up credits at platform.tokenpath.ai."
+        );
+      }
+      if (funds.state === "allowance-exhausted") {
+        return (
+          "Your monthly allowance is used up, so this answer has no source " +
+          "map. Top up credits, or wait for the allowance to renew."
+        );
+      }
       return "TokenPath credits are insufficient, so this answer has no source map.";
     }
     if (error.status === 429) {
@@ -2156,13 +2218,29 @@ export class PanelController {
     }
   }
 
-  private updateCreditsAfterInsufficient(error: TokenPathFailure) {
+  /**
+   * A 402 says the request could not be paid for, but not out of which pool.
+   * Re-read both before wording anything: whether there is a subscription, and
+   * whether its allowance and the credits behind it are both gone, is the whole
+   * difference between the three things there are to say.
+   */
+  private async observeInsufficientFunds(error: TokenPathFailure) {
     const available = error.details?.available_tokens;
     if (Number.isInteger(available) && (available as number) >= 0) {
       this.updateCredits(available as number);
-      return;
+    } else {
+      await this.refreshCredits();
     }
-    void this.refreshCredits();
+    await this.refreshSubscription();
+
+    const subscription = this.snapshot.subscription;
+    if (!isSubscribed(subscription)) return { state: "unsubscribed" } as const;
+    // Only both pools being empty is the allowance story. A subscriber who
+    // still has tokens somewhere was refused for another reason, and gets the
+    // plain insufficient-credits message rather than a wrong explanation.
+    return subscription.allowanceTokens === 0 && this.availableTokens === 0
+      ? ({ state: "allowance-exhausted", subscription } as const)
+      : ({ state: "insufficient-credits" } as const);
   }
 
   private isCurrentHighlight(source: HighlightSource, epoch: number) {

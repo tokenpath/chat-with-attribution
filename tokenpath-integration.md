@@ -43,7 +43,10 @@ spends credits.
 
 The extension handles rejected keys (`401`/`403`), insufficient credits (`402`),
 rate limits (`429`), network failures, cancellation, invalid responses, and
-90-second idle or request timeouts. A generation error is shown as an assistant
+90-second idle or request timeouts. A `402` re-reads the balance and the
+subscription before it words anything, because the response says the request
+could not be paid for but not out of which pool; `spec.md` has the three
+messages that follow. A generation error is shown as an assistant
 error message. A heatmap error leaves the generated answer visible and marks
 only its source map unavailable.
 

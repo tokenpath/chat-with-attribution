@@ -350,6 +350,25 @@ attributed. Reads are sequenced by their own epoch, so a slow one cannot replace
 a newer observation, and a failed one leaves the badge showing what it last
 knew rather than emptying it.
 
+A `402` is where this matters most, and it says which pool ran out only by
+implication. Both are re-read before anything is worded — the balance from the
+error's own `available_tokens` when it carries one, the subscription always —
+and the message follows from what the account has, not from which request
+failed:
+
+| The account | The message |
+|---|---|
+| No subscription | The insufficient-credits note, plus "Subscribe for $7/month — 10M tokens monthly — or top up credits" |
+| Subscribed, allowance **and** credits at zero | "Your monthly allowance is used up, and there are no credits behind it", with the renewal date and the top-up |
+| Subscribed with tokens left somewhere | The plain insufficient-credits note, unchanged |
+
+The third row is deliberate: a subscriber who still has tokens was refused for
+some other reason, and a confident wrong explanation is worse than the plain
+one. Every case keeps the existing link mechanics — one `link` on the message,
+opened in a new tab, pointing at `TokenPath.PLATFORM_URL`. The attribution
+failure detail routes the same three ways in one sentence each, and as before it
+costs only that answer's source map.
+
 ## Suggested follow-ups
 
 Generation is billed from the input text, so a second `/v1/generate` call would

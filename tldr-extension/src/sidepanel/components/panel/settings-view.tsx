@@ -2,24 +2,13 @@ import { ArrowLeftIcon, ChevronRightIcon, RotateCcwIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import {
   isSubscribed,
+  planDate,
   planTerms,
   type PanelController,
   type PanelSnapshot,
   type SummaryPreset,
 } from "@/controller";
 import { cn } from "@/lib/utils";
-
-/** A renewal date the user recognizes, or nothing rather than a bad guess. */
-function planDate(iso: string | null) {
-  if (!iso) return null;
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return parsed.toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
 
 function planLine(snapshot: PanelSnapshot) {
   const subscription = snapshot.subscription;

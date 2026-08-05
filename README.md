@@ -220,8 +220,12 @@ inside the source frame.
 
 The panel follows the operating-system theme by default; its header control
 switches among system, light, and dark, and the preference stays local. Rejected
-keys, rate limits, and insufficient credits (`402`, with a top-up link) are
-reported in the chat, and the header badge shows what the next question will
+keys, rate limits, and running out of tokens (`402`) are reported in the chat.
+What that last one says depends on the account: with no subscription it offers
+the $7/month plan beside the top-up, when a subscription's allowance and the
+credits behind it are both empty it says the monthly allowance is used up and
+when it renews, and otherwise it stays the plain insufficient-credits note.
+All three link to platform.tokenpath.ai. The header badge shows what the next question will
 spend: the Browse subscription's remaining monthly allowance when there is one —
 with the credit balance behind it in the badge's tooltip, since that is what the
 allowance falls back to — and the credit balance itself when there is not. A React

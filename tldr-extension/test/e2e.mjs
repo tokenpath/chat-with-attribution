@@ -8092,3 +8092,345 @@ if (deterministicFail > 0) process.exitCode = 1;
   );
   if (followUpFail > 0) process.exitCode = 1;
 }
+
+// The Browse subscription: what the badge and Settings say about the pool the
+// next question will spend, and which of the three out-of-tokens messages a
+// 402 produces. Routing is by what the account has, not by which request
+// failed. Self-contained: its own browser, fixtures, and counters.
+{
+  const planBrowser = await chromium.launch({ args: ["--no-sandbox"] });
+  let planPass = 0;
+  let planFail = 0;
+  const planCheck = (name, good, detail) => {
+    if (good) planPass++;
+    else planFail++;
+    console.log(
+      `  [${name}] ${good ? "PASS" : "FAIL"}` +
+        (good || detail === undefined ? "" : ` — ${JSON.stringify(detail)}`)
+    );
+  };
+
+  console.log("\n### Subscription awareness and the out-of-tokens moment");
+
+  const SOURCE =
+    "The release train leaves every second Tuesday, and the freeze begins " +
+    "the Friday before it. Anything that misses the freeze waits for the " +
+    "following train rather than riding a hotfix, unless it closes an " +
+    "incident that is still open at the time of the cut.";
+  const RENEWAL = "2026-09-01T00:00:00Z";
+
+  // Each scenario gets its own tab URL so the per-page chat cache, which is
+  // shared across these file:// pages, cannot carry one into the next.
+  const openPanel = async ({ subscription, credits, url }) => {
+    const page = await planBrowser.newPage();
+    // The narrow end of the supported range: the Plan row has to survive it.
+    await page.setViewportSize({ width: 320, height: 720 });
+    await page.addInitScript(
+      ({ source, subscription, credits, url }) => {
+        const localStore = { tokenpathKey: "tpk_plan" };
+        window.__planPaths = [];
+        const responseJson = (body, status = 200) =>
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { "Content-Type": "application/json" },
+          });
+
+        window.chrome = {
+          tabs: {
+            async query() {
+              return [{ id: 41, windowId: 3, url }];
+            },
+            async get(tabId) {
+              return { id: tabId, url };
+            },
+            async sendMessage() {
+              return { ok: true };
+            },
+            onActivated: { addListener() {} },
+            onUpdated: { addListener() {} },
+            onRemoved: { addListener() {} },
+          },
+          runtime: {
+            async sendMessage() {
+              return { ok: true };
+            },
+            onMessage: { addListener() {} },
+          },
+          storage: {
+            local: {
+              async get(keys) {
+                const requested = Array.isArray(keys) ? keys : [keys];
+                return Object.fromEntries(
+                  requested
+                    .filter((key) => key in localStore)
+                    .map((key) => [key, localStore[key]])
+                );
+              },
+              async set(values) {
+                Object.assign(localStore, values);
+              },
+              async remove(key) {
+                delete localStore[key];
+              },
+            },
+            session: {
+              async get(key) {
+                return {
+                  [key]: {
+                    captureId: "plan-capture",
+                    capturedAt: Date.now(),
+                    seededAt: Date.now(),
+                    tabId: 41,
+                    windowId: 3,
+                    frameId: 0,
+                    url,
+                    text: source,
+                    error: null,
+                  },
+                };
+              },
+              async remove() {},
+            },
+          },
+        };
+
+        window.fetch = async (fetchUrl) => {
+          const path = String(fetchUrl);
+          window.__planPaths.push(path);
+          if (path.endsWith("/v1/me/credits")) {
+            return responseJson({ available_tokens: credits });
+          }
+          if (path.endsWith("/v1/subscription")) {
+            // No subscription argument means the backend does not serve the
+            // endpoint yet — the state every installed copy starts in.
+            return subscription
+              ? responseJson(subscription)
+              : responseJson(
+                  { error: { code: "not_found", message: "Unknown endpoint." } },
+                  404
+                );
+          }
+          if (path.endsWith("/v1/generate")) {
+            return responseJson(
+              {
+                error: {
+                  code: "insufficient_credits",
+                  message: "Not enough generation credits.",
+                  details: { available_tokens: credits },
+                },
+              },
+              402
+            );
+          }
+          return responseJson({}, 404);
+        };
+      },
+      { source: SOURCE, subscription, credits, url }
+    );
+    await page.goto(PANEL_URL);
+    await page.waitForFunction(
+      () => document.getElementById("input")?.disabled === false
+    );
+    return page;
+  };
+
+  const badgeState = (page) =>
+    page.evaluate(() => ({
+      text: document.getElementById("credits")?.textContent || "",
+      title: document.getElementById("credits")?.getAttribute("title") || "",
+      hidden: document.getElementById("credits")?.hidden,
+    }));
+
+  const planRow = async (page) => {
+    await page.locator("#settings-toggle").click();
+    await page.waitForFunction(() => document.getElementById("setting-plan"));
+    const state = await page.evaluate((iso) => ({
+      value: document.getElementById("setting-plan-value")?.textContent || "",
+      link: document.getElementById("setting-plan-link")?.textContent || "",
+      href: document.getElementById("setting-plan-link")?.getAttribute("href"),
+      target: document.getElementById("setting-plan-link")?.target,
+      // The same call the panel makes, so the assertion does not depend on
+      // the machine's locale or time zone.
+      date: new Date(iso).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      }),
+      overflows:
+        document.documentElement.scrollWidth >
+        document.documentElement.clientWidth,
+    }), RENEWAL);
+    await page.locator("#settings-back").click();
+    await page.waitForFunction(() => !document.getElementById("settings"));
+    return state;
+  };
+
+  const askAndReadFailure = async (page) => {
+    await page.locator("#input").fill("When does the freeze start?");
+    await page.locator("#send").click();
+    await page.waitForFunction(() => document.querySelector(".message-error"));
+    return page.evaluate(() => {
+      const error = document.querySelector(".message-error");
+      return {
+        text: error?.textContent || "",
+        href: error?.querySelector("a")?.getAttribute("href"),
+        label: error?.querySelector("a")?.textContent || "",
+      };
+    });
+  };
+
+  try {
+    // 1. The shipping state: /v1/subscription is not deployed, so its 404 is
+    // read as "no subscription" and nothing about the panel changes — until an
+    // out-of-tokens moment, which now names the plan as well as the top-up.
+    {
+      const page = await openPanel({
+        credits: 1_000,
+        url: "https://plan.example/undeployed",
+      });
+      const badge = await badgeState(page);
+      const row = await planRow(page);
+      planCheck(
+        "a backend without the endpoint looks exactly like no subscription",
+        badge.text === "1k tokens" &&
+          badge.title === "TokenPath tokens remaining" &&
+          row.value ===
+            "$7/month gives this extension 10M tokens a month, then credits." &&
+          row.link === "Manage at platform.tokenpath.ai" &&
+          row.href === "https://platform.tokenpath.ai" &&
+          row.target === "_blank" &&
+          !row.overflows &&
+          // The 404 is swallowed: no error message, no toast, no notice.
+          (await page.evaluate(
+            () => document.querySelectorAll(".message-error").length === 0
+          )),
+        { badge, row }
+      );
+
+      const failure = await askAndReadFailure(page);
+      planCheck(
+        "an unsubscribed 402 offers the plan beside the top-up",
+        failure.text.includes(
+          "Your TokenPath account has insufficient credits for this request."
+        ) &&
+          failure.text.includes(
+            "Subscribe for $7/month — 10M tokens monthly — or top up credits."
+          ) &&
+          failure.label === "Manage at platform.tokenpath.ai →" &&
+          failure.href === "https://platform.tokenpath.ai",
+        failure
+      );
+      await page.close();
+    }
+
+    // 2. An active subscription: the badge is the allowance, and the credits
+    // behind it move to the tooltip.
+    {
+      const page = await openPanel({
+        credits: 1_000,
+        subscription: {
+          status: "active",
+          renews_at: RENEWAL,
+          allowance_tokens: 9_200_000,
+          grant_tokens: 10_000_000,
+          price_usd_cents: 700,
+        },
+        url: "https://plan.example/active",
+      });
+      const badge = await badgeState(page);
+      const row = await planRow(page);
+      planCheck(
+        "a subscription puts the allowance in the badge and credits behind it",
+        badge.text === "9.2M this month" &&
+          badge.title ===
+            "Browse subscription allowance left this month\nThen 1k tokens in credits" &&
+          row.value === `Browse subscription · renews ${row.date}` &&
+          !row.overflows,
+        { badge, row }
+      );
+
+      // Tokens left in both pools and still a 402: something else refused the
+      // request, so the message stays the plain one rather than inventing an
+      // explanation.
+      const failure = await askAndReadFailure(page);
+      planCheck(
+        "a subscriber with tokens left keeps the plain insufficient message",
+        failure.text.includes(
+          "Your TokenPath account has insufficient credits for this request."
+        ) &&
+          !failure.text.includes("Subscribe for") &&
+          !failure.text.includes("allowance is used up") &&
+          failure.label === "Top up at platform.tokenpath.ai →",
+        failure
+      );
+      await page.close();
+    }
+
+    // 3. Both pools empty. This is the moment the subscription exists for, and
+    // it gets its own wording.
+    {
+      const page = await openPanel({
+        credits: 0,
+        subscription: {
+          status: "active",
+          renews_at: RENEWAL,
+          allowance_tokens: 0,
+          grant_tokens: 10_000_000,
+          price_usd_cents: 700,
+        },
+        url: "https://plan.example/exhausted",
+      });
+      const badge = await badgeState(page);
+      const failure = await askAndReadFailure(page);
+      const renews = await page.evaluate((iso) =>
+        new Date(iso).toLocaleDateString(undefined, {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        }), RENEWAL);
+      planCheck(
+        "an exhausted allowance says so, with its renewal date and a top-up",
+        badge.text === "0 this month" &&
+          failure.text.includes("Your monthly allowance is used up") &&
+          failure.text.includes(`It renews on ${renews}`) &&
+          failure.text.includes("top up credits") &&
+          failure.href === "https://platform.tokenpath.ai",
+        { badge, failure }
+      );
+      await page.close();
+    }
+
+    // 4. A cancelled subscription is still this month's subscription: the
+    // allowance is spendable, and the date is when it ends.
+    {
+      const page = await openPanel({
+        credits: 1_000,
+        subscription: {
+          status: "canceling",
+          renews_at: RENEWAL,
+          allowance_tokens: 5_000_000,
+        },
+        url: "https://plan.example/canceling",
+      });
+      const badge = await badgeState(page);
+      const row = await planRow(page);
+      planCheck(
+        "a cancelling subscription still spends, and says when it ends",
+        badge.text === "5M this month" &&
+          row.value === `Browse subscription · ends ${row.date}`,
+        { badge, row }
+      );
+      await page.close();
+    }
+  } catch (error) {
+    planFail++;
+    console.log(`  SUITE ERROR — ${String(error.message).split("\n")[0]}`);
+  } finally {
+    await planBrowser.close();
+  }
+
+  console.log(
+    `  subscription awareness: ${planPass} passed, ${planFail} failed`
+  );
+  if (planFail > 0) process.exitCode = 1;
+}
