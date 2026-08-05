@@ -200,6 +200,65 @@ test("TokenPath requests an allowlisted origin even with a hostile setting", asy
   assert.equal(capturedUrl, "https://api.tokenpath.ai/v1/me/credits");
 });
 
+test("TokenPath identifies the extension on every request it makes", async () => {
+  // The header is what routes spend to the Browse subscription's allowance
+  // instead of the account's credits, so no request type may omit it.
+  const seen = [];
+  const client = tokenPathWith(async (url, options) => {
+    seen.push({
+      path: String(url),
+      client: options.headers["X-TokenPath-Client"],
+      authorization: options.headers.Authorization,
+    });
+    if (String(url).endsWith("/v1/me/credits")) {
+      return jsonResponse({ available_tokens: 5 });
+    }
+    if (String(url).endsWith("/v1/subscription")) {
+      return jsonResponse({
+        status: "active",
+        renews_at: "2026-09-01T00:00:00Z",
+        allowance_tokens: 9_200_000,
+        grant_tokens: 10_000_000,
+        price_usd_cents: 700,
+      });
+    }
+    if (String(url).endsWith("/v1/generate")) {
+      return textStreamResponse(
+        sseEvent("done", {
+          answer: "Answer.",
+          model: "tokenpath/test-model",
+          usage: {
+            input_tokens: 2,
+            output_tokens: 1,
+            billed_tokens: 3,
+          },
+          credits_remaining: 4,
+        })
+      );
+    }
+    return jsonResponse(validHeatmap);
+  });
+
+  await client.fetchCredits();
+  await client.fetchSubscription();
+  await client.generate({ messages: [{ role: "user", content: "question" }] });
+  await client.heatmap(heatmapInput);
+
+  assert.deepEqual(
+    seen.map((request) => request.path),
+    [
+      "http://localhost:8000/v1/me/credits",
+      "http://localhost:8000/v1/subscription",
+      "http://localhost:8000/v1/generate",
+      "http://localhost:8000/v1/attributions/heatmap",
+    ]
+  );
+  for (const request of seen) {
+    assert.equal(request.client, "browse-extension", request.path);
+    assert.equal(request.authorization, "Bearer tpk_test", request.path);
+  }
+});
+
 test("TokenPath generate parses fragmented SSE and returns canonical done data", async () => {
   const messages = [
     { role: "system", content: "Be concise." },
@@ -580,6 +639,110 @@ test("TokenPath rejects malformed sparse heatmaps", async () => {
     const client = tokenPathWith(async () => jsonResponse(body));
     await expectClientError(
       client.heatmap(heatmapInput),
+      "invalid_response",
+      200
+    );
+  }
+});
+
+test("TokenPath reads a subscription, and a missing endpoint means none", async () => {
+  const active = tokenPathWith(async () =>
+    jsonResponse({
+      status: "active",
+      renews_at: "2026-09-01T00:00:00Z",
+      allowance_tokens: 9_200_000,
+      grant_tokens: 10_000_000,
+      price_usd_cents: 700,
+    })
+  );
+  assert.deepEqual(plain(await active.fetchSubscription()), {
+    status: "active",
+    renewsAt: "2026-09-01T00:00:00Z",
+    allowanceTokens: 9_200_000,
+    grantTokens: 10_000_000,
+    priceUsdCents: 700,
+  });
+
+  const canceling = tokenPathWith(async () =>
+    jsonResponse({
+      status: "canceling",
+      renews_at: "2026-09-01T00:00:00Z",
+      allowance_tokens: 0,
+    })
+  );
+  assert.deepEqual(plain(await canceling.fetchSubscription()), {
+    status: "canceling",
+    renewsAt: "2026-09-01T00:00:00Z",
+    allowanceTokens: 0,
+    // A response that omits the two fixed plan fields still describes the
+    // shipped plan rather than a broken one.
+    grantTokens: 10_000_000,
+    priceUsdCents: 700,
+  });
+
+  const none = tokenPathWith(async () =>
+    jsonResponse({
+      status: "none",
+      renews_at: null,
+      allowance_tokens: 0,
+      grant_tokens: 10_000_000,
+      price_usd_cents: 700,
+    })
+  );
+  assert.equal((await none.fetchSubscription()).status, "none");
+
+  // The endpoint ships after this client does. Until it exists, every account
+  // simply has no subscription — silently, with no error anywhere.
+  const undeployed = tokenPathWith(async () =>
+    jsonResponse(
+      { error: { code: "not_found", message: "Unknown endpoint." } },
+      404
+    )
+  );
+  assert.deepEqual(plain(await undeployed.fetchSubscription()), {
+    status: "none",
+    renewsAt: null,
+    allowanceTokens: 0,
+    grantTokens: 10_000_000,
+    priceUsdCents: 700,
+  });
+
+  // Tolerance stops at 404: a rejected key or a broken service still has to
+  // reach the paths that handle them.
+  for (const [status, code] of [
+    [401, "invalid_api_key"],
+    [403, "forbidden"],
+    [500, "http_500"],
+  ]) {
+    const failing = tokenPathWith(async () =>
+      jsonResponse(
+        status === 500
+          ? {}
+          : { error: { code, message: "Nope." } },
+        status
+      )
+    );
+    await expectClientError(failing.fetchSubscription(), code, status);
+  }
+});
+
+test("TokenPath validates the subscription contract shape", async () => {
+  const malformed = [
+    {},
+    { status: "trialing", allowance_tokens: 0 },
+    { status: null, allowance_tokens: 0 },
+    { status: "active", renews_at: 20_260_901, allowance_tokens: 0 },
+    { status: "active", renews_at: null, allowance_tokens: -1 },
+    { status: "active", renews_at: null, allowance_tokens: 1.5 },
+    { status: "active", renews_at: null, allowance_tokens: "9200000" },
+    { status: "active", allowance_tokens: 0, grant_tokens: -10 },
+    { status: "active", allowance_tokens: 0, price_usd_cents: "700" },
+  ];
+
+  for (const body of malformed) {
+    const client = tokenPathWith(async () => jsonResponse(body));
+    await expectClientError(
+      client.fetchSubscription(),
       "invalid_response",
       200
     );

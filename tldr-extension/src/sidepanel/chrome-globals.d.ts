@@ -102,6 +102,23 @@ interface TldrPanelLogicApi {
   codePointOffsetToUtf16(map: number[], offset: number): number;
 }
 
+/**
+ * "canceling" is still a paid month: the allowance is spendable until
+ * `renewsAt`, which is when it ends rather than renews.
+ */
+type TokenPathSubscriptionStatus = "none" | "active" | "canceling";
+
+interface TokenPathSubscription {
+  status: TokenPathSubscriptionStatus;
+  /** ISO 8601, or null when there is nothing to renew or end. */
+  renewsAt: string | null;
+  /** What is left of this month's allowance. */
+  allowanceTokens: number;
+  /** What a full month grants. */
+  grantTokens: number;
+  priceUsdCents: number;
+}
+
 interface TokenPathFailure extends Error {
   status: number;
   code: string;
@@ -124,6 +141,8 @@ interface TokenPathApi {
   setKey(key: string): Promise<void>;
   clearKey(): Promise<void>;
   fetchCredits(): Promise<number>;
+  /** A 404 resolves to a "none" plan rather than rejecting. */
+  fetchSubscription(): Promise<TokenPathSubscription>;
   generate(input: {
     messages: Array<{
       role: "system" | "user" | "assistant";

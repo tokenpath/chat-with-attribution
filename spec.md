@@ -100,7 +100,11 @@ supporting source range, and scrolls there in the live page or PDF.
   the depth ladder's fixed-chip rule.
 - **`sidepanel/tokenpath.js`** calls TokenPath directly with the API key in
   `chrome.storage.local`, streams messages-only generation, validates sparse
-  heatmaps, and adapts their offset tables for browser use. It also enforces the
+  heatmaps, and adapts their offset tables for browser use. Every request it
+  makes carries `X-TokenPath-Client: browse-extension`, which is what spends the
+  Browse subscription's monthly allowance before the account's credits, and
+  `fetchSubscription()` reads that plan — treating a `404` as "no subscription"
+  so the client works against a backend that does not serve it yet. It also enforces the
   base-URL allowlist: only `https://api.tokenpath.ai`,
   `https://api-staging.tokenpath.ai`, `http://localhost:8000`, and
   `http://127.0.0.1:8000` (bare origins, trailing slash tolerated) are accepted;

@@ -10,6 +10,16 @@
 const TOKENPATH_DEFAULT_BASE_URL = "https://api.tokenpath.ai";
 const TOKENPATH_PLATFORM_URL = "https://platform.tokenpath.ai";
 const TOKENPATH_MAX_DOCUMENT_CHARS = 400_000;
+// Identifies the request as this extension's. It is what routes spend to the
+// Browse subscription's monthly allowance, with the account's prepaid credits
+// as the fallback; the same request without the header spends credits.
+const TOKENPATH_CLIENT_HEADER = "X-TokenPath-Client";
+const TOKENPATH_CLIENT_ID = "browse-extension";
+const TOKENPATH_SUBSCRIPTION_STATUSES = ["none", "active", "canceling"];
+// The shipped plan, used when a response omits either fixed field and when the
+// subscription endpoint is not deployed yet.
+const TOKENPATH_SUBSCRIPTION_GRANT_TOKENS = 10_000_000;
+const TOKENPATH_SUBSCRIPTION_PRICE_USD_CENTS = 700;
 // Every request carries the API key and the complete captured page text, so
 // the destination is not a free-form preference. Only these exact origins may
 // ever receive them; anything else falls back to production.
@@ -58,6 +68,26 @@ const TokenPath = {
   async fetchCredits() {
     const body = await this._request("GET", "/v1/me/credits");
     return body.available_tokens;
+  },
+
+  // GET /v1/subscription — the Browse subscription's state and what is left of
+  // this month's token allowance.
+  //
+  // The endpoint is newer than this client, so a 404 is not a failure: it means
+  // this account has nothing to report, and it resolves silently to the same
+  // shape a `status: "none"` body produces. Every other status follows the
+  // ordinary error mapping, so a rejected key still reaches the auth path.
+  async fetchSubscription() {
+    let body;
+    try {
+      body = await this._request("GET", "/v1/subscription");
+    } catch (error) {
+      if (error instanceof TokenPathError && error.status === 404) {
+        return unsubscribedPlan();
+      }
+      throw error;
+    }
+    return normalizeSubscription(body);
   },
 
   // POST /v1/generate — stream an answer from TokenPath's server-selected
@@ -145,6 +175,7 @@ const TokenPath = {
             Accept: "text/event-stream",
             Authorization: "Bearer " + key,
             "Content-Type": "application/json",
+            [TOKENPATH_CLIENT_HEADER]: TOKENPATH_CLIENT_ID,
           },
           body: JSON.stringify(payload),
           signal: controller.signal,
@@ -420,6 +451,7 @@ const TokenPath = {
         method,
         headers: {
           Authorization: "Bearer " + key,
+          [TOKENPATH_CLIENT_HEADER]: TOKENPATH_CLIENT_ID,
           ...(payload ? { "Content-Type": "application/json" } : {}),
         },
         body: payload ? JSON.stringify(payload) : undefined,
@@ -673,6 +705,67 @@ function errorFromTokenPathPayload(body, status) {
       : "TokenPath request failed (" + status + ").",
     Object.keys(details).length > 0 ? details : null
   );
+}
+
+function invalidSubscriptionResponse(message) {
+  return new TokenPathError(200, "invalid_response", message);
+}
+
+/** What an account with no Browse subscription looks like. */
+function unsubscribedPlan() {
+  return {
+    status: "none",
+    renewsAt: null,
+    allowanceTokens: 0,
+    grantTokens: TOKENPATH_SUBSCRIPTION_GRANT_TOKENS,
+    priceUsdCents: TOKENPATH_SUBSCRIPTION_PRICE_USD_CENTS,
+  };
+}
+
+function normalizeSubscription(body) {
+  const status = body?.status;
+  if (!TOKENPATH_SUBSCRIPTION_STATUSES.includes(status)) {
+    throw invalidSubscriptionResponse(
+      "TokenPath returned an unsupported subscription status."
+    );
+  }
+
+  const renewsAt = body.renews_at;
+  const hasRenewal = typeof renewsAt === "string" && renewsAt.trim() !== "";
+  if (!hasRenewal && renewsAt !== null && renewsAt !== undefined) {
+    throw invalidSubscriptionResponse(
+      "TokenPath returned an invalid subscription renewal date."
+    );
+  }
+
+  return {
+    status,
+    renewsAt: hasRenewal ? renewsAt : null,
+    allowanceTokens: subscriptionCount(body.allowance_tokens, "allowance", 0),
+    grantTokens: subscriptionCount(
+      body.grant_tokens,
+      "grant",
+      TOKENPATH_SUBSCRIPTION_GRANT_TOKENS
+    ),
+    priceUsdCents: subscriptionCount(
+      body.price_usd_cents,
+      "price",
+      TOKENPATH_SUBSCRIPTION_PRICE_USD_CENTS
+    ),
+  };
+}
+
+// Only the allowance moves as tokens are spent; the grant and the price are
+// properties of the plan. An omitted count is read as the shipped plan so a
+// leaner future response still works, but a present one has to be a real count.
+function subscriptionCount(value, field, fallback) {
+  if (value === undefined || value === null) return fallback;
+  if (!Number.isInteger(value) || value < 0) {
+    throw invalidSubscriptionResponse(
+      `TokenPath returned an invalid subscription ${field}.`
+    );
+  }
+  return value;
 }
 
 function invalidHeatmapResponse(message) {

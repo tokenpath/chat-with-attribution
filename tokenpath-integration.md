@@ -10,12 +10,14 @@
 The side panel is an extension page, so declared host permissions let it call
 TokenPath without a proxy backend. The API key lives in `chrome.storage.local`.
 
-The extension uses three requests:
+The extension uses four requests:
 
 1. `GET https://api.tokenpath.ai/v1/me/credits` validates the TokenPath key and
    refreshes the displayed balance.
-2. `POST https://api.tokenpath.ai/v1/generate` streams one answer.
-3. `POST https://api.tokenpath.ai/v1/attributions/heatmap` attributes that exact
+2. `GET https://api.tokenpath.ai/v1/subscription` reads the Browse
+   subscription's state and remaining monthly allowance.
+3. `POST https://api.tokenpath.ai/v1/generate` streams one answer.
+4. `POST https://api.tokenpath.ai/v1/attributions/heatmap` attributes that exact
    final displayed answer once.
 
 The heatmap is cached with its assistant message. Selecting any span in the
@@ -25,12 +27,19 @@ second TokenPath request.
 
 ## Authentication and errors
 
-Requests receive the TokenPath bearer token:
+Requests receive the TokenPath bearer token and identify the client:
 
 ```http
 Authorization: Bearer <provider key>
+X-TokenPath-Client: browse-extension
 Content-Type: application/json
 ```
+
+`X-TokenPath-Client` is on every request the panel makes — credits,
+subscription, generation, and attribution alike. It is what routes spend to the
+Browse subscription's monthly allowance, falling back to the account's prepaid
+credits once that allowance is used up; the identical request without the header
+spends credits.
 
 The extension handles rejected keys (`401`/`403`), insufficient credits (`402`),
 rate limits (`429`), network failures, cancellation, invalid responses, and
@@ -61,6 +70,36 @@ A trailing slash is tolerated. A path, query string, fragment, or userinfo is
 not — the value must be a bare origin from the list. The staging and localhost
 origins are also the only host permissions the store package drops, so this
 override is usable in an unpacked build only.
+
+## The Browse subscription
+
+```http
+GET https://api.tokenpath.ai/v1/subscription
+```
+
+```json
+{
+  "status": "active",
+  "renews_at": "2026-09-01T00:00:00Z",
+  "allowance_tokens": 9200000,
+  "grant_tokens": 10000000,
+  "price_usd_cents": 700
+}
+```
+
+`status` is `none`, `active`, or `canceling` — a canceling subscription is still
+a paid month, so its allowance is spendable and `renews_at` is when it *ends*.
+`allowance_tokens` is what remains of this month's grant; only it moves as
+tokens are spent. The client validates the status, the renewal date, and every
+count, and reads an omitted `grant_tokens` or `price_usd_cents` as the shipped
+plan rather than as a broken response.
+
+**A `404` means "no subscription", not an error.** The endpoint is newer than
+the shipped client, so an installation talking to a backend that does not serve
+it yet resolves silently to the `none` plan and behaves exactly as it does
+today: the badge shows credits, Settings offers the plan, and an out-of-tokens
+message points at credits. Every other status — a rejected key included —
+follows the ordinary error mapping.
 
 ## TokenPath generation
 
