@@ -72,13 +72,13 @@ const ANSWER_COMPONENTS: AnswerComponents = {
 };
 
 function samePhrase(
-  first: TldrAnswerAttributionPhrase | null,
-  second: TldrAnswerAttributionPhrase | null
+  first: TokenPathAnswerAttributionPhrase | null,
+  second: TokenPathAnswerAttributionPhrase | null
 ) {
   return first?.start === second?.start && first?.end === second?.end;
 }
 
-function phraseKey(phrase: TldrAnswerAttributionPhrase) {
+function phraseKey(phrase: TokenPathAnswerAttributionPhrase) {
   return `${phrase.start}:${phrase.end}`;
 }
 
@@ -88,7 +88,7 @@ function phraseKey(phrase: TldrAnswerAttributionPhrase) {
 // range to settle; a page highlight is cheap and stays immediate.
 const PDF_SELECTION_SETTLE_MS = 400;
 
-function phraseLabel(answer: string, phrase: TldrAnswerAttributionPhrase) {
+function phraseLabel(answer: string, phrase: TokenPathAnswerAttributionPhrase) {
   const text = answer
     .slice(phrase.start, phrase.end)
     .replace(/\s+/gu, " ")
@@ -114,7 +114,7 @@ export function AnswerResponse({
   const sourcesToggle = useRef<HTMLButtonElement>(null);
   const sourcesId = useId();
   const [hoveredPhrase, setHoveredPhrase] =
-    useState<TldrAnswerAttributionPhrase | null>(null);
+    useState<TokenPathAnswerAttributionPhrase | null>(null);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [activePhraseIndex, setActivePhraseIndex] = useState(0);
   const phrases = useMemo(() => {
@@ -127,7 +127,7 @@ export function AnswerResponse({
     ) {
       return [];
     }
-    return TldrPanelLogic.buildAnswerAttributionPhrases(
+    return TokenPathPanelLogic.buildAnswerAttributionPhrases(
       attribution.heatmap,
       message.text
     );
@@ -170,7 +170,7 @@ export function AnswerResponse({
   }, [highlights, hoveredPhrase, message.id]);
 
   const revealPhrase = useCallback(
-    (phrase: TldrAnswerAttributionPhrase) => {
+    (phrase: TokenPathAnswerAttributionPhrase) => {
       void controller.onAnswerSelection(message.id, phrase.start, phrase.end);
     },
     [controller, message.id]
@@ -231,7 +231,7 @@ export function AnswerResponse({
     [phrases]
   );
   const updateHoveredPhrase = useCallback(
-    (next: TldrAnswerAttributionPhrase | null) => {
+    (next: TokenPathAnswerAttributionPhrase | null) => {
       setHoveredPhrase((current) =>
         samePhrase(current, next) ? current : next
       );

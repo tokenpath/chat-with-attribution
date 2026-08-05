@@ -123,7 +123,7 @@ export function App({
       snapshot.messages,
       (message) => isAnswer(message) && (message.suggestions?.length ?? 0) > 0
     )?.suggestions ?? [];
-  const fixedChipKind = TldrPanelLogic.selectFixedLadderChip({
+  const fixedChipKind = TokenPathPanelLogic.selectFixedLadderChip({
     hasSummary: summaryAnswers.length > 0,
     lastSummaryDepth: summaryAnswers.at(-1)?.summaryDepth ?? null,
     defaultPreset: snapshot.settings.customSummaryPrompt
@@ -158,7 +158,7 @@ export function App({
       });
     }
     for (const question of latestSuggestions) {
-      if (chips.length >= TldrPanelLogic.MAX_SUGGESTION_CHIPS) break;
+      if (chips.length >= TokenPathPanelLogic.MAX_SUGGESTION_CHIPS) break;
       chips.push({
         id: `suggestion-${question}`,
         kind: "generated",

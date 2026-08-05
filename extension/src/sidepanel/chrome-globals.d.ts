@@ -1,4 +1,4 @@
-interface TldrHeatmap {
+interface TokenPathHeatmap {
   row: number[];
   col: number[];
   data: number[];
@@ -7,7 +7,7 @@ interface TldrHeatmap {
   answerOffsets: Array<[number, number]>;
 }
 
-interface TldrSummaryRequest {
+interface TokenPathSummaryRequest {
   skip: boolean;
   maxOutputTokens?: number;
   prompt?: string;
@@ -16,52 +16,52 @@ interface TldrSummaryRequest {
 }
 
 /** One Q/A pair lifted from an answer's suggestions tail block. */
-interface TldrSuggestionCandidate {
+interface TokenPathSuggestionCandidate {
   question: string;
   anchor: string;
 }
 
 /** A candidate whose anchor quote was found verbatim in the document. */
-interface TldrGroundedSuggestion extends TldrSuggestionCandidate {
+interface TokenPathGroundedSuggestion extends TokenPathSuggestionCandidate {
   start: number;
   end: number;
 }
 
-interface TldrAnswerAttributionPhrase {
+interface TokenPathAnswerAttributionPhrase {
   start: number;
   end: number;
   confidence: number;
 }
 
-interface TldrPanelLogicApi {
+interface TokenPathPanelLogicApi {
   MAX_SUGGESTION_CHIPS: number;
   MAX_SUMMARY_INSTRUCTIONS_CHARS: number;
   SUGGESTION_CANDIDATES: number;
   boundSummaryInstructions(text: string): string;
   buildAnswerAttributionPhrases(
-    heatmap: TldrHeatmap,
+    heatmap: TokenPathHeatmap,
     answer: string,
     minimumMass?: number
-  ): TldrAnswerAttributionPhrase[];
+  ): TokenPathAnswerAttributionPhrase[];
   buildSummaryRequest(
     text: string,
     options?: {
       preset?: string;
       customPrompt?: string | null;
     }
-  ): TldrSummaryRequest;
+  ): TokenPathSummaryRequest;
   groundSuggestions(
-    candidates: TldrSuggestionCandidate[],
+    candidates: TokenPathSuggestionCandidate[],
     document: string
-  ): TldrGroundedSuggestion[];
+  ): TokenPathGroundedSuggestion[];
   heatmapCoveredRegions(
-    heatmap: TldrHeatmap | null,
+    heatmap: TokenPathHeatmap | null,
     document: string,
     answer: string
   ): Array<[number, number]>;
   parseSuggestions(answer: string): {
     answer: string;
-    candidates: TldrSuggestionCandidate[];
+    candidates: TokenPathSuggestionCandidate[];
   };
   selectFixedLadderChip(state?: {
     hasSummary?: boolean;
@@ -69,20 +69,20 @@ interface TldrPanelLogicApi {
     defaultPreset?: string;
   }): "summarize" | "detailed" | null;
   selectSuggestions(
-    candidates: TldrGroundedSuggestion[],
+    candidates: TokenPathGroundedSuggestion[],
     options?: {
-      heatmap?: TldrHeatmap | null;
+      heatmap?: TokenPathHeatmap | null;
       document?: string;
       answer?: string;
       max?: number;
     }
-  ): TldrGroundedSuggestion[];
+  ): TokenPathGroundedSuggestion[];
   stripSuggestionsBlock(answer: string): string;
   summaryPresetPrompt(preset: string): string;
   withSuggestionsTail(question: string): string;
   truncateCodePoints(text: string, maxCodePoints: number): string;
   resolveHeatmapSpan(
-    heatmap: TldrHeatmap,
+    heatmap: TokenPathHeatmap,
     spanStart: number,
     spanEnd: number,
     document?: string | null,
@@ -171,10 +171,10 @@ interface TokenPathApi {
     answer: string;
     threshold?: number;
     signal?: AbortSignal;
-  }): Promise<TldrHeatmap>;
+  }): Promise<TokenPathHeatmap>;
 }
 
-declare const TldrPanelLogic: TldrPanelLogicApi;
+declare const TokenPathPanelLogic: TokenPathPanelLogicApi;
 declare const TokenPath: TokenPathApi;
 declare function formatTokens(value: number | null): string;
 

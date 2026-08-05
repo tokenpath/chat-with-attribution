@@ -27,7 +27,7 @@ export default defineConfig({
       entry: path.resolve(extensionRoot, "src/sidepanel/main.tsx"),
       fileName: () => "panel.js",
       formats: ["iife"],
-      name: "TldrSidepanel",
+      name: "TokenPathSidepanel",
     },
     rollupOptions: {
       output: {

@@ -21,7 +21,7 @@ function mountPoint() {
 // this bundle. If either failed, the controller would throw on construction
 // and leave nothing on screen at all.
 const missingScripts = [
-  typeof TldrPanelLogic === "undefined" ? "panel-logic.js" : null,
+  typeof TokenPathPanelLogic === "undefined" ? "panel-logic.js" : null,
   typeof TokenPath === "undefined" || typeof formatTokens === "undefined"
     ? "tokenpath.js"
     : null,

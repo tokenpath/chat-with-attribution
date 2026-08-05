@@ -1,6 +1,6 @@
 // Pure helpers shared by the side-panel UI and its unit tests.
 
-const TldrPanelLogic = (() => {
+const TokenPathPanelLogic = (() => {
   const SHORT_SELECTION_WORDS = 24;
   // `maxOutputTokens` is headroom, not a target — the prompt controls length.
   // TokenPath's `/v1/generate` caps `max_output_tokens` at 2048 and bills
@@ -988,5 +988,5 @@ const TldrPanelLogic = (() => {
 })();
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = TldrPanelLogic;
+  module.exports = TokenPathPanelLogic;
 }

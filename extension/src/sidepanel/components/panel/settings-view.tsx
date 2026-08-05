@@ -71,7 +71,7 @@ export function SettingsView({
   // user edits the real instructions rather than an empty box.
   const activePrompt =
     settings.customSummaryPrompt ??
-    TldrPanelLogic.summaryPresetPrompt(settings.summaryPreset);
+    TokenPathPanelLogic.summaryPresetPrompt(settings.summaryPreset);
   const [draft, setDraft] = useState(activePrompt);
 
   // Reset and a preset change both change what "the active prompt" means.
@@ -209,7 +209,7 @@ export function SettingsView({
             aria-label="Summary instructions"
             className="setting-textarea"
             id="setting-instructions"
-            maxLength={TldrPanelLogic.MAX_SUMMARY_INSTRUCTIONS_CHARS}
+            maxLength={TokenPathPanelLogic.MAX_SUMMARY_INSTRUCTIONS_CHARS}
             onChange={(event) => {
               setDraft(event.currentTarget.value);
               controller.setSummaryInstructions(event.currentTarget.value);
@@ -232,7 +232,9 @@ export function SettingsView({
                 // Put the preset's text back in the same tap rather than
                 // waiting for the effect below to notice the change.
                 setDraft(
-                  TldrPanelLogic.summaryPresetPrompt(settings.summaryPreset)
+                  TokenPathPanelLogic.summaryPresetPrompt(
+                    settings.summaryPreset
+                  )
                 );
               }}
               title="Restore the default instructions for the selected preset"

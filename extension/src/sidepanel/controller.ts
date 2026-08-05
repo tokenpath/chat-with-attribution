@@ -73,7 +73,7 @@ export interface MessageAttribution {
   document: string;
   question: string;
   status: "loading" | "ready" | "error";
-  heatmap?: TldrHeatmap;
+  heatmap?: TokenPathHeatmap;
   error?: string;
 }
 
@@ -146,7 +146,7 @@ interface CachedMessageAttribution {
   documentIndex: number;
   question: string;
   status: MessageAttribution["status"];
-  heatmap?: TldrHeatmap;
+  heatmap?: TokenPathHeatmap;
   error?: string;
 }
 
@@ -242,7 +242,7 @@ function readBooleanPreference(key: string, fallback: boolean) {
 
 function readPanelSettings(): PanelSettings {
   const preset = readStoredString(SUMMARY_PRESET_KEY);
-  const custom = TldrPanelLogic.boundSummaryInstructions(
+  const custom = TokenPathPanelLogic.boundSummaryInstructions(
     readStoredString(SUMMARY_INSTRUCTIONS_KEY) || ""
   );
   return {
@@ -362,7 +362,7 @@ export class PanelController {
   // finally chosen questions are worth restoring.
   private suggestionCandidates = new Map<
     string,
-    TldrGroundedSuggestion[]
+    TokenPathGroundedSuggestion[]
   >();
 
   constructor() {
@@ -687,7 +687,7 @@ export class PanelController {
       return false;
     }
     const settings = this.snapshot.settings;
-    const summary = TldrPanelLogic.buildSummaryRequest(this.context, {
+    const summary = TokenPathPanelLogic.buildSummaryRequest(this.context, {
       preset: depth || settings.summaryPreset,
       // An explicit ladder request overrides custom instructions: the user
       // just asked for the detailed shape by name.
@@ -798,7 +798,7 @@ export class PanelController {
 
   /** Empty or whitespace-only instructions are a reset, not a customization. */
   setSummaryInstructions = (text: string) => {
-    const bounded = TldrPanelLogic.boundSummaryInstructions(text);
+    const bounded = TokenPathPanelLogic.boundSummaryInstructions(text);
     const customSummaryPrompt = bounded.trim() ? bounded : null;
     writeStoredString(SUMMARY_INSTRUCTIONS_KEY, customSummaryPrompt);
     this.updateSettings({ customSummaryPrompt });
@@ -836,7 +836,7 @@ export class PanelController {
       return;
     }
 
-    const resolved = TldrPanelLogic.resolveHeatmapSpan(
+    const resolved = TokenPathPanelLogic.resolveHeatmapSpan(
       message.attribution.heatmap,
       answerStart,
       answerEnd,
@@ -1504,7 +1504,7 @@ export class PanelController {
           // The tail block is stripped from every delta too, so the marker is
           // never on screen — not even for the frame it takes to arrive.
           this.updateMessage(assistant.id, {
-            text: TldrPanelLogic.stripSuggestionsBlock(accumulated),
+            text: TokenPathPanelLogic.stripSuggestionsBlock(accumulated),
           });
         },
       });
@@ -1519,7 +1519,7 @@ export class PanelController {
       // The suggestions block is peeled off before anything else sees the
       // answer: the displayed text, the conversation history, the cached
       // record, and the heatmap request all get the answer without it.
-      const parsed = TldrPanelLogic.parseSuggestions(result.answer);
+      const parsed = TokenPathPanelLogic.parseSuggestions(result.answer);
       const answer = parsed.answer;
       if (!answer.trim()) {
         throw new TokenPath.Error(
@@ -1531,7 +1531,10 @@ export class PanelController {
       this.suggestionCandidates.set(
         assistant.id,
         wantsSuggestions
-          ? TldrPanelLogic.groundSuggestions(parsed.candidates, turn.document)
+          ? TokenPathPanelLogic.groundSuggestions(
+              parsed.candidates,
+              turn.document
+            )
           : []
       );
 
@@ -1774,7 +1777,10 @@ export class PanelController {
       lastUserIndex === -1
         ? "Summarize the selected text."
         : messages[lastUserIndex].content;
-    const boundedQuestion = TldrPanelLogic.truncateCodePoints(question, 10_000);
+    const boundedQuestion = TokenPathPanelLogic.truncateCodePoints(
+      question,
+      10_000
+    );
     const systemInstructions =
       `You are given some text from ${this.sourceBaseUrl}. ` +
       "Answer the user's question using the given text as the source of " +
@@ -1823,7 +1829,7 @@ export class PanelController {
       index >= 0 && remainingChars > 0;
       index--
     ) {
-      const content = TldrPanelLogic.truncateCodePoints(
+      const content = TokenPathPanelLogic.truncateCodePoints(
         priorMessages[index].content,
         Math.min(10_000, remainingChars)
       );
@@ -1872,7 +1878,7 @@ export class PanelController {
       sections.push(HISTORY_HEADING + historyBlocks.join(SECTION_SEPARATOR));
     }
     sections.push(currentSection);
-    const attributionQuestion = TldrPanelLogic.truncateCodePoints(
+    const attributionQuestion = TokenPathPanelLogic.truncateCodePoints(
       sections.join(SECTION_SEPARATOR),
       ATTRIBUTION_QUESTION_MAX_CHARS
     );
@@ -1886,7 +1892,7 @@ export class PanelController {
         {
           role: "user" as const,
           content: withSuggestions
-            ? TldrPanelLogic.withSuggestionsTail(boundedQuestion)
+            ? TokenPathPanelLogic.withSuggestionsTail(boundedQuestion)
             : boundedQuestion,
         },
       ],
@@ -2012,7 +2018,7 @@ export class PanelController {
     );
     if (!message) return;
     const attribution = message.attribution;
-    const selected = TldrPanelLogic.selectSuggestions(candidates, {
+    const selected = TokenPathPanelLogic.selectSuggestions(candidates, {
       heatmap:
         attribution?.status === "ready" ? attribution.heatmap || null : null,
       document: attribution?.document || this.context,

@@ -49,7 +49,7 @@ function loadClassicClient(
     Response,
     TextDecoder,
     TextEncoder,
-    TldrPanelLogic: Logic,
+    TokenPathPanelLogic: Logic,
     URL,
     chrome: { storage: chromeStorage(storage) },
     clearTimeout: contextClearTimeout,

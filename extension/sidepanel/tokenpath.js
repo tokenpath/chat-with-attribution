@@ -392,8 +392,8 @@ const TokenPath = {
       payload,
       signal
     );
-    const answerOffsetMap = TldrPanelLogic.codePointToUtf16Map(answer);
-    const sourceOffsetMap = TldrPanelLogic.codePointToUtf16Map(document);
+    const answerOffsetMap = TokenPathPanelLogic.codePointToUtf16Map(answer);
+    const sourceOffsetMap = TokenPathPanelLogic.codePointToUtf16Map(document);
 
     const shape = normalizeHeatmapShape(body.shape);
     const [answerTokenCount, documentTokenCount] = shape;
@@ -856,8 +856,11 @@ function normalizeHeatmapOffsets(value, field, expectedLength, utf16Map) {
       );
     }
 
-    const start = TldrPanelLogic.codePointOffsetToUtf16(utf16Map, range[0]);
-    const end = TldrPanelLogic.codePointOffsetToUtf16(utf16Map, range[1]);
+    const start = TokenPathPanelLogic.codePointOffsetToUtf16(
+      utf16Map,
+      range[0]
+    );
+    const end = TokenPathPanelLogic.codePointOffsetToUtf16(utf16Map, range[1]);
     if (!Number.isInteger(start) || !Number.isInteger(end)) {
       throw invalidHeatmapResponse(
         `TokenPath heatmap ${field} could not be converted to UTF-16.`
