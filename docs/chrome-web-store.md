@@ -101,11 +101,13 @@ behavior. Confirm and disclose:
 Provide a temporary reviewer API key, then ask the reviewer to:
 
 1. Open a normal article and click the TokenPath toolbar icon. The side panel
-   opens and shows the captured page.
-2. Paste the supplied TokenPath API key and connect. TokenPath then streams the
-   summary that toolbar click asked for. (Nothing is generated while the panel
-   is disconnected, and a page with a saved chat reopens that chat instead of
-   summarizing again.)
+   opens, shows the captured page, and asks to be connected in two steps —
+   create a free account, then create an API key. The supplied reviewer key
+   makes both unnecessary; the steps are there for ordinary first-time users.
+2. Paste the supplied TokenPath API key into the field under step 2 and
+   connect. TokenPath then streams the summary that toolbar click asked for.
+   (Nothing is generated while the panel is disconnected, and a page with a
+   saved chat reopens that chat instead of summarizing again.)
 3. Type any question about the page in the composer. It streams a second
    attributed answer the same way.
 4. Wait for “Mapping this answer to the source…” to finish. Attributed phrases

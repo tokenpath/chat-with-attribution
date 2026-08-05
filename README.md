@@ -35,9 +35,12 @@ gain, so both wait for the repository rename.
    in the same chat. To chat about one passage instead, select it first,
    right-click, and choose **Chat with TokenPath**.
 
-On first use, paste a TokenPath API key from
-[platform.tokenpath.ai](https://platform.tokenpath.ai). The same key covers
-streaming generation and attribution; no separate model-provider key is needed.
+On first use the panel walks through the two steps that produce a key: create a
+free account at [platform.tokenpath.ai](https://platform.tokenpath.ai), which
+starts with 10,000,000 tokens, then issue a key on
+[the API keys page](https://platform.tokenpath.ai/api-keys) and paste it in. The
+same key covers streaming generation and attribution; no separate
+model-provider key is needed.
 
 ## Build the Chrome Web Store package
 
