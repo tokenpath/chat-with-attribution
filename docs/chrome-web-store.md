@@ -116,7 +116,20 @@ behavior. Confirm and disclose:
 
 ## Reviewer instructions
 
-Provide a temporary reviewer API key, then ask the reviewer to:
+The dashboard's test-instructions field caps at 500 characters, so paste the
+short version below and keep the full walkthrough here for support replies if a
+reviewer asks for more. A TokenPath key is about 66 characters, which the short
+version budgets for.
+
+**Dashboard field (465 characters with a real key):**
+
+```text
+Test key: <PASTE_REVIEWER_KEY>
+
+Click the TokenPath toolbar icon on any article, then paste the key when prompted. A 3-bullet summary streams. Click an underlined phrase: its source highlights in the page and scrolls into view. Same in a searchable PDF; on a captioned YouTube video the player seeks to that moment. Right-click a selection for our one menu item, which captures only and generates nothing until you ask.
+```
+
+**Full walkthrough (reference, not pasted):** ask the reviewer to:
 
 1. Open a normal article and click the TokenPath toolbar icon. The side panel
    opens, shows the captured page, and asks to be connected in two steps —
