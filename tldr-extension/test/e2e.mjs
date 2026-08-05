@@ -998,6 +998,33 @@ function recordDeterministic(good) {
         document.getElementById("auth")?.hidden === false &&
         document.getElementById("tokenpath-cta")?.getClientRects().length === 1
     );
+    // A visitor arriving from the store has neither an account nor a key, so
+    // the disconnected panel has to name both errands and link each one.
+    const firstRunGuidance = await page.evaluate(() => {
+      const link = (id) => {
+        const node = document.getElementById(id);
+        return node
+          ? {
+              text: node.textContent,
+              href: node.href,
+              target: node.target,
+              rel: node.rel,
+            }
+          : null;
+      };
+      return {
+        steps: Array.from(
+          document.querySelectorAll("#auth ol > li"),
+          (item) => item.textContent
+        ),
+        signup: link("auth-signup-link"),
+        keys: link("auth-keys-link"),
+        plan: document.getElementById("auth-plan-note")?.textContent,
+        keyFieldLabel: document.querySelector('label[for="tokenpath-key"]')
+          ?.textContent,
+        disclosure: document.getElementById("auth")?.textContent,
+      };
+    });
     const sourceError =
       "The page changed before the selection could be captured.";
     await page.evaluate((error) => {
@@ -1115,6 +1142,27 @@ function recordDeterministic(good) {
       panelResult.ctaDoesNotOverlapDisconnect &&
       disconnectPending &&
       disconnectSettled &&
+      firstRunGuidance.steps.length === 2 &&
+      firstRunGuidance.steps[0]?.includes("Create a free TokenPath account") &&
+      firstRunGuidance.steps[0]?.includes("10,000,000 free tokens") &&
+      firstRunGuidance.steps[1]?.includes(
+        "Create an API key and paste it here"
+      ) &&
+      firstRunGuidance.signup?.href === "https://platform.tokenpath.ai/" &&
+      firstRunGuidance.signup?.target === "_blank" &&
+      firstRunGuidance.signup?.rel.includes("noopener") &&
+      firstRunGuidance.signup?.rel.includes("noreferrer") &&
+      firstRunGuidance.keys?.href ===
+        "https://platform.tokenpath.ai/api-keys" &&
+      firstRunGuidance.keys?.target === "_blank" &&
+      firstRunGuidance.keys?.rel.includes("noopener") &&
+      firstRunGuidance.keys?.rel.includes("noreferrer") &&
+      firstRunGuidance.plan === "When those run out, $7/month keeps this extension refilled." &&
+      firstRunGuidance.keyFieldLabel === "TokenPath API key" &&
+      firstRunGuidance.disclosure?.includes(
+        "TokenPath receives the website origin, captured page or PDF text, " +
+          "your questions, and generated answers."
+      ) &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: light")) &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: dark")) &&
       panelResult.themeLabels.some((label) => label?.startsWith("Theme: system")) &&
@@ -1192,6 +1240,7 @@ function recordDeterministic(good) {
         `sourceCard=${collapsedSourceState.cardHeight.toFixed(0)}px/${expandedSourceState.contextVisible}/${replacementSourceCollapsed}/${sourceErrorState.visible}, ` +
         `brand=${panelResult.hasTokenPathWordmark}/${panelResult.hasTokenRail}, ` +
         `cta=${panelResult.cta?.text}/${panelResult.ctaDoesNotOverlapDisconnect}, ` +
+        `firstRun=${firstRunGuidance.steps.length}/${firstRunGuidance.keys?.href}, ` +
         `clickGuide=${panelResult.clickGuide}, click=${clickedSent?.[1]?.start}, ` +
         `boundaries=${boundaryCases.map((item) => `${item.question}:${item.good}`).join(",")}`
     );

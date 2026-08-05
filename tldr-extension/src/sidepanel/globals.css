@@ -251,6 +251,26 @@
   color: var(--tp-accent);
 }
 
+/*
+  A store visitor arrives with nothing, so connecting is a two-step errand:
+  create an account, then create a key. These markers keep that order readable
+  at 320px without indenting the field they lead to.
+*/
+.auth-step-number {
+  display: flex;
+  width: 1.15rem;
+  height: 1.15rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tp-accent) 15%, transparent);
+  color: var(--tp-accent);
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1;
+}
+
 .brand-link {
   color: var(--tp-accent);
   text-decoration: underline;
