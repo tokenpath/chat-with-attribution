@@ -9,6 +9,7 @@
     "check:scripts": "tsc -p tsconfig.scripts.json",
     "package:store": "npm run check && npm run package:store:ci",
     "package:store:ci": "node scripts/package-extension.mjs",
+    "licenses": "node scripts/generate-third-party-licenses.mjs",
     "version:set": "node scripts/set-version.mjs",
     "setup:test": "playwright install chromium && bash test/setup-libs.sh",
     "test:unit": "node --test test/*.test.cjs",

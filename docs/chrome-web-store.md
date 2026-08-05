@@ -169,6 +169,12 @@ cd tldr-extension
 npm run package:store
 ```
 
+The ZIP carries `THIRD-PARTY-LICENSES.md` at its root: the side-panel bundle is
+minified, which strips the license headers its dependencies require to travel
+with the code, so the notice ships in the package instead. Regenerate it with
+`npm run licenses` after any dependency change — CI regenerates and diffs, so a
+stale notice fails the build.
+
 The packaged `manifest.json` declares exactly two host permissions,
 `<all_urls>` and `https://api.tokenpath.ai/*`; only the staging and localhost
 development origins are stripped, and the packager fails loudly on any host

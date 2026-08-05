@@ -42,6 +42,14 @@ const runtimeFiles = [
   "sidepanel/tokenpath.js",
 ];
 
+// Files that ship in the package but live outside the extension directory,
+// mapped source -> archive path. The bundled side panel is minified, which
+// strips the license headers MIT, ISC, BSD, and Apache-2.0 all require to
+// travel with the code, so the notice has to ride along in the ZIP itself.
+const repoRootFiles = new Map([
+  ["THIRD-PARTY-LICENSES.md", "THIRD-PARTY-LICENSES.md"],
+]);
+
 // manifest.json cannot carry comments, so the host-permission policy lives
 // here.
 //
@@ -129,6 +137,12 @@ try {
     await copyFile(join(extensionRoot, relativePath), destination);
   }
 
+  for (const [sourcePath, archivePath] of repoRootFiles) {
+    const destination = join(stagingDir, archivePath);
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(resolve(extensionRoot, "..", sourcePath), destination);
+  }
+
   manifest.host_permissions = hostPermissions;
   await writeFile(
     join(stagingDir, "manifest.json"),
@@ -137,7 +151,11 @@ try {
 
   // Sorted entries + normalized mtimes keep the archive byte-identical across
   // runs and machines.
-  const archiveEntries = [...runtimeFiles, "manifest.json"].sort();
+  const archiveEntries = [
+    ...runtimeFiles,
+    ...repoRootFiles.values(),
+    "manifest.json",
+  ].sort();
   for (const relativePath of archiveEntries) {
     await utimes(
       join(stagingDir, relativePath),

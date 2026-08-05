@@ -83,6 +83,13 @@ jobs:
         working-directory: .
         run: git diff --exit-code -- tldr-extension/sidepanel
 
+      - name: Regenerate the third-party license notice
+        run: npm run licenses
+
+      - name: Verify committed third-party license notice is up to date
+        working-directory: .
+        run: git diff --exit-code -- THIRD-PARTY-LICENSES.md
+
       - name: Build Chrome Web Store package
         run: npm run package:store:ci
 
