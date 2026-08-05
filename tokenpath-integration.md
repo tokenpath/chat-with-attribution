@@ -313,10 +313,11 @@ any case.
 
 The originating `tabId`, `frameId`, and `captureId` are preserved from capture
 through generation, heatmap caching, and highlight routing. The immutable
-attribution artifact also retains the exact canonical document and question
-used for that answer, and is what a restored page-chat replays: cached chats
-keep each distinct document once per record and reference it from the answers
-attributed against it, so reopening a page needs no TokenPath request at all.
+attribution artifact also retains the exact canonical document and complete
+attribution prompt transcript used for that answer, and is what a restored
+page-chat replays: cached chats keep each distinct document once per record and
+reference it from the answers attributed against it, so reopening a page needs
+no TokenPath request at all.
 
 Once a source range is resolved, the existing content-script machinery maps its
 canonical document offsets to live DOM nodes. If those nodes were replaced, it
@@ -339,9 +340,12 @@ rapid selections cannot let a delayed response clear the newer result.
 ## Data and privacy
 
 TokenPath receives the exact extracted selection, rendered full-page text, or
-searchable full-PDF text, plus the latest question, bounded conversation text,
-and generated answer. Generation receives them in messages; the heatmap request
-receives the bare document, question, and canonical answer.
+searchable full-PDF text, plus the generator instructions, bounded conversation
+text, current user request, and generated answer. Generation receives that
+context as role-based messages. The heatmap request receives the bare document,
+a `question` transcript containing the generator instructions, bounded
+conversation history, and clean current user request, plus the canonical answer.
+The internal follow-up-suggestion tail is excluded from that transcript.
 
 TokenPath does not receive DOM nodes, page structure, the extraction-to-node
 map, or the user's native browser selection object.

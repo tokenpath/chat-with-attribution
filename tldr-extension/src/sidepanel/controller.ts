@@ -1462,7 +1462,7 @@ export class PanelController {
       answerStatus: "streaming",
       attribution: {
         document: turn.document,
-        question: turn.question,
+        question: turn.attributionQuestion,
         status: "loading",
       },
       kind: "answer",
@@ -1550,7 +1550,7 @@ export class PanelController {
         answerStatus: "attributing",
         attribution: {
           document: turn.document,
-          question: turn.question,
+          question: turn.attributionQuestion,
           status: "loading",
         },
         text: answer,
@@ -1762,9 +1762,9 @@ export class PanelController {
       role: "user" | "assistant";
       content: string;
     }>,
-    // The tail is appended to the outgoing user message only. `question` — the
-    // string attribution maps the answer against, and the one stored with the
-    // chat — stays exactly what the user (or the summary prompt) asked.
+    // The tail is appended to the outgoing user message only. The attribution
+    // transcript, which is also stored with the chat, keeps the clean request
+    // exactly as the user (or the summary prompt) asked it.
     withSuggestions = false
   ) {
     const lastUserIndex = messages
@@ -1775,7 +1775,7 @@ export class PanelController {
         ? "Summarize the selected text."
         : messages[lastUserIndex].content;
     const boundedQuestion = TldrPanelLogic.truncateCodePoints(question, 10_000);
-    const systemPrefix =
+    const systemInstructions =
       `You are given some text from ${this.sourceBaseUrl}. ` +
       "Answer the user's question using the given text as the source of " +
       "truth. Do not invent details that the source does not support. If the " +
@@ -1795,8 +1795,8 @@ export class PanelController {
       "- Prefer bullet points when they make the answer easier to scan.\n" +
       "- Use a Markdown table when the information is naturally tabular or " +
       "when comparing multiple items.\n" +
-      "- Do not force bullets or tables when a short paragraph is clearer.\n\n" +
-      "Given text:\n";
+      "- Do not force bullets or tables when a short paragraph is clearer.";
+    const systemPrefix = `${systemInstructions}\n\nGiven text:\n`;
     const maxSystemChars = Math.max(
       systemPrefix.length + 2,
       MAX_GENERATE_INPUT_CHARS - boundedQuestion.length
@@ -1832,9 +1832,54 @@ export class PanelController {
       remainingChars -= content.length;
     }
 
+    // The attribution service caps `question` at 10,000 characters, while
+    // boundedPrior is sized against the far larger generation budget — a chat
+    // with a few real turns would overflow the cap and 422 every heatmap
+    // request. Compose inside the cap by priority: the current request always
+    // survives, then the generator instructions, then as much conversation
+    // history as fits, newest turns first (restored to chronological order).
+    const ATTRIBUTION_QUESTION_MAX_CHARS = 10_000;
+    const SECTION_SEPARATOR = "\n\n";
+    const currentSection = `Current user request:\n${boundedQuestion}`;
+    const instructionsSection = `Instructions given to the generator:\n${systemInstructions}`;
+    const HISTORY_HEADING = "Conversation history given to the generator:\n";
+    const sections: string[] = [];
+    let attributionBudget =
+      ATTRIBUTION_QUESTION_MAX_CHARS - currentSection.length;
+    if (
+      attributionBudget -
+        (instructionsSection.length + SECTION_SEPARATOR.length) >=
+      0
+    ) {
+      sections.push(instructionsSection);
+      attributionBudget -=
+        instructionsSection.length + SECTION_SEPARATOR.length;
+    }
+    const historyBlocks: string[] = [];
+    let historyBudget =
+      attributionBudget - (HISTORY_HEADING.length + SECTION_SEPARATOR.length);
+    for (let index = boundedPrior.length - 1; index >= 0; index--) {
+      const block = `${
+        boundedPrior[index].role === "user" ? "User" : "Assistant"
+      }:\n${boundedPrior[index].content}`;
+      const cost =
+        block.length + (historyBlocks.length ? SECTION_SEPARATOR.length : 0);
+      if (cost > historyBudget) break;
+      historyBlocks.unshift(block);
+      historyBudget -= cost;
+    }
+    if (historyBlocks.length) {
+      sections.push(HISTORY_HEADING + historyBlocks.join(SECTION_SEPARATOR));
+    }
+    sections.push(currentSection);
+    const attributionQuestion = TldrPanelLogic.truncateCodePoints(
+      sections.join(SECTION_SEPARATOR),
+      ATTRIBUTION_QUESTION_MAX_CHARS
+    );
+
     return {
       document,
-      question: boundedQuestion,
+      attributionQuestion,
       messages: [
         { role: "system" as const, content: system },
         ...boundedPrior,
