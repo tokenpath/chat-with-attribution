@@ -14,9 +14,9 @@ export type ResolvedTheme = "light" | "dark";
 /** The two shipped summary shapes, plus the one the user wrote themselves. */
 export type SummaryPreset = "bullets" | "detailed";
 export type SummaryDepth = SummaryPreset | "custom";
-// Why the click happened. Only the toolbar's "tldr" asks the panel to start a
-// summary by itself; a context-menu capture is an "ask" and waits.
-export type CaptureIntent = "tldr" | "simplify" | "ask";
+// Why the click happened. Only the toolbar's "summarize" asks the panel to
+// start a summary by itself; a context-menu capture is an "ask" and waits.
+export type CaptureIntent = "summarize" | "simplify" | "ask";
 export type SourceType = "page" | "chrome-pdf";
 // "video-transcript" is a full-document capture whose document is the video's
 // subtitle transcript rather than the page's rendered text. Its highlight
@@ -230,7 +230,7 @@ function writeStoredString(key: string, value: string | null) {
 
 /**
  * Both switches default on, so a first-run panel behaves like the shipped
- * one-click TLDR. Anything that is not the exact "off" token is treated as
+ * one-click summary. Anything that is not the exact "off" token is treated as
  * on rather than trusted as a boolean.
  */
 function readBooleanPreference(key: string, fallback: boolean) {
@@ -467,7 +467,7 @@ export class PanelController {
 
     await authReady;
     // A seed that arrived before auth finished has a context but nothing it is
-    // allowed to spend yet; this is where a toolbar TLDR catches up.
+    // allowed to spend yet; this is where a toolbar summary catches up.
     this.maybeRunAutoSummary();
   }
 
@@ -1026,7 +1026,7 @@ export class PanelController {
     this.navigationEpoch++;
     // Recorded against the version this capture just took, so the pending
     // request cannot outlive the context it was made for.
-    this.setAutoSummaryRequest(seed.intent === "tldr");
+    this.setAutoSummaryRequest(seed.intent === "summarize");
     this.history = [];
     const contextLabel =
       this.captureMode === "full-pdf"
@@ -1256,11 +1256,11 @@ export class PanelController {
     // it. Adding the note first would leave it visible only until the cached
     // chat arrived.
     //
-    // A toolbar TLDR takes this same path rather than skipping ahead to the
+    // A toolbar click takes this same path rather than skipping ahead to the
     // summary. Skipping it would overwrite this page's saved conversation with
     // an empty one and pay for a summary the user already has: a restored chat
-    // is the answer to "TLDR this page", so it cancels the pending request and
-    // spends nothing.
+    // already answers "summarize this page", so it cancels the pending request
+    // and spends nothing.
     void this.restorePageChat(text, contextVersion, true).then((restored) => {
       if (contextVersion !== this.contextVersion) return;
       addTranscriptFallbackNote();

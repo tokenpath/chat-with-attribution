@@ -123,12 +123,12 @@ menu labels the action about to happen, and the action is a chat. Each frame lis
 selection changes, clones the current `Range`, and eagerly extracts it during
 `contextmenu`.
 
-The toolbar action is the second entry point, and the one-click TLDR path.
+The toolbar action is the second entry point, and the one-click summary path.
 `openPanelOnActionClick` is disabled so the worker owns the click: it runs the
 same `captureAndOpen` as the context menu with `frameId: 0`, `forceFullPage`,
-and `intent: "tldr"`, so the capture starts before the panel finishes opening.
-The panel restores this page's cached chat if there is one — a saved
-conversation is the answer to "TLDR this page", so it cancels the pending
+and `intent: "summarize"`, so the capture starts before the panel finishes
+opening. The panel restores this page's cached chat if there is one — a saved
+conversation already answers "summarize this page", so it cancels the pending
 summary and spends nothing — and otherwise summarizes what it just captured.
 
 A panel opened without a capture still defers: the first question (or the
@@ -168,14 +168,15 @@ silently choosing the wrong duplicate.
 Every seed carries `captureId`, `capturedAt` (the click), `seededAt` (the
 session-storage write), `tabId`, `windowId`, `frameId`, `captureMode`,
 `intent`, `sourceType`, and the source URL. `intent` is why the click happened:
-only the toolbar's `"tldr"` asks the panel to summarize by itself, and every
-context-menu capture is an `"ask"` that waits. IDs are allocated before extraction, so click
-order—not async completion order—defines freshness. The panel installs its live
-listener before active-tab lookup, seed replay, or credit validation. A replayed
-seed is discarded when its capture is more than 120 seconds old or when its URL
-is a different document from the live tab's, so a panel opened long after the
-click cannot adopt a document the tab has left. Duplicate and stale seeds cannot
-replace a newer capture or change its highlight route.
+only the toolbar's `"summarize"` asks the panel to summarize by itself, and
+every context-menu capture is an `"ask"` that waits. IDs are allocated before
+extraction, so click order—not async completion order—defines freshness. The
+panel installs its live listener before active-tab lookup, seed replay, or
+credit validation. A replayed seed is discarded when its capture is more than
+120 seconds old or when its URL is a different document from the live tab's, so
+a panel opened long after the click cannot adopt a document the tab has left.
+Duplicate and stale seeds cannot replace a newer capture or change its
+highlight route.
 
 Chrome's built-in PDF viewer is a protected component extension, so ordinary
 content scripts cannot read its DOM or receive highlight messages. For every

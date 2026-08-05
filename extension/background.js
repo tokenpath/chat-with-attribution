@@ -18,7 +18,7 @@ const LEGACY_MENU_IDS = [
   "tokenpath-ask",
 ];
 const LEGACY_MENU_INTENTS = new Map([
-  ["tokenpath-tldr", "tldr"],
+  ["tokenpath-tldr", "summarize"],
   ["tokenpath-simplify", "simplify"],
   ["tokenpath-ask", "ask"],
 ]);
@@ -94,7 +94,7 @@ chrome.runtime.onInstalled.addListener(() => {
 // service-worker startup also migrates the legacy standalone TLDR item.
 void ensureContextMenus();
 
-// The toolbar icon is the one-click TLDR entry point: capture the complete
+// The toolbar icon is the one-click summary entry point: capture the complete
 // active page (or PDF), open the panel, and start the automatic summary.
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: false })
@@ -103,7 +103,7 @@ chrome.sidePanel
 chrome.action.onClicked.addListener((tab) => {
   if (!tab || tab.id == null) return;
   return captureAndOpen(
-    "tldr",
+    "summarize",
     { frameId: 0, forceFullPage: true },
     tab
   );

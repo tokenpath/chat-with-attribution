@@ -2247,7 +2247,7 @@ function recordDeterministic(good) {
     });
 
     // The toolbar sends the same textless full-PDF descriptor with intent
-    // "tldr". Reading the PDF still spends nothing; the summary starts by
+    // "summarize". Reading the PDF still spends nothing; the summary starts by
     // itself once the extraction lands, with no starter click.
     const requestsBeforeToolbarPdf = await page.evaluate(
       () => window.__fullPdfRequests.length
@@ -2261,7 +2261,7 @@ function recordDeterministic(good) {
         windowId: 17,
         frameId: 0,
         captureMode: "full-pdf",
-        intent: "tldr",
+        intent: "summarize",
         sourceType: "chrome-pdf",
         url: "https://docs.example/reports/toolbar.pdf",
         text: "",
@@ -2340,7 +2340,7 @@ function recordDeterministic(good) {
       );
     console.log("\n### Full-PDF side-panel fixture");
     console.log(
-      `  [reading state + extraction replacement + generation + toolbar TLDR] ${good ? "PASS" : "FAIL"}` +
+      `  [reading state + extraction replacement + generation + toolbar summary] ${good ? "PASS" : "FAIL"}` +
         ` — label=${result.label}, waited=${extractionWaited}, fetches=${result.pdfFetchCount}, ` +
         `toolbarPdf=${toolbarPdfReadingState.spentNothing}/${toolbarPdfResult.maxOutputTokens}, ` +
         `aborted=${olderSignalWasAborted}, calls=${result.generationCount}/${result.heatmapCount}`
@@ -2552,8 +2552,9 @@ function recordDeterministic(good) {
         document.getElementById("input")?.disabled === false
     );
 
-    // The toolbar entry point seeds `intent: "tldr"`. Unlike a context-menu
-    // capture, it summarises the page it just captured without a second click.
+    // The toolbar entry point seeds `intent: "summarize"`. Unlike a
+    // context-menu capture, it summarises the page it just captured without a
+    // second click.
     await page.evaluate(() => {
       window.__intentRuntimeListeners[0]?.({
         type: "selection-captured",
@@ -2563,7 +2564,7 @@ function recordDeterministic(good) {
         windowId: 23,
         frameId: 0,
         captureMode: "full-page",
-        intent: "tldr",
+        intent: "summarize",
         sourceType: "page",
         url: "https://docs.example/toolbar-summary",
         text: window.__intentSummarySource,
@@ -2613,7 +2614,7 @@ function recordDeterministic(good) {
         windowId: 23,
         frameId: 0,
         captureMode: "full-page",
-        intent: "tldr",
+        intent: "summarize",
         sourceType: "page",
         url: "https://docs.example/toolbar-summary",
         text: window.__intentSummarySource,
@@ -2715,7 +2716,7 @@ function recordDeterministic(good) {
         windowId: 23,
         frameId: 0,
         captureMode: "full-page",
-        intent: "tldr",
+        intent: "summarize",
         sourceType: "page",
         url: "https://docs.example/toolbar-saved",
         text: window.__toolbarSavedContext,
@@ -3286,7 +3287,7 @@ function recordDeterministic(good) {
         windowId: 23,
         frameId: 0,
         captureMode: "full-page",
-        intent: "tldr",
+        intent: "summarize",
         sourceType: "page",
         url: "https://docs.example/toolbar-disconnected",
         text: window.__intentSummarySource,
@@ -7313,7 +7314,8 @@ if (deterministicFail > 0) process.exitCode = 1;
       );
 
       // The toolbar entry point on a watch page: the same transcript capture,
-      // seeded with intent "tldr", summarises itself with no starter click.
+      // seeded with intent "summarize", summarises itself with no starter
+      // click.
       const requestsBeforeToolbarVideo = await panel.evaluate(
         () => window.__videoRequests.length
       );
@@ -7326,7 +7328,7 @@ if (deterministicFail > 0) process.exitCode = 1;
           windowId: 41,
           frameId: 0,
           captureMode: "video-transcript",
-          intent: "tldr",
+          intent: "summarize",
           sourceType: "page",
           url: "https://www.youtube.com/watch?v=toolbar54321",
           text: window.__videoTranscript,
@@ -7384,7 +7386,7 @@ if (deterministicFail > 0) process.exitCode = 1;
             windowId: 41,
             frameId: 0,
             captureMode: "full-page",
-            intent: "tldr",
+            intent: "summarize",
             sourceType: "page",
             url: "https://www.youtube.com/watch?v=silent876543",
             text: `${pageMarker} ${transcript}`,
@@ -7721,7 +7723,8 @@ if (deterministicFail > 0) process.exitCode = 1;
       () => document.getElementById("input")?.disabled === false
     );
 
-    // 1. The toolbar seeds intent "tldr" and the panel summarizes on its own.
+    // 1. The toolbar seeds intent "summarize" and the panel summarizes on
+    //    its own.
     await page.evaluate(() => {
       window.__followUpRuntimeListeners[0]?.({
         type: "selection-captured",
@@ -7731,7 +7734,7 @@ if (deterministicFail > 0) process.exitCode = 1;
         windowId: 5,
         frameId: 0,
         captureMode: "full-page",
-        intent: "tldr",
+        intent: "summarize",
         sourceType: "page",
         url: window.__followUpTabUrl,
         text: window.__followUpSource,
@@ -8041,7 +8044,7 @@ if (deterministicFail > 0) process.exitCode = 1;
         windowId: 5,
         frameId: 0,
         captureMode: "full-page",
-        intent: "tldr",
+        intent: "summarize",
         sourceType: "page",
         url: window.__followUpTabUrl,
         text: window.__followUpSecondSource,

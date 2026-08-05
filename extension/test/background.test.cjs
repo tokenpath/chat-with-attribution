@@ -367,14 +367,14 @@ assert.ok(installedHandler, "context-menu installer registered");
     ([name]) => name === "storage.session.set"
   )[1]["seed:40"];
   assert.strictEqual(toolbarSeed.captureMode, "full-page");
-  assert.strictEqual(toolbarSeed.intent, "tldr");
+  assert.strictEqual(toolbarSeed.intent, "summarize");
   assert.strictEqual(toolbarSeed.text, "Toolbar article");
   assert.ok(
     toolbarCalls.findIndex(([name]) => name === "sidePanel.open") <
       toolbarCalls.findIndex(([name]) => name === "tabs.sendMessage"),
     "toolbar capture must not wait for the side panel"
   );
-  console.log("PASS: toolbar click captures the page and starts a TLDR");
+  console.log("PASS: toolbar click captures the page and starts a summary");
 
   tabUrls.set(40, "https://example.com/activated-tab");
   const silentCaptureStart = calls.length;
@@ -486,7 +486,7 @@ assert.ok(installedHandler, "context-menu installer registered");
   assert.strictEqual(seed.frameId, 7);
   assert.strictEqual(seed.windowId, 3);
   assert.strictEqual(seed.url, "https://mail.google.com/mail/u/0/");
-  assert.strictEqual(seed.intent, "tldr");
+  assert.strictEqual(seed.intent, "summarize");
   assert.strictEqual(seed.captureMode, "selection");
   assert.ok(seed.captureId);
   const runtimeCapture = calls.find(
@@ -496,7 +496,7 @@ assert.ok(installedHandler, "context-menu installer registered");
       message?.captureId === seed.captureId
   )?.[1];
   assert.strictEqual(runtimeCapture?.url, seed.url);
-  assert.strictEqual(runtimeCapture?.intent, "tldr");
+  assert.strictEqual(runtimeCapture?.intent, "summarize");
   console.log("PASS: selection capture does not wait for side-panel opening");
   console.log("PASS: Gmail/nested-frame capture preserves the originating frame");
   console.log("PASS: content injection begins before panel focus can hide selection");
@@ -782,7 +782,7 @@ assert.ok(installedHandler, "context-menu installer registered");
   console.log("PASS: no-selection PDFs hand full-document capture to the panel");
 
   const fullPageActions = [
-    ["tokenpath-tldr", "tldr"],
+    ["tokenpath-tldr", "summarize"],
     ["tokenpath-simplify", "simplify"],
     ["tokenpath-ask", "ask"],
   ];
