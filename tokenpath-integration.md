@@ -1,4 +1,4 @@
-# Generation and Attribution in TokenPath — Chat with Attribution
+# Generation and Attribution in Browse with TokenPath
 
 > **Status (2026-07): live single-provider implementation.** TokenPath streams
 > generation from a messages-only `/v1/generate` request, then receives the

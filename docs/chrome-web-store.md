@@ -4,7 +4,7 @@
 
 **Name**
 
-TokenPath — Chat with Attribution
+Browse with TokenPath
 
 **Summary**
 
@@ -159,5 +159,5 @@ development origins are stripped, and the packager fails loudly on any host
 permission it does not recognize. The ZIP is byte-reproducible and its SHA-256
 is printed, so the uploaded artifact can be re-derived from the same commit.
 
-Upload `dist/tokenpath-chat-with-attribution-<version>.zip` in the Chrome Web
+Upload `dist/browse-with-tokenpath-<version>.zip` in the Chrome Web
 Store Developer Dashboard.

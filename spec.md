@@ -1,12 +1,13 @@
-# Spec: TokenPath — Chat with Attribution
+# Spec: Browse with TokenPath
 
 ## Goal
 
-TokenPath — Chat with Attribution is a Chrome Manifest V3 extension. A user
-clicks the toolbar icon for a one-click summary of the whole page, or selects
-text, right-clicks, and chooses the single **Chat with TokenPath** context-menu
-item. A selection uses only that span. A context-menu click without a selection uses the rendered text
-of the originating page/frame or the entire top-level searchable PDF. The
+Browse with TokenPath is a Chrome Manifest V3 extension. A user clicks the
+toolbar icon for a one-click summary of the whole page, or selects text,
+right-clicks, and chooses the single **Chat with TokenPath** context-menu item.
+A selection uses only that span. A context-menu click without a selection uses
+the rendered text of the originating page/frame or the entire top-level
+searchable PDF. The
 resulting side-panel chat is grounded in that source text. TokenPath streams
 each answer, then returns one answer-to-document heatmap. Clicking an attributed
 phrase, choosing one from the answer's **Sources** list, or selecting any part
@@ -110,7 +111,9 @@ supporting source range, and scrolls there in the live page or PDF.
 The context-menu callback supplies flattened `selectionText` but not DOM nodes.
 One item, **Chat with TokenPath**, is registered across the selection, page, and
 frame contexts; the worker removes the earlier submenu's item IDs on startup, so
-an unpacked reload cannot leave stale actions behind. Each frame listens for
+an unpacked reload cannot leave stale actions behind. The item keeps the verb
+"Chat" even though the extension is now named "Browse with TokenPath": a context
+menu labels the action about to happen, and the action is a chat. Each frame listens for
 selection changes, clones the current `Range`, and eagerly extracts it during
 `contextmenu`.
 

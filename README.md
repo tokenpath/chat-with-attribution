@@ -1,13 +1,19 @@
-# TokenPath — Chat with Attribution
+# Browse with TokenPath
 
-**TokenPath — Chat with Attribution** is a Chrome MV3 extension that opens an
-attributed chat about a web page, a passage inside it, or Chrome's native PDF
-viewer. Click the toolbar icon for a one-click summary of the whole page, or
-select a passage, right-click, and choose the single **Chat with TokenPath**
-context-menu item.
+**Browse with TokenPath** is a Chrome MV3 extension that opens an attributed
+chat about a web page, a passage inside it, or Chrome's native PDF viewer. Click
+the toolbar icon for a one-click summary of the whole page, or select a passage,
+right-click, and choose the single **Chat with TokenPath** context-menu item.
 Every answer can be traced back: click an underlined phrase, select any part of
 the answer, or open its **Sources** list, and the extension highlights and
 scrolls to the source text that most strongly supports it.
+
+"Browse with TokenPath" is the product name; **Chat with TokenPath** is the one
+context-menu action, and stays worded that way on purpose — it names what the
+click does. Two internal names predate the rename and are deliberately left
+alone: the `tldr-extension/` directory and the `tldr-` message and intent
+prefixes. Renaming either churns every path in the repo for no user-visible
+gain, so both wait for the repository rename.
 
 ## Load it unpacked
 
@@ -40,7 +46,7 @@ npm run package:store
 ```
 
 This runs the full check, then builds
-`dist/tokenpath-chat-with-attribution-<version>.zip` with `manifest.json` at the
+`dist/browse-with-tokenpath-<version>.zip` with `manifest.json` at the
 archive root (`npm run package:store:ci` is the CI variant that skips the
 redundant re-check). The package contains only runtime files and declares
 exactly two host permissions, `<all_urls>` and `https://api.tokenpath.ai/*`;
