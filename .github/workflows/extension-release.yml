@@ -164,5 +164,5 @@ jobs:
         run: >-
           gh release create "$RELEASE_TAG" dist/*.zip
           --repo "$GITHUB_REPOSITORY"
-          --title "TokenPath — Chat with Attribution $RELEASE_TAG"
+          --title "Browse with TokenPath $RELEASE_TAG"
           --generate-notes

@@ -17,8 +17,7 @@ const extensionRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(
   await readFile(join(extensionRoot, "manifest.json"), "utf8")
 );
-const archiveName =
-  `tokenpath-chat-with-attribution-${manifest.version}.zip`;
+const archiveName = `browse-with-tokenpath-${manifest.version}.zip`;
 const distDir = join(extensionRoot, "dist");
 const archivePath = join(distDir, archiveName);
 
