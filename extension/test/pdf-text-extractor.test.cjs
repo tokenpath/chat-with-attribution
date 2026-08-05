@@ -9,7 +9,7 @@ const sourcePath = path.resolve(
   "../src/sidepanel/pdf-text-extractor.ts"
 );
 const compileDirectory = fs.mkdtempSync(
-  path.join(os.tmpdir(), "tldr-pdf-text-test-")
+  path.join(os.tmpdir(), "tokenpath-pdf-text-test-")
 );
 
 // Compile through an explicit project file rather than bare command-line flags,

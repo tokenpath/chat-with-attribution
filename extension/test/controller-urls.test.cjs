@@ -9,7 +9,7 @@ const test = require("node:test");
 // page-chat key and its navigation guard, so it compiles and runs standalone.
 const sourcePath = path.resolve(__dirname, "../src/sidepanel/chat-cache.ts");
 const compileDirectory = fs.mkdtempSync(
-  path.join(os.tmpdir(), "tldr-controller-urls-test-")
+  path.join(os.tmpdir(), "tokenpath-controller-urls-test-")
 );
 childProcess.execFileSync(
   path.resolve(__dirname, "../node_modules/.bin/tsc"),

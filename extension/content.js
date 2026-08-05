@@ -8,14 +8,13 @@
   // scripting.executeScript). A versioned marker lets a fresh script replace a
   // stale isolated-world listener after an unpacked extension reload.
   const CONTENT_VERSION = "2026-07-29.1";
-  const tldrWindow = /** @type {Window & { __tldrContentLoaded?: string }} */ (
-    window
-  );
-  if (tldrWindow.__tldrContentLoaded === CONTENT_VERSION) return;
-  tldrWindow.__tldrContentLoaded = CONTENT_VERSION;
+  const tokenpathWindow =
+    /** @type {Window & { __tokenpathContentLoaded?: string }} */ (window);
+  if (tokenpathWindow.__tokenpathContentLoaded === CONTENT_VERSION) return;
+  tokenpathWindow.__tokenpathContentLoaded = CONTENT_VERSION;
 
-  const HL_NAME = "tldr-attrib";
-  const HL_NAME_DARK = "tldr-attrib-dark";
+  const HL_NAME = "tokenpath-attrib";
+  const HL_NAME_DARK = "tokenpath-attrib-dark";
   // Below this relative luminance the backdrop behind an attribution is dark
   // enough that the light-page highlight palette turns into murky olive.
   const DARK_BACKDROP_LUMINANCE = 0.4;
@@ -79,7 +78,7 @@
   // --- Selection snapshot ---------------------------------------------------
 
   function isActiveInstance() {
-    return tldrWindow.__tldrContentLoaded === CONTENT_VERSION;
+    return tokenpathWindow.__tokenpathContentLoaded === CONTENT_VERSION;
   }
 
   function liveSelectionRange() {
@@ -2748,13 +2747,13 @@
 
   // Unit tests evaluate this exact file and exercise the pure offset helpers
   // through this object, so their behaviour can never drift from the page's.
-  // A real page never defines `__tldrTestHooks`, so nothing is exported and no
-  // runtime behaviour changes; the harness must create the object first.
+  // A real page never defines `__tokenpathTestHooks`, so nothing is exported
+  // and no runtime behaviour changes; the harness must create the object first.
   if (
-    globalThis.__tldrTestHooks &&
-    typeof globalThis.__tldrTestHooks === "object"
+    globalThis.__tokenpathTestHooks &&
+    typeof globalThis.__tokenpathTestHooks === "object"
   ) {
-    Object.assign(globalThis.__tldrTestHooks, {
+    Object.assign(globalThis.__tokenpathTestHooks, {
       buildQuoteProjection,
       buildTranscriptFromSegments,
       chooseQuoteMatch,

@@ -31,11 +31,11 @@ This is a glob over `test/*.test.cjs`, so a new file is picked up by adding it.
 The files today:
 
 - **`roundtrip.test.cjs`** evaluates the real `content.js` in a `vm` sandbox and
-  drives the helpers it exports through `globalThis.__tldrTestHooks`, which the
-  harness creates before evaluation — the script stays inert on a real page,
-  which the suite also asserts. It checks canonical extraction offsets against
-  raw DOM offsets, including synthetic block separators, headings, and exact
-  sub-sentence ranges without sentence expansion.
+  drives the helpers it exports through `globalThis.__tokenpathTestHooks`,
+  which the harness creates before evaluation — the script stays inert on a
+  real page, which the suite also asserts. It checks canonical extraction
+  offsets against raw DOM offsets, including synthetic block separators,
+  headings, and exact sub-sentence ranges without sentence expansion.
 - **`panel-logic.test.cjs`** checks the 24-word concise-source cutoff, the
   absence of a low summary output cap, code-point-safe truncation around emoji,
   TokenPath code-point to browser UTF-16 offset conversion, CJK-dominant

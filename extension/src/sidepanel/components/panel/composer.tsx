@@ -10,7 +10,7 @@ import type { PanelController, PanelSnapshot } from "@/controller";
 import { composerPlaceholder } from "@/lib/source-copy";
 
 const TOKENPATH_DEVELOPER_URL =
-  "https://tokenpath.ai/?utm_source=tldr-extension&utm_medium=product&utm_campaign=developer_cta";
+  "https://tokenpath.ai/?utm_source=browse-with-tokenpath&utm_medium=product&utm_campaign=developer_cta";
 
 export function Composer({
   controller,

@@ -303,10 +303,10 @@ defensive — an unreadable or hand-edited value falls back to the default:
 
 | Setting | Key | Default |
 |---|---|---|
-| Summarize new pages automatically | `tldr-auto-summarize` | on |
-| Default summary (`3 bullets` / `Detailed`) | `tldr-summary-preset` | `bullets` |
-| Suggest follow-up questions | `tldr-suggest-followups` | on |
-| Summary instructions | `tldr-summary-instructions` | unset |
+| Summarize new pages automatically | `tokenpath-auto-summarize` | on |
+| Default summary (`3 bullets` / `Detailed`) | `tokenpath-summary-preset` | `bullets` |
+| Suggest follow-up questions | `tokenpath-suggest-followups` | on |
+| Summary instructions | `tokenpath-summary-instructions` | unset |
 
 Summary instructions are advanced and collapsed by default. The field is
 preloaded with the editable half of the prompt currently in force, so the user

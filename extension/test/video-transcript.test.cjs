@@ -4,8 +4,8 @@
 // character range seeks to.
 //
 // content.js itself is evaluated here and the helpers under test come from its
-// `__tldrTestHooks` export, so these assertions can never drift from the code
-// that runs on a watch page.
+// `__tokenpathTestHooks` export, so these assertions can never drift from
+// the code that runs on a watch page.
 
 const assert = require("assert");
 const { readFileSync } = require("fs");
@@ -41,11 +41,11 @@ function loadContentScript() {
     },
     window: { getSelection: () => null, getComputedStyle: () => ({}) },
   };
-  sandbox.__tldrTestHooks = {};
+  sandbox.__tokenpathTestHooks = {};
   vm.runInContext(source, vm.createContext(sandbox), {
     filename: "content.js",
   });
-  return sandbox.__tldrTestHooks;
+  return sandbox.__tokenpathTestHooks;
 }
 
 const hooks = loadContentScript();

@@ -3,8 +3,8 @@
 // resolution, asserting the source span resolves to correct raw node offsets.
 //
 // content.js itself is evaluated here, and the helpers under test come from
-// its `__tldrTestHooks` export, so these assertions can never drift from the
-// code that runs on a page.
+// its `__tokenpathTestHooks` export, so these assertions can never drift
+// from the code that runs on a page.
 
 const assert = require("assert");
 const { readFileSync } = require("fs");
@@ -61,10 +61,10 @@ function loadContentScript(withHooks = true) {
         element?.style || { backgroundColor: "rgba(0, 0, 0, 0)" },
     },
   };
-  if (withHooks) sandbox.__tldrTestHooks = {};
+  if (withHooks) sandbox.__tokenpathTestHooks = {};
   const context = vm.createContext(sandbox);
   vm.runInContext(source, context, { filename: "content.js" });
-  return { hooks: sandbox.__tldrTestHooks, sandbox, ranges };
+  return { hooks: sandbox.__tokenpathTestHooks, sandbox, ranges };
 }
 
 const { hooks, sandbox } = loadContentScript();

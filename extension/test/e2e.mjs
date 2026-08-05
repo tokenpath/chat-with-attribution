@@ -62,7 +62,7 @@ async function setupPage(page) {
   await page.evaluate(() => {
     window.chrome = {
       runtime: {
-        onMessage: { addListener: (fn) => (window.__tldrMsg = fn) },
+        onMessage: { addListener: (fn) => (window.__tokenpathMsg = fn) },
       },
     };
   });
@@ -111,7 +111,7 @@ async function captureRegion(page, mode) {
     document.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
 
     let resp;
-    window.__tldrMsg({ type: "capture-selection" }, null, (r) => (resp = r));
+    window.__tokenpathMsg({ type: "capture-selection" }, null, (r) => (resp = r));
     return resp;
   }, mode);
 }
@@ -120,8 +120,8 @@ async function highlight(page, start, end) {
   return page.evaluate(
     ({ start, end }) => {
       let resp;
-      window.__tldrMsg({ type: "highlight", start, end }, null, (r) => (resp = r));
-      const hl = CSS.highlights ? CSS.highlights.get("tldr-attrib") : null;
+      window.__tokenpathMsg({ type: "highlight", start, end }, null, (r) => (resp = r));
+      const hl = CSS.highlights ? CSS.highlights.get("tokenpath-attrib") : null;
       const ranges = hl ? [...hl].map((r) => r.toString()) : [];
       return { resp, ranges };
     },
@@ -591,7 +591,7 @@ function recordDeterministic(good) {
           .getElementById("context-toggle")
           ?.getAttribute("aria-expanded") === "false"
     );
-    if (process.env.TLDR_PANEL_SCREENSHOT_PREFIX) {
+    if (process.env.TOKENPATH_PANEL_SCREENSHOT_PREFIX) {
       const setThemePreference = async (preference) => {
         for (let index = 0; index < 4; index++) {
           const label = await page
@@ -606,7 +606,7 @@ function recordDeterministic(good) {
       for (const theme of ["light", "dark"]) {
         await setThemePreference(theme);
         await page.screenshot({
-          path: `${process.env.TLDR_PANEL_SCREENSHOT_PREFIX}-${theme}.png`,
+          path: `${process.env.TOKENPATH_PANEL_SCREENSHOT_PREFIX}-${theme}.png`,
         });
       }
       await setThemePreference("system");
@@ -1164,7 +1164,7 @@ function recordDeterministic(good) {
       panelResult.cta?.ariaLabel?.includes("source attribution") &&
       panelResult.cta?.focused === true &&
       panelResult.cta?.href.startsWith(
-        "https://tokenpath.ai/?utm_source=tldr-extension"
+        "https://tokenpath.ai/?utm_source=browse-with-tokenpath"
       ) &&
       panelResult.cta?.target === "_blank" &&
       panelResult.cta?.rel.includes("noopener") &&
@@ -4243,7 +4243,7 @@ function recordDeterministic(good) {
       // Even if Chrome omits OnClickData.selectionText, the exact
       // contextmenu snapshot still takes precedence over full-page mode.
       let omittedSelection;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-page", captureId: "omitted-selection-hint" },
         null,
         (value) => {
@@ -4257,7 +4257,7 @@ function recordDeterministic(good) {
         new MouseEvent("contextmenu", { bubbles: true })
       );
       let fullPage;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-page", captureId: "full-page-1" },
         null,
         (value) => {
@@ -4279,7 +4279,7 @@ function recordDeterministic(good) {
         beta.replaceWith(beta.cloneNode(true));
 
         let response;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           {
             type: "highlight",
             captureId: "full-page-1",
@@ -4293,7 +4293,7 @@ function recordDeterministic(good) {
           }
         );
         const range = CSS.highlights
-          ? [...(CSS.highlights.get("tldr-attrib") || [])][0]
+          ? [...(CSS.highlights.get("tokenpath-attrib") || [])][0]
           : null;
         return {
           ok: response?.ok === true,
@@ -4310,7 +4310,7 @@ function recordDeterministic(good) {
     const ownership = await page.evaluate(
       ({ start, end }) => {
         let recaptured;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           { type: "capture-page", captureId: "full-page-2" },
           null,
           (value) => {
@@ -4318,7 +4318,7 @@ function recordDeterministic(good) {
           }
         );
         let stale;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           {
             type: "highlight",
             captureId: "full-page-1",
@@ -4331,13 +4331,13 @@ function recordDeterministic(good) {
           }
         );
         const staleRangeCount = CSS.highlights
-          ? [...(CSS.highlights.get("tldr-attrib") || [])].length
+          ? [...(CSS.highlights.get("tokenpath-attrib") || [])].length
           : 0;
         const currentStart = recaptured.text.lastIndexOf(
           "shared source phrase"
         );
         let current;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           {
             type: "highlight",
             captureId: "full-page-2",
@@ -4361,13 +4361,13 @@ function recordDeterministic(good) {
     );
 
     await page.evaluate(() => {
-      window.__tldrContentLoaded = null;
+      window.__tokenpathContentLoaded = null;
     });
     await page.evaluate(CONTENT_JS);
     const restoredAfterReload = await page.evaluate(
       ({ documentText, start }) => {
         let highlighted;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           {
             type: "highlight",
             captureId: "full-page-2",
@@ -4381,10 +4381,10 @@ function recordDeterministic(good) {
           }
         );
         const restoredRange = CSS.highlights
-          ? [...(CSS.highlights.get("tldr-attrib") || [])][0]
+          ? [...(CSS.highlights.get("tokenpath-attrib") || [])][0]
           : null;
         let cleared;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           { type: "clear-highlight" },
           null,
           (value) => {
@@ -4394,7 +4394,7 @@ function recordDeterministic(good) {
         return {
           clearOk: cleared?.ok === true,
           clearedRangeCount: CSS.highlights
-            ? [...(CSS.highlights.get("tldr-attrib") || [])].length
+            ? [...(CSS.highlights.get("tokenpath-attrib") || [])].length
             : 0,
           highlightOk: highlighted?.ok === true,
           text: restoredRange?.toString() || "",
@@ -4412,7 +4412,7 @@ function recordDeterministic(good) {
       huge.textContent = "A".repeat(399_999) + "😀" + "tail";
       document.body.append(huge);
       let response;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-page", captureId: "full-page-huge" },
         null,
         (value) => {
@@ -4421,7 +4421,7 @@ function recordDeterministic(good) {
       );
       const end = response?.text?.length || 0;
       let highlight;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         {
           type: "highlight",
           captureId: "full-page-huge",
@@ -4434,7 +4434,7 @@ function recordDeterministic(good) {
         }
       );
       const range = CSS.highlights
-        ? [...(CSS.highlights.get("tldr-attrib") || [])][0]
+        ? [...(CSS.highlights.get("tokenpath-attrib") || [])][0]
         : null;
       return {
         endsWithHighSurrogate: /[\uD800-\uDBFF]$/.test(response?.text || ""),
@@ -4532,7 +4532,7 @@ function recordDeterministic(good) {
         new MouseEvent("contextmenu", { bubbles: true })
       );
       let response;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-selection", selectionText: selection.toString() },
         null,
         (value) => (response = value)
@@ -4546,7 +4546,7 @@ function recordDeterministic(good) {
         const oldMessage = document.querySelector("[data-message-id]");
         oldMessage.replaceWith(oldMessage.cloneNode(true));
         let response;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           {
             type: "highlight",
             start,
@@ -4555,11 +4555,11 @@ function recordDeterministic(good) {
           null,
           (value) => (response = value)
         );
-        const focus = CSS.highlights.get("tldr-attrib");
+        const focus = CSS.highlights.get("tokenpath-attrib");
         const focusRange = focus && [...focus][0];
         const parent = focusRange?.startContainer?.parentElement;
         let ownedHighlight;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           {
             type: "highlight",
             start,
@@ -4570,20 +4570,20 @@ function recordDeterministic(good) {
           (value) => (ownedHighlight = value)
         );
         let staleClear;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           { type: "clear-highlight", highlightId: "older-highlight" },
           null,
           (value) => (staleClear = value)
         );
         const focusAfterStaleClear =
-          [...(CSS.highlights.get("tldr-attrib") || [])][0]?.toString() || "";
+          [...(CSS.highlights.get("tokenpath-attrib") || [])][0]?.toString() || "";
         let matchingClear;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           { type: "clear-highlight", highlightId: "newer-highlight" },
           null,
           (value) => (matchingClear = value)
         );
-        const clearedByOwner = !CSS.highlights.get("tldr-attrib");
+        const clearedByOwner = !CSS.highlights.get("tokenpath-attrib");
         return {
           response,
           text: focusRange?.toString() || "",
@@ -4683,7 +4683,7 @@ function recordDeterministic(good) {
       );
 
       let captured;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-selection", selectionText },
         null,
         (value) => (captured = value)
@@ -4706,19 +4706,19 @@ function recordDeterministic(good) {
       const target = "Can we test one of these too";
       const start = captured.text.indexOf(target);
       let highlighted;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start, end: start + target.length },
         null,
         (value) => (highlighted = value)
       );
       const focus =
-        [...(CSS.highlights.get("tldr-attrib") || [])][0]?.toString() || "";
+        [...(CSS.highlights.get("tokenpath-attrib") || [])][0]?.toString() || "";
       document
         .getElementById("image-caption")
         .closest('[role="row"]')
         .setAttribute("data-id", "false_fixture_reused_for_other_chat");
       let reusedMessage;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start, end: start + target.length },
         null,
         (value) => (reusedMessage = value)
@@ -4729,7 +4729,7 @@ function recordDeterministic(good) {
         .setAttribute("data-id", "true_fixture_message_2");
       document.getElementById("image-caption").textContent = "Changed target";
       let changedTarget;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start, end: start + target.length },
         null,
         (value) => (changedTarget = value)
@@ -4804,7 +4804,7 @@ function recordDeterministic(good) {
         new MouseEvent("contextmenu", { bubbles: true })
       );
       let captured;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-selection", selectionText },
         null,
         (value) => (captured = value)
@@ -4822,18 +4822,18 @@ function recordDeterministic(good) {
         "Early results suggest this is the right path for real-world visual intelligence.";
       const start = captured.text.indexOf(target);
       let highlighted;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start, end: start + target.length },
         null,
         (value) => (highlighted = value)
       );
       const focus =
-        [...(CSS.highlights.get("tldr-attrib") || [])][0]?.toString() || "";
+        [...(CSS.highlights.get("tokenpath-attrib") || [])][0]?.toString() || "";
       const duplicate = document.querySelector("article").cloneNode(true);
       duplicate.id = "duplicate-article";
       document.querySelector("article").after(duplicate);
       let duplicateArticle;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start, end: start + target.length },
         null,
         (value) => (duplicateArticle = value)
@@ -4841,7 +4841,7 @@ function recordDeterministic(good) {
       duplicate.remove();
       location.hash = "/different-source";
       let routeChanged;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start, end: start + target.length },
         null,
         (value) => (routeChanged = value)
@@ -4850,7 +4850,7 @@ function recordDeterministic(good) {
       document.getElementById("article-target").firstChild.data =
         "Early output suggests this is the right path for real-world visual intelligence. Hydrated client footnote.";
       let changedTarget;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start, end: start + target.length },
         null,
         (value) => (changedTarget = value)
@@ -4906,11 +4906,11 @@ function recordDeterministic(good) {
     const result = await page.evaluate(() => {
       const send = (message) => {
         let response;
-        window.__tldrMsg(message, null, (value) => (response = value));
+        window.__tokenpathMsg(message, null, (value) => (response = value));
         return response;
       };
       const highlightedText = () =>
-        [...(CSS.highlights.get("tldr-attrib") || [])]
+        [...(CSS.highlights.get("tokenpath-attrib") || [])]
           .map((range) => range.toString())
           .join("");
       const topologyTarget =
@@ -5042,7 +5042,7 @@ function recordDeterministic(good) {
     const result = await page.evaluate(() => {
       const send = (message) => {
         let response;
-        window.__tldrMsg(message, null, (value) => (response = value));
+        window.__tokenpathMsg(message, null, (value) => (response = value));
         return response;
       };
       const article = document.querySelector("article");
@@ -5072,7 +5072,7 @@ function recordDeterministic(good) {
         end: start + target.length,
       });
       const reorderedRange = [
-        ...(CSS.highlights.get("tldr-attrib") || []),
+        ...(CSS.highlights.get("tokenpath-attrib") || []),
       ][0];
       const reorderedCase =
         reorderedRange?.startContainer?.parentElement
@@ -5092,7 +5092,7 @@ function recordDeterministic(good) {
         end: start + target.length,
       });
       const ambiguousRanges = [
-        ...(CSS.highlights.get("tldr-attrib") || []),
+        ...(CSS.highlights.get("tokenpath-attrib") || []),
       ].length;
 
       return {
@@ -5144,7 +5144,7 @@ function recordDeterministic(good) {
     const result = await page.evaluate(() => {
       const send = (message) => {
         let response;
-        window.__tldrMsg(message, null, (value) => (response = value));
+        window.__tokenpathMsg(message, null, (value) => (response = value));
         return response;
       };
       const source = document.querySelector("#generic-source b").firstChild;
@@ -5170,7 +5170,7 @@ function recordDeterministic(good) {
         end: captured.text.length,
       });
       const highlighted = [
-        ...(CSS.highlights.get("tldr-attrib") || []),
+        ...(CSS.highlights.get("tokenpath-attrib") || []),
       ][0];
       return {
         captured,
@@ -5220,7 +5220,7 @@ function recordDeterministic(good) {
     const result = await page.evaluate(() => {
       const send = (message) => {
         let response;
-        window.__tldrMsg(message, null, (value) => (response = value));
+        window.__tokenpathMsg(message, null, (value) => (response = value));
         return response;
       };
       const article = document.querySelector("article");
@@ -5249,7 +5249,7 @@ function recordDeterministic(good) {
         end: start + target.length,
       });
       const highlighted = [
-        ...(CSS.highlights.get("tldr-attrib") || []),
+        ...(CSS.highlights.get("tokenpath-attrib") || []),
       ];
       return {
         captured,
@@ -5298,7 +5298,7 @@ function recordDeterministic(good) {
     const result = await page.evaluate(() => {
       const send = (message) => {
         let response;
-        window.__tldrMsg(message, null, (value) => (response = value));
+        window.__tokenpathMsg(message, null, (value) => (response = value));
         return response;
       };
       const source = document.getElementById("joiner-target").firstChild;
@@ -5325,7 +5325,7 @@ function recordDeterministic(good) {
       return {
         captured,
         response,
-        ranges: [...(CSS.highlights.get("tldr-attrib") || [])].length,
+        ranges: [...(CSS.highlights.get("tokenpath-attrib") || [])].length,
       };
     });
     const good =
@@ -5363,7 +5363,7 @@ function recordDeterministic(good) {
     const result = await page.evaluate(() => {
       const send = (message) => {
         let response;
-        window.__tldrMsg(message, null, (value) => (response = value));
+        window.__tokenpathMsg(message, null, (value) => (response = value));
         return response;
       };
       const source = document.getElementById("span-local").firstChild;
@@ -5390,7 +5390,7 @@ function recordDeterministic(good) {
         end: start + target.length,
       });
       const suffixFocus =
-        [...(CSS.highlights.get("tldr-attrib") || [])][0]?.toString() || "";
+        [...(CSS.highlights.get("tokenpath-attrib") || [])][0]?.toString() || "";
 
       send({ type: "clear-highlight" });
       source.data =
@@ -5401,7 +5401,7 @@ function recordDeterministic(good) {
         end: start + target.length,
       });
       const targetChangedRanges = [
-        ...(CSS.highlights.get("tldr-attrib") || []),
+        ...(CSS.highlights.get("tokenpath-attrib") || []),
       ].length;
 
       return {
@@ -5457,7 +5457,7 @@ function recordDeterministic(good) {
       source.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
 
       let captured;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         {
           type: "capture-selection",
           // Simulate Chrome flattening the invisible character out.
@@ -5470,12 +5470,12 @@ function recordDeterministic(good) {
 
       let highlighted;
       const start = captured.text.indexOf("text");
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start, end: start + 4 },
         null,
         (value) => (highlighted = value)
       );
-      const focus = [...(CSS.highlights.get("tldr-attrib") || [])][0];
+      const focus = [...(CSS.highlights.get("tokenpath-attrib") || [])][0];
       return {
         captured,
         nativeSelectionAfterCapture,
@@ -5549,7 +5549,7 @@ function recordDeterministic(good) {
       selection.addRange(caret);
 
       let captured;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         {
           type: "capture-selection",
           selectionText:
@@ -5560,12 +5560,12 @@ function recordDeterministic(good) {
       );
       let highlighted;
       const start = captured.text.indexOf("Article body");
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start, end: start + "Article body".length },
         null,
         (value) => (highlighted = value)
       );
-      const focus = [...(CSS.highlights.get("tldr-attrib") || [])][0];
+      const focus = [...(CSS.highlights.get("tokenpath-attrib") || [])][0];
       return {
         captured,
         caretPreserved: selection.rangeCount === 1 && selection.isCollapsed,
@@ -5633,7 +5633,7 @@ function recordDeterministic(good) {
         new MouseEvent("contextmenu", { bubbles: true })
       );
       let response;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-selection", selectionText: selection.toString() },
         null,
         (value) => (response = value)
@@ -5646,7 +5646,7 @@ function recordDeterministic(good) {
         const view = document.querySelector("[data-testid=twitterArticleReadView]");
         view.replaceWith(view.cloneNode(true));
         let response;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           {
             type: "highlight",
             start,
@@ -5655,7 +5655,7 @@ function recordDeterministic(good) {
           null,
           (value) => (response = value)
         );
-        const range = [...CSS.highlights.get("tldr-attrib")][0];
+        const range = [...CSS.highlights.get("tokenpath-attrib")][0];
         return {
           response,
           text: range?.toString(),
@@ -5708,7 +5708,7 @@ function recordDeterministic(good) {
       source.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
 
       let captured;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-selection", selectionText: selection.toString() },
         null,
         (value) => (captured = value)
@@ -5723,12 +5723,12 @@ function recordDeterministic(good) {
       );
 
       let response;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start: 0, end: "Fable 5".length },
         null,
         (value) => (response = value)
       );
-      const highlighted = [...(CSS.highlights.get("tldr-attrib") || [])][0];
+      const highlighted = [...(CSS.highlights.get("tokenpath-attrib") || [])][0];
       return {
         captured,
         response,
@@ -5780,7 +5780,7 @@ function recordDeterministic(good) {
         new MouseEvent("contextmenu", { bubbles: true })
       );
       let captured;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-selection", selectionText: selection.toString() },
         null,
         (value) => (captured = value)
@@ -5788,12 +5788,12 @@ function recordDeterministic(good) {
 
       source.data = "Wrong 55";
       let response;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "highlight", start: 0, end: "Fable 5".length },
         null,
         (value) => (response = value)
       );
-      const highlighted = CSS.highlights.get("tldr-attrib");
+      const highlighted = CSS.highlights.get("tokenpath-attrib");
       return {
         captured,
         response,
@@ -5853,7 +5853,7 @@ if (LIVE_SITES) {
       selection.addRange(range);
       node.parentElement.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
       let response;
-      window.__tldrMsg(
+      window.__tokenpathMsg(
         { type: "capture-selection", selectionText: selection.toString() },
         null,
         (value) => (response = value)
@@ -5989,10 +5989,10 @@ if (deterministicFail > 0) process.exitCode = 1;
   const request = (page, message) =>
     page.evaluate((message) => {
       let response;
-      window.__tldrMsg(message, null, (value) => (response = value));
+      window.__tokenpathMsg(message, null, (value) => (response = value));
       const live =
-        CSS.highlights?.get("tldr-attrib") ||
-        CSS.highlights?.get("tldr-attrib-dark");
+        CSS.highlights?.get("tokenpath-attrib") ||
+        CSS.highlights?.get("tokenpath-attrib-dark");
       return {
         resp: response,
         ranges: live ? [...live].map((range) => range.toString()) : [],
@@ -6088,8 +6088,8 @@ if (deterministicFail > 0) process.exitCode = 1;
       );
       const paragraph = await page.evaluate(() => {
         const live =
-          CSS.highlights?.get("tldr-attrib") ||
-          CSS.highlights?.get("tldr-attrib-dark");
+          CSS.highlights?.get("tokenpath-attrib") ||
+          CSS.highlights?.get("tokenpath-attrib-dark");
         const range = live ? [...live][0] : null;
         return range
           ? range.startContainer.parentElement.textContent.trim().slice(0, 13)
@@ -6170,7 +6170,7 @@ if (deterministicFail > 0) process.exitCode = 1;
         selection.addRange(range);
         document.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
         let response;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           {
             type: "capture-selection",
             captureId: "reload-capture",
@@ -6216,7 +6216,7 @@ if (deterministicFail > 0) process.exitCode = 1;
         selection.addRange(range);
         document.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
         let response;
-        window.__tldrMsg(
+        window.__tokenpathMsg(
           {
             type: "capture-selection",
             captureId: "reload-capture",
@@ -6482,7 +6482,7 @@ if (deterministicFail > 0) process.exitCode = 1;
     page.evaluate(async (message) => {
       const response = await Promise.race([
         new Promise((resolve) => {
-          window.__tldrMsg(message, null, resolve);
+          window.__tokenpathMsg(message, null, resolve);
         }),
         new Promise((resolve) =>
           setTimeout(() => resolve({ timedOut: true }), 10_000)

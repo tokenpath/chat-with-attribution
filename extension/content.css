@@ -3,7 +3,7 @@
    content.js measures the backdrop luminance behind each attributed range and
    registers the highlight under the matching name; page text is never used to
    build a selector or a property value. */
-::highlight(tldr-attrib) {
+::highlight(tokenpath-attrib) {
   background-color: rgba(255, 212, 0, 0.45);
   color: inherit;
   text-decoration: underline;
@@ -15,7 +15,7 @@
    barely visible underline. A brighter gold reads as a highlight against the
    page while staying dark enough for the page's own light text, and the
    underline flips to a light amber. */
-::highlight(tldr-attrib-dark) {
+::highlight(tokenpath-attrib-dark) {
   background-color: rgba(255, 214, 64, 0.38);
   color: inherit;
   text-decoration: underline;

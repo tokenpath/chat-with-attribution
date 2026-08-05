@@ -166,11 +166,11 @@ interface CachedPageChat {
 }
 
 const CACHE_FORMAT_VERSION = 2;
-const THEME_KEY = "tldr-theme";
-const AUTO_SUMMARIZE_KEY = "tldr-auto-summarize";
-const SUMMARY_PRESET_KEY = "tldr-summary-preset";
-const SUGGEST_FOLLOWUPS_KEY = "tldr-suggest-followups";
-const SUMMARY_INSTRUCTIONS_KEY = "tldr-summary-instructions";
+const THEME_KEY = "tokenpath-theme";
+const AUTO_SUMMARIZE_KEY = "tokenpath-auto-summarize";
+const SUMMARY_PRESET_KEY = "tokenpath-summary-preset";
+const SUGGEST_FOLLOWUPS_KEY = "tokenpath-suggest-followups";
+const SUMMARY_INSTRUCTIONS_KEY = "tokenpath-summary-instructions";
 const MAX_GENERATE_INPUT_CHARS = 420_000;
 const MAX_GENERATE_MESSAGES = 50;
 // TokenPath caps `max_output_tokens` at 2048 and bills generation from the
