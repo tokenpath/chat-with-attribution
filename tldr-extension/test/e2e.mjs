@@ -4569,16 +4569,16 @@ function recordDeterministic(good) {
           <div class="message" role="row" data-id="true_fixture_message_1">
             <div class="preview">
               <span id="preview-domain" class="selectable-text">github.com</span>
-              <span class="selectable-text">https://github.com/everything3d/e3d-openscad-studio</span>
+              <span class="selectable-text">https://github.com/example/orchid-workbench</span>
             </div>
-            <div class="selectable-text">code is https://github.com/everything3d/e3d-openscad-studio push to main to deploy</div>
-            <span class="meta">4:04 PM</span>
+            <div class="selectable-text">code is https://github.com/example/orchid-workbench merge to main to release</div>
+            <span class="meta">2:15 PM</span>
             <button class="controls">Reply</button>
           </div>
           <div class="message" role="row" data-id="true_fixture_message_2">
-            <img alt="Community team sign" width="120" height="80">
-            <div id="image-caption" class="selectable-text">Can we make for all of these</div>
-            <span class="meta">7:23 PM</span>
+            <img alt="Workshop sign photo" width="120" height="80">
+            <div id="image-caption" class="selectable-text">Can we test one of these too</div>
+            <span class="meta">3:40 PM</span>
           </div>
         </section>
       </div>
@@ -4617,14 +4617,14 @@ function recordDeterministic(good) {
       const main = document.getElementById("main");
       main.replaceWith(main.cloneNode(true));
       document.getElementById("preview-domain").textContent = "github.example";
-      document.querySelector(".meta").textContent = "4:05 PM";
+      document.querySelector(".meta").textContent = "2:16 PM";
       document.getElementById("image-caption").classList.remove("selectable-text");
       document.getElementById("main").id = "main-next";
       document.getElementById("main-next").insertAdjacentHTML(
         "beforeend",
-        '<div role="row" data-id="false_fixture_duplicate"><div class="selectable-text">Can we make for all of these</div></div>'
+        '<div role="row" data-id="false_fixture_duplicate"><div class="selectable-text">Can we test one of these too</div></div>'
       );
-      const target = "Can we make for all of these";
+      const target = "Can we test one of these too";
       const start = captured.text.indexOf(target);
       let highlighted;
       window.__tldrMsg(
@@ -4668,13 +4668,13 @@ function recordDeterministic(good) {
     const good =
       !result.captured?.error &&
       result.captured?.text.includes("github.com") &&
-      result.captured?.text.includes("Can we make for all of these") &&
-      result.captured?.text.includes("4:04 PM") &&
+      result.captured?.text.includes("Can we test one of these too") &&
+      result.captured?.text.includes("2:15 PM") &&
       !result.captured?.text.includes("Reply") &&
-      !result.captured?.text.includes("7:23 PM") &&
+      !result.captured?.text.includes("3:40 PM") &&
       result.nativeSelectionAfterCapture === "" &&
       result.highlighted?.ok &&
-      result.focus === "Can we make for all of these" &&
+      result.focus === "Can we test one of these too" &&
       result.reusedMessage?.ok === false &&
       result.changedTarget?.ok === false;
     console.log("\n### WhatsApp-style selectable-message fixture");
