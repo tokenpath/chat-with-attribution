@@ -13,38 +13,56 @@ exact source text.
 
 **Single purpose**
 
-TokenPath lets users chat with what they are reading or watching, with every
-answer traced to its source: the user explicitly captures a webpage, a searchable
-PDF, a selected passage, or a YouTube video's subtitle transcript, asks questions
-about it, and traces generated answer text back to the passage that supports it.
+Browse with TokenPath lets users chat with what they are reading or watching,
+with every answer traced to its source: the user explicitly captures a web page,
+a searchable PDF, a selected passage, or a YouTube video's subtitle transcript,
+asks questions about it, and traces the generated answer text back to the
+passage that supports it.
 
 **Detailed description**
 
-TokenPath adds an attributed chat to webpages, searchable PDFs, and captioned
-YouTube videos.
+Browse with TokenPath is a reading assistant that shows its sources.
 
-Click the TokenPath toolbar icon to read the page you are on and summarize it in
-three short bullet points you can follow up on. On a YouTube watch page, that
-same click captures the video's subtitle transcript instead of the page shell,
-so you can ask about what was said. Reopening a page or video you have already
-chatted about brings that conversation back instead of summarizing it again. To
-chat about one passage instead, select it, right-click, and choose **Chat with
-TokenPath**: that capture generates nothing on its own — the panel shows what it
-captured and waits for your question or the one-click **Summarize** starter.
+Ask about any web page, PDF, or captioned YouTube video, then click any part of
+the answer to see exactly where it came from, highlighted in the original.
 
-After TokenPath answers, click any underlined phrase — or open the answer's
-**Sources** list, or select any words in the answer. The extension maps that
-span back to the strongest supporting passage, highlights it on the page, and
-scrolls it into view. When the source is a video transcript, it seeks the player
-to the moment those words were spoken instead.
+GETTING AN ANSWER
 
-Chats are saved locally per page, so returning to a page brings its conversation
-back, and attribution keeps working after a refresh. **Clear chat** removes the
-current page's saved chat; **Disconnect** removes the saved key and every locally
-saved chat.
+Click the toolbar icon on any page for a short summary in three bullets, with
+suggested follow-up questions underneath. On a YouTube watch page, the same
+click reads the video's subtitles instead of the page around it, so you can ask
+about what was actually said.
 
-The extension uses one TokenPath API key for streaming generation and
-token-level source attribution.
+To ask about one passage instead of the whole page, select it, right-click, and
+choose "Chat with TokenPath". Nothing is generated until you ask.
+
+Return to a page you have already chatted about and your conversation comes
+back, with no re-summarizing.
+
+SEEING WHERE IT CAME FROM
+
+Underlined phrases in an answer are traceable. Click one, open the answer's
+Sources list, or simply select any words, and the passage that supports it is
+highlighted on the page and scrolled into view. In a PDF it highlights the
+passage in the document. In a video the player seeks to the moment those words
+were spoken. Attribution keeps working after you refresh the page.
+
+YOUR DATA
+
+Nothing is captured until you invoke the extension, so there is no background
+collection of your browsing. Conversations are saved locally on your own
+machine. Clear chat removes the current page's conversation; Disconnect removes
+your saved key and every saved chat at once.
+
+WHAT YOU NEED
+
+A free TokenPath account, which comes with tokens to get you started. The
+extension walks you through it the first time you open the panel.
+
+FOR DEVELOPERS
+
+TokenPath is also an API. The same token-level source attribution this extension
+uses is available for your own applications at tokenpath.ai.
 
 ## Permission explanations
 
