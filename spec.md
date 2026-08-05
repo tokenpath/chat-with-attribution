@@ -317,9 +317,38 @@ suffix and the suggestions tail are always appended after it and are not
 editable. One caveat sits under the field, because it is true: instructions
 that pull answers away from the source text can weaken source mapping.
 
+Below the preferences sits one **Plan** row, which is account state rather than
+a preference and so stores nothing. A subscriber sees `Browse subscription ·
+renews <date>`, or `ends <date>` while it is cancelling, since that month is
+paid for and still spendable. Everyone else sees the offer on one line. Both
+carry the same quiet link to `TokenPath.PLATFORM_URL`, opened in a new tab,
+because starting, changing, and cancelling a subscription all happen there.
+An unparseable or absent date degrades to a bare `Browse subscription` rather
+than printing a guess.
+
 The view closes with the credit rule stated plainly — automatic summaries spend
 credits like any question, and pages with a saved chat reopen it instead of
 re-summarizing.
+
+## The Browse subscription
+
+A TokenPath account may carry a subscription whose monthly token allowance is
+spendable only by this extension, with the account's prepaid credits as the
+fallback once it is used up. `X-TokenPath-Client: browse-extension` on every
+request is what routes spend there; the panel's job is to say which pool the
+next question will draw on.
+
+The header badge is that statement. With a subscription it shows what is left of
+this month — `9.2M this month`, in the same `formatTokens` shape the balance
+uses — and keeps the credit balance as the second line of its tooltip, because
+that is exactly what the allowance falls back to. With no subscription the badge
+is the credit balance, unchanged. Both are hidden below 360px, as before.
+
+The allowance is spent by the same requests credits are, so it is re-read
+wherever the balance is: on connect, on panel start, and once an answer has been
+attributed. Reads are sequenced by their own epoch, so a slow one cannot replace
+a newer observation, and a failed one leaves the badge showing what it last
+knew rather than emptying it.
 
 ## Suggested follow-ups
 

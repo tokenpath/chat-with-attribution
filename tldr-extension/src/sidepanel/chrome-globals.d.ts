@@ -137,6 +137,8 @@ interface TokenPathApi {
   };
   PLATFORM_URL: string;
   MAX_DOCUMENT_CHARS: number;
+  SUBSCRIPTION_GRANT_TOKENS: number;
+  SUBSCRIPTION_PRICE_USD_CENTS: number;
   getAuth(): Promise<{ key: string | null; baseUrl: string }>;
   setKey(key: string): Promise<void>;
   clearKey(): Promise<void>;

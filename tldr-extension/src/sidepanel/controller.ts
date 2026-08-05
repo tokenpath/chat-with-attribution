@@ -110,6 +110,12 @@ export interface PanelSettings {
 }
 
 export interface PanelSnapshot {
+  /**
+   * What is left of the Browse subscription's monthly allowance, formatted for
+   * the header badge; null whenever there is no subscription to spend, which
+   * is when the badge falls back to the credit balance.
+   */
+  allowanceText: string | null;
   authBusy: boolean;
   authError: string | null;
   busy: boolean;
@@ -126,6 +132,8 @@ export interface PanelSnapshot {
   settings: PanelSettings;
   settingsOpen: boolean;
   sourceType: ContextSourceType;
+  /** null until the first successful read; a 404 backend reports "none". */
+  subscription: TokenPathSubscription | null;
   themePreference: ThemePreference;
   toast: string | null;
   toastSeq: number;
@@ -255,6 +263,43 @@ function resolveTheme(preference: ThemePreference): ResolvedTheme {
   return preference === "system" ? systemTheme() : preference;
 }
 
+/**
+ * A canceling subscription is still a paid month: its allowance is spendable
+ * until the date it ends, so it counts as subscribed everywhere the allowance
+ * does.
+ */
+export function isSubscribed(
+  subscription: TokenPathSubscription | null
+): subscription is TokenPathSubscription {
+  return (
+    subscription != null &&
+    (subscription.status === "active" || subscription.status === "canceling")
+  );
+}
+
+/** "$7" from 700. The plan is priced in whole dollars today. */
+function formatPlanPrice(cents: number) {
+  return cents % 100 === 0
+    ? `$${cents / 100}`
+    : `$${(cents / 100).toFixed(2)}`;
+}
+
+/**
+ * The two numbers every "you could subscribe" string needs. Copy is written
+ * before any subscription has been read — Settings opens while disconnected,
+ * and a 402 can arrive first — so both fall back to the shipped plan.
+ */
+export function planTerms(subscription: TokenPathSubscription | null) {
+  return {
+    price: formatPlanPrice(
+      subscription?.priceUsdCents ?? TokenPath.SUBSCRIPTION_PRICE_USD_CENTS
+    ),
+    grant: formatTokens(
+      subscription?.grantTokens ?? TokenPath.SUBSCRIPTION_GRANT_TOKENS
+    ),
+  };
+}
+
 export class PanelController {
   private listeners = new Set<() => void>();
   private snapshot: PanelSnapshot;
@@ -283,6 +328,7 @@ export class PanelController {
   private contextVersion = 0;
   private authEpoch = 0;
   private creditsEpoch = 0;
+  private subscriptionEpoch = 0;
   private highlightEpoch = 0;
   private highlightedTarget: ActiveHighlight | null = null;
   private pendingPdfHighlight: ActiveHighlight | null = null;
@@ -310,6 +356,7 @@ export class PanelController {
     const themePreference = readThemePreference();
     const resolvedTheme = resolveTheme(themePreference);
     this.snapshot = {
+      allowanceText: null,
       authBusy: false,
       authError: null,
       busy: false,
@@ -326,6 +373,7 @@ export class PanelController {
       settings: readPanelSettings(),
       settingsOpen: false,
       sourceType: "page",
+      subscription: null,
       themePreference,
       toast: null,
       toastSeq: 0,
@@ -428,6 +476,9 @@ export class PanelController {
       if (authEpoch !== this.authEpoch) return false;
       this.updateCredits(credits, creditsEpoch);
       this.setConnected(true);
+      // Not awaited: the key is already validated, and the badge can fall back
+      // to credits for the moment this read takes.
+      void this.refreshSubscription();
       this.update({ authError: null });
       this.maybeRunAutoSummary();
       return true;
@@ -1257,6 +1308,7 @@ export class PanelController {
     this.setConnected(connected);
     if (!connected) return;
 
+    void this.refreshSubscription();
     const creditsEpoch = this.beginCreditsObservation();
     void TokenPath.fetchCredits()
       .then((credits) => {
@@ -1283,14 +1335,53 @@ export class PanelController {
 
   private setConnected(connected: boolean) {
     this.update({
+      allowanceText: connected ? this.snapshot.allowanceText : null,
       connected,
       creditsText: connected ? this.snapshot.creditsText : null,
+      subscription: connected ? this.snapshot.subscription : null,
     });
     if (connected) this.maybeRunAutoSummary();
   }
 
   private beginCreditsObservation() {
     return ++this.creditsEpoch;
+  }
+
+  private beginSubscriptionObservation() {
+    return ++this.subscriptionEpoch;
+  }
+
+  private updateSubscription(
+    subscription: TokenPathSubscription,
+    subscriptionEpoch = this.beginSubscriptionObservation()
+  ) {
+    if (subscriptionEpoch !== this.subscriptionEpoch) return;
+    this.update({
+      allowanceText: isSubscribed(subscription)
+        ? `${formatTokens(subscription.allowanceTokens)} this month`
+        : null,
+      subscription,
+    });
+  }
+
+  /**
+   * The allowance is spent by the same requests credits are, so it is read
+   * wherever the balance is — and sequenced the same way, so a slow read
+   * cannot replace a newer one.
+   */
+  private async refreshSubscription() {
+    const authEpoch = this.authEpoch;
+    const subscriptionEpoch = this.beginSubscriptionObservation();
+    try {
+      const subscription = await TokenPath.fetchSubscription();
+      if (authEpoch === this.authEpoch && this.snapshot.connected) {
+        this.updateSubscription(subscription, subscriptionEpoch);
+      }
+    } catch {
+      // The badge keeps what it last knew. A rejected key is reported by the
+      // credit read that runs beside this one, and a backend that does not
+      // serve the endpoint yet resolves to "none" rather than throwing.
+    }
   }
 
   private updateCredits(
@@ -1768,6 +1859,9 @@ export class PanelController {
           status: "ready",
         },
       });
+      // The turn spent the allowance before it spent credits, so both are
+      // re-read once the answer is fully attributed.
+      void this.refreshSubscription();
       const creditsAuthEpoch = this.authEpoch;
       const creditsEpoch = this.beginCreditsObservation();
       void TokenPath.fetchCredits()

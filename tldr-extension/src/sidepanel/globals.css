@@ -746,6 +746,28 @@
   opacity: 0.45;
 }
 
+/*
+  Settings is already dense, so the plan's one action is a quiet inline link on
+  its own line rather than another control competing on the row.
+*/
+.setting-link {
+  align-self: flex-start;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--tp-accent);
+  font-size: 0.74rem;
+  line-height: 1.1rem;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--tp-accent) 45%, transparent);
+  text-overflow: ellipsis;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
+.setting-link:hover {
+  text-decoration-color: currentColor;
+}
+
 .setting-note {
   margin-top: auto;
   border-top: 1px solid var(--border);

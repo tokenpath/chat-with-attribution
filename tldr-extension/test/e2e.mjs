@@ -372,6 +372,11 @@ function recordDeterministic(good) {
         if (path.endsWith("/v1/me/credits")) {
           return new Promise(() => {});
         }
+        // Reading the balance and the plan spends nothing, so neither is
+        // recorded as a request this panel made.
+        if (path.endsWith("/v1/subscription")) {
+          return responseJson({ status: "none", allowance_tokens: 0 });
+        }
         window.__panelRequests.push({ path, request });
         if (path.endsWith("/v1/generate")) {
           const question =
@@ -1357,6 +1362,9 @@ function recordDeterministic(good) {
         if (path.endsWith("/v1/me/credits")) {
           return responseJson({ available_tokens: 10_000 });
         }
+        if (path.endsWith("/v1/subscription")) {
+          return responseJson({ status: "none", allowance_tokens: 0 });
+        }
         window.__pdfRequests.push({ path, request });
         if (path.endsWith("/v1/generate")) return doneStream();
         if (path.endsWith("/v1/attributions/heatmap")) {
@@ -2021,6 +2029,9 @@ function recordDeterministic(good) {
         if (path.endsWith("/v1/me/credits")) {
           return responseJson({ available_tokens: 10_000 });
         }
+        if (path.endsWith("/v1/subscription")) {
+          return responseJson({ status: "none", allowance_tokens: 0 });
+        }
         window.__fullPdfRequests.push({ path, request });
         if (path.endsWith("/v1/generate")) return doneStream();
         if (path.endsWith("/v1/attributions/heatmap")) {
@@ -2405,6 +2416,9 @@ function recordDeterministic(good) {
         const request = options.body ? JSON.parse(options.body) : null;
         if (path.endsWith("/v1/me/credits")) {
           return responseJson({ available_tokens: 9_000 });
+        }
+        if (path.endsWith("/v1/subscription")) {
+          return responseJson({ status: "none", allowance_tokens: 0 });
         }
         window.__intentRequests.push({ path, request });
         if (path.endsWith("/v1/generate")) {
@@ -3845,6 +3859,9 @@ function recordDeterministic(good) {
             if (path.endsWith("/v1/me/credits")) {
               return responseJson({ available_tokens: 4_000 });
             }
+            if (path.endsWith("/v1/subscription")) {
+              return responseJson({ status: "none", allowance_tokens: 0 });
+            }
             window.__seedRequests.push(path);
             return responseJson({}, 404);
           };
@@ -3994,6 +4011,9 @@ function recordDeterministic(good) {
         const path = String(url);
         if (path.endsWith("/v1/me/credits")) {
           return responseJson({ available_tokens: 5_000 });
+        }
+        if (path.endsWith("/v1/subscription")) {
+          return responseJson({ status: "none", allowance_tokens: 0 });
         }
         window.__stopRequests.push(path);
         if (path.endsWith("/v1/generate")) {
@@ -6827,6 +6847,9 @@ if (deterministicFail > 0) process.exitCode = 1;
             if (path.endsWith("/v1/me/credits")) {
               return responseJson({ available_tokens: 9_000 });
             }
+            if (path.endsWith("/v1/subscription")) {
+              return responseJson({ status: "none", allowance_tokens: 0 });
+            }
             window.__videoRequests.push({ path, request });
             if (path.endsWith("/v1/generate")) {
               // The terminal event carries no finish reason, so "the answer was
@@ -7849,6 +7872,28 @@ if (deterministicFail > 0) process.exitCode = 1;
         settingsState.focus === "settings-back" &&
         settingsState.creditNote.includes("spend credits like any question"),
       settingsState
+    );
+
+    // This fixture's backend does not serve /v1/subscription at all, which is
+    // the shipping state: the Plan row offers the plan, and the badge is still
+    // the credit balance.
+    const planState = await page.evaluate(() => ({
+      plan: document.getElementById("setting-plan-value")?.textContent || "",
+      link: document.getElementById("setting-plan-link")?.textContent || "",
+      href: document.getElementById("setting-plan-link")?.getAttribute("href"),
+      badge: document.getElementById("credits")?.textContent || "",
+      badgeTitle:
+        document.getElementById("credits")?.getAttribute("title") || "",
+    }));
+    followUpCheck(
+      "an account with no subscription sees the plan offered and its credits",
+      planState.plan ===
+        "$7/month gives this extension 10M tokens a month, then credits." &&
+        planState.link === "Manage at platform.tokenpath.ai" &&
+        planState.href === "https://platform.tokenpath.ai" &&
+        planState.badge === "402k tokens" &&
+        planState.badgeTitle === "TokenPath tokens remaining",
+      planState
     );
 
     await page.locator("#setting-suggest-followups").click();

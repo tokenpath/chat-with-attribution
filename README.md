@@ -110,7 +110,8 @@ turn only when you ask: the panel shows what it captured and waits.
 ## Settings
 
 The gear in the header opens Settings in place of the conversation; the back
-arrow or Escape returns. It holds four preferences, stored locally:
+arrow or Escape returns. It holds four preferences, stored locally, and a
+**Plan** row:
 
 - **Summarize new pages automatically** (on). Off, a toolbar click still opens
   the panel and captures the page, but waits for you to ask — nothing is spent.
@@ -125,6 +126,11 @@ arrow or Escape returns. It holds four preferences, stored locally:
   rules and the follow-up request after your text; those are not editable.
   Instructions that pull answers away from the source text can weaken source
   mapping.
+
+The **Plan** row says which one is in force: a subscription and the date it
+renews (or ends, once it is cancelled), or the $7/month plan on offer. Either
+way it links to platform.tokenpath.ai, which is where a subscription is started,
+changed, or cancelled.
 
 Automatic summaries spend credits like any question. A page you have already
 chatted with reopens its saved chat instead — nothing is re-summarized.
@@ -215,7 +221,10 @@ inside the source frame.
 The panel follows the operating-system theme by default; its header control
 switches among system, light, and dark, and the preference stays local. Rejected
 keys, rate limits, and insufficient credits (`402`, with a top-up link) are
-reported in the chat, and the header shows the remaining token balance. A React
+reported in the chat, and the header badge shows what the next question will
+spend: the Browse subscription's remaining monthly allowance when there is one —
+with the credit balance behind it in the badge's tooltip, since that is what the
+allowance falls back to — and the credit balance itself when there is not. A React
 error boundary keeps a rendering failure from emptying the panel, and
 informational notices — such as starting a fresh chat because the page changed
 significantly — are dismissible status notes rather than errors.

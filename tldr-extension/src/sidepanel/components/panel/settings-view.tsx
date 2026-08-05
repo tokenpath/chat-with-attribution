@@ -1,11 +1,39 @@
 import { ArrowLeftIcon, ChevronRightIcon, RotateCcwIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import type {
-  PanelController,
-  PanelSnapshot,
-  SummaryPreset,
+import {
+  isSubscribed,
+  planTerms,
+  type PanelController,
+  type PanelSnapshot,
+  type SummaryPreset,
 } from "@/controller";
 import { cn } from "@/lib/utils";
+
+/** A renewal date the user recognizes, or nothing rather than a bad guess. */
+function planDate(iso: string | null) {
+  if (!iso) return null;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function planLine(snapshot: PanelSnapshot) {
+  const subscription = snapshot.subscription;
+  if (isSubscribed(subscription)) {
+    const date = planDate(subscription.renewsAt);
+    if (!date) return "Browse subscription";
+    // A canceling subscription still has this month; that date is its end.
+    return subscription.status === "canceling"
+      ? `Browse subscription · ends ${date}`
+      : `Browse subscription · renews ${date}`;
+  }
+  const { price, grant } = planTerms(subscription);
+  return `${price}/month gives this extension ${grant} tokens a month, then credits.`;
+}
 
 function SettingSwitch({
   checked,
@@ -230,6 +258,22 @@ export function SettingsView({
             request after your text.
           </p>
         </div>
+      </div>
+
+      <div className="setting" id="setting-plan">
+        <div className="setting-name">Plan</div>
+        <p className="setting-desc" id="setting-plan-value">
+          {planLine(snapshot)}
+        </p>
+        <a
+          className="setting-link"
+          href={TokenPath.PLATFORM_URL}
+          id="setting-plan-link"
+          rel="noreferrer"
+          target="_blank"
+        >
+          Manage at platform.tokenpath.ai
+        </a>
       </div>
 
       <p className="setting-note" id="settings-credit-note">

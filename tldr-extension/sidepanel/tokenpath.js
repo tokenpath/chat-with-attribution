@@ -44,6 +44,9 @@ const TokenPath = {
   Error: TokenPathError,
   PLATFORM_URL: TOKENPATH_PLATFORM_URL,
   MAX_DOCUMENT_CHARS: TOKENPATH_MAX_DOCUMENT_CHARS,
+  // The shipped plan, for copy written before any subscription has been read.
+  SUBSCRIPTION_GRANT_TOKENS: TOKENPATH_SUBSCRIPTION_GRANT_TOKENS,
+  SUBSCRIPTION_PRICE_USD_CENTS: TOKENPATH_SUBSCRIPTION_PRICE_USD_CENTS,
 
   async getAuth() {
     const stored = await chrome.storage.local.get([

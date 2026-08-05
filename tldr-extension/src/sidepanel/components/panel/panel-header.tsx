@@ -52,6 +52,15 @@ export function PanelHeader({
   const chatIsEmpty = snapshot.messages.every(
     (message) => message.kind === "note"
   );
+  // A subscription is what the extension spends first, so the badge shows what
+  // is left of it and keeps the credit balance — the fallback once the
+  // allowance runs out — as the tooltip's second line. Without a subscription
+  // the badge is the credit balance, exactly as before.
+  const badgeText = snapshot.allowanceText ?? snapshot.creditsText;
+  const badgeTitle = snapshot.allowanceText
+    ? "Browse subscription allowance left this month" +
+      (snapshot.creditsText ? `\nThen ${snapshot.creditsText} in credits` : "")
+    : "TokenPath tokens remaining";
 
   return (
     <header className="panel-header flex h-12 shrink-0 items-center justify-between px-3.5">
@@ -75,11 +84,11 @@ export function PanelHeader({
       <div className="flex min-w-0 items-center gap-1.5">
         <span
           className="token-badge"
-          hidden={!snapshot.creditsText}
+          hidden={!badgeText}
           id="credits"
-          title="TokenPath tokens remaining"
+          title={badgeTitle}
         >
-          {snapshot.creditsText}
+          {badgeText}
         </span>
         <Button
           aria-label={nextThemeLabel(snapshot)}
