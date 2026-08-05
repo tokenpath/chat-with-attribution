@@ -9,6 +9,9 @@
 
 const TOKENPATH_DEFAULT_BASE_URL = "https://api.tokenpath.ai";
 const TOKENPATH_PLATFORM_URL = "https://platform.tokenpath.ai";
+// The dashboard route that issues keys. It is a stable path on the platform,
+// and signed-out visitors are sent through sign-in and land back on it.
+const TOKENPATH_API_KEYS_URL = `${TOKENPATH_PLATFORM_URL}/api-keys`;
 const TOKENPATH_MAX_DOCUMENT_CHARS = 400_000;
 // Identifies the request as this extension's. It is what routes spend to the
 // Browse subscription's monthly allowance, with the account's prepaid credits
@@ -20,6 +23,10 @@ const TOKENPATH_SUBSCRIPTION_STATUSES = ["none", "active", "canceling"];
 // subscription endpoint is not deployed yet.
 const TOKENPATH_SUBSCRIPTION_GRANT_TOKENS = 10_000_000;
 const TOKENPATH_SUBSCRIPTION_PRICE_USD_CENTS = 700;
+// The starter grant the platform applies once, when an account is created.
+// First-run copy has to name it before there is an account to read it from,
+// so the number is mirrored here rather than fetched.
+const TOKENPATH_SIGNUP_GRANT_TOKENS = 10_000_000;
 // Every request carries the API key and the complete captured page text, so
 // the destination is not a free-form preference. Only these exact origins may
 // ever receive them; anything else falls back to production.
@@ -43,10 +50,13 @@ class TokenPathError extends Error {
 const TokenPath = {
   Error: TokenPathError,
   PLATFORM_URL: TOKENPATH_PLATFORM_URL,
+  API_KEYS_URL: TOKENPATH_API_KEYS_URL,
   MAX_DOCUMENT_CHARS: TOKENPATH_MAX_DOCUMENT_CHARS,
   // The shipped plan, for copy written before any subscription has been read.
   SUBSCRIPTION_GRANT_TOKENS: TOKENPATH_SUBSCRIPTION_GRANT_TOKENS,
   SUBSCRIPTION_PRICE_USD_CENTS: TOKENPATH_SUBSCRIPTION_PRICE_USD_CENTS,
+  // What a brand-new account starts with, for the first-run screen.
+  SIGNUP_GRANT_TOKENS: TOKENPATH_SIGNUP_GRANT_TOKENS,
 
   async getAuth() {
     const stored = await chrome.storage.local.get([

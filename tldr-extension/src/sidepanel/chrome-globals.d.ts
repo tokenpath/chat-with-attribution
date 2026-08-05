@@ -136,9 +136,11 @@ interface TokenPathApi {
     prototype: TokenPathFailure;
   };
   PLATFORM_URL: string;
+  API_KEYS_URL: string;
   MAX_DOCUMENT_CHARS: number;
   SUBSCRIPTION_GRANT_TOKENS: number;
   SUBSCRIPTION_PRICE_USD_CENTS: number;
+  SIGNUP_GRANT_TOKENS: number;
   getAuth(): Promise<{ key: string | null; baseUrl: string }>;
   setKey(key: string): Promise<void>;
   clearKey(): Promise<void>;
